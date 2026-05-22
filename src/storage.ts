@@ -1,0 +1,300 @@
+import { TFile, TFolder, Vault, normalizePath } from 'obsidian';
+import {
+	AgentMessage,
+	ContentBlock,
+	CustomEntry,
+	CustomMessageEntry,
+	Entry,
+	MessageEntry,
+	ModelChangeEntry,
+	OpenAIMessage,
+	SessionHeader,
+	SessionInfoEntry,
+	ToolCallBlock,
+	ToolResultBlock,
+} from './types';
+
+const CHATS_DIR = 'sys/chats';
+
+function uuid(): string {
+	if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+	return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+		const r = (Math.random() * 16) | 0;
+		const v = c === 'x' ? r : (r & 0x3) | 0x8;
+		return v.toString(16);
+	});
+}
+
+function shortId(): string {
+	const buf = new Uint8Array(4);
+	crypto.getRandomValues(buf);
+	return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function dateStamp(d = new Date()): string {
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, '0');
+	const day = String(d.getDate()).padStart(2, '0');
+	return `${y}-${m}-${day}`;
+}
+
+export interface ChatSession {
+	path: string;
+	header: SessionHeader;
+	entries: Entry[];
+	leafId: string | null;
+	title: string;
+}
+
+export class ChatStorage {
+	constructor(private vault: Vault, private dir: string = CHATS_DIR) {}
+
+	async ensureDir(): Promise<void> {
+		if (!(await this.vault.adapter.exists(this.dir))) {
+			await this.vault.createFolder(this.dir);
+		}
+	}
+
+	async createChat(): Promise<ChatSession> {
+		await this.ensureDir();
+		const id = uuid();
+		const path = normalizePath(`${this.dir}/${dateStamp()}_${id}.jsonl`);
+		const header: SessionHeader = {
+			type: 'session',
+			version: 3,
+			id,
+			timestamp: new Date().toISOString(),
+			cwd: this.vault.getName(),
+		};
+		await this.vault.create(path, JSON.stringify(header) + '\n');
+		return { path, header, entries: [], leafId: null, title: 'New chat' };
+	}
+
+	async loadChat(path: string): Promise<ChatSession> {
+		const file = this.vault.getFileByPath(path);
+		if (!file) throw new Error(`not a file: ${path}`);
+		const raw = await this.vault.cachedRead(file);
+		const lines = raw.split('\n').filter((l) => l.trim());
+		if (lines.length === 0) throw new Error(`empty chat file: ${path}`);
+		const header = JSON.parse(lines[0]) as SessionHeader;
+		const entries = lines.slice(1).map((l) => JSON.parse(l) as Entry);
+
+		const leafId = computeLeaf(entries);
+		const title = findTitle(entries) ?? deriveTitleFromMessages(entries) ?? 'New chat';
+
+		return { path, header, entries, leafId, title };
+	}
+
+	async appendEntry(session: ChatSession, entry: Entry): Promise<void> {
+		const file = this.vault.getFileByPath(session.path);
+		if (!file) throw new Error(`not a file: ${session.path}`);
+		await this.vault.append(file, JSON.stringify(entry) + '\n');
+		session.entries.push(entry);
+		session.leafId = entry.id;
+	}
+
+	makeMessageEntry(message: AgentMessage, parentId: string | null): MessageEntry {
+		return {
+			type: 'message',
+			id: shortId(),
+			parentId,
+			timestamp: new Date().toISOString(),
+			message,
+		};
+	}
+
+	makeModelChangeEntry(provider: string, modelId: string, parentId: string | null): ModelChangeEntry {
+		return {
+			type: 'model_change',
+			id: shortId(),
+			parentId,
+			timestamp: new Date().toISOString(),
+			provider,
+			modelId,
+		};
+	}
+
+	makeTitleEntry(name: string, parentId: string | null): SessionInfoEntry {
+		return {
+			type: 'session_info',
+			id: shortId(),
+			parentId,
+			timestamp: new Date().toISOString(),
+			name,
+		};
+	}
+
+	makeCustomEntry(customType: string, data: unknown, parentId: string | null): CustomEntry {
+		return {
+			type: 'custom',
+			id: shortId(),
+			parentId,
+			timestamp: new Date().toISOString(),
+			customType,
+			data,
+		};
+	}
+
+	makeCustomMessageEntry(
+		customType: string,
+		content: string,
+		display: string | undefined,
+		parentId: string | null,
+	): CustomMessageEntry {
+		return {
+			type: 'custom_message',
+			id: shortId(),
+			parentId,
+			timestamp: new Date().toISOString(),
+			customType,
+			content,
+			...(display ? { display } : {}),
+		};
+	}
+
+	async listChats(): Promise<{ path: string; title: string; preview: string; mtime: number }[]> {
+		await this.ensureDir();
+		const folder = this.vault.getAbstractFileByPath(this.dir);
+		if (!(folder instanceof TFolder)) return [];
+		const out: { path: string; title: string; preview: string; mtime: number }[] = [];
+		for (const child of folder.children) {
+			if (!(child instanceof TFile) || child.extension !== 'jsonl') continue;
+			try {
+				const session = await this.loadChat(child.path);
+				const preview = firstUserPreview(session.entries);
+				out.push({ path: child.path, title: session.title, preview, mtime: child.stat.mtime });
+			} catch {
+				out.push({ path: child.path, title: child.basename, preview: '', mtime: child.stat.mtime });
+			}
+		}
+		out.sort((a, b) => b.mtime - a.mtime);
+		return out;
+	}
+
+	/**
+	 * Walk from leaf to root. Returns entries in chronological order (root first).
+	 */
+	contextChain(session: ChatSession): Entry[] {
+		if (!session.leafId) return [];
+		const byId = new Map(session.entries.map((e) => [e.id, e]));
+		const chain: Entry[] = [];
+		let current: Entry | undefined = byId.get(session.leafId);
+		while (current) {
+			chain.unshift(current);
+			current = current.parentId ? byId.get(current.parentId) : undefined;
+		}
+		return chain;
+	}
+
+	/**
+	 * Build OpenAI-format messages for the API from the active context chain.
+	 */
+	toOpenAIMessages(session: ChatSession, systemPrompt: string): OpenAIMessage[] {
+		const messages: OpenAIMessage[] = [{ role: 'system', content: systemPrompt }];
+		for (const entry of this.contextChain(session)) {
+			if (entry.type === 'custom_message') {
+				// Plugin-injected content the model should see (e.g., loaded skill bodies).
+				// Inject as a user-role message; the label tells the model these are in-effect instructions.
+				let label: string;
+				if (entry.customType === 'skill') {
+					const skillName = entry.display?.replace(/^skill:\s*/i, '').trim() || 'skill';
+					label = `[Loaded skill: ${skillName}]\nFollow these instructions for this turn:`;
+				} else {
+					label = `[${entry.customType}]`;
+				}
+				messages.push({ role: 'user', content: `${label}\n\n${entry.content}` });
+				continue;
+			}
+			if (entry.type !== 'message') continue;
+			const m = entry.message;
+			if (typeof m.content === 'string') {
+				messages.push({ role: m.role, content: m.content });
+				continue;
+			}
+			// Block-structured content. Split tool results into separate tool messages,
+			// per OpenAI's expected shape.
+			if (m.role === 'assistant') {
+				const textParts: string[] = [];
+				const toolCalls: NonNullable<OpenAIMessage['tool_calls']> = [];
+				for (const block of m.content) {
+					if (block.type === 'text') textParts.push(block.text);
+					else if (block.type === 'toolCall')
+						toolCalls.push({
+							id: block.id,
+							type: 'function',
+							function: { name: block.name, arguments: JSON.stringify(block.arguments) },
+						});
+				}
+				messages.push({
+					role: 'assistant',
+					content: textParts.join('') || null,
+					...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+				});
+			} else if (m.role === 'tool') {
+				for (const block of m.content) {
+					if (block.type === 'toolResult') {
+						messages.push({ role: 'tool', tool_call_id: block.toolCallId, content: block.content });
+					}
+				}
+			} else {
+				const text = m.content
+					.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+					.map((b) => b.text)
+					.join('');
+				messages.push({ role: m.role, content: text });
+			}
+		}
+		return messages;
+	}
+}
+
+function computeLeaf(entries: Entry[]): string | null {
+	if (entries.length === 0) return null;
+	const hasChild = new Set<string>();
+	for (const e of entries) if (e.parentId) hasChild.add(e.parentId);
+	// Leaf candidates = entries without children. Among them, pick the latest by timestamp.
+	const leaves = entries.filter((e) => !hasChild.has(e.id));
+	if (leaves.length === 0) return entries[entries.length - 1].id;
+	leaves.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+	return leaves[0].id;
+}
+
+function findTitle(entries: Entry[]): string | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const e = entries[i];
+		if (e.type === 'session_info' && e.name) return e.name;
+	}
+	return null;
+}
+
+function firstUserPreview(entries: Entry[]): string {
+	for (const e of entries) {
+		if (e.type !== 'message' || e.message.role !== 'user') continue;
+		const content = typeof e.message.content === 'string'
+			? e.message.content
+			: e.message.content
+				.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+				.map((b) => b.text)
+				.join(' ');
+		const flat = content.replace(/\s+/g, ' ').trim();
+		return flat.length > 80 ? flat.slice(0, 77) + '…' : flat;
+	}
+	return '';
+}
+
+function deriveTitleFromMessages(entries: Entry[]): string | null {
+	for (const e of entries) {
+		if (e.type !== 'message' || e.message.role !== 'user') continue;
+		const content = typeof e.message.content === 'string'
+			? e.message.content
+			: e.message.content
+				.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+				.map((b) => b.text)
+				.join('');
+		const first = content.trim().split('\n')[0];
+		return first.length > 60 ? first.slice(0, 57) + '…' : first || null;
+	}
+	return null;
+}
+
+export type { ToolCallBlock, ToolResultBlock };

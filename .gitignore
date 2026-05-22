@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+main.js
+*.log
+data.json
+.obsidian/
+
+# Internal design notes — kept locally, excluded from the public repo.
+agent_notes/
+
+# Phase 0 smoke test lives in its own throwaway repo.
+smoke-test/

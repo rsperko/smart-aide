@@ -1,0 +1,1256 @@
+/* ============================================================
+   Smart Aide chat UI
+   Inspired by Cursor, Continue.dev, Claude.ai sidebar.
+   Narrow-viewport-first; touches Obsidian theme vars only.
+   ============================================================ */
+
+.vk-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+	background: var(--background-primary);
+}
+
+/* ---------- Top action bar ---------- */
+
+.vk-topbar {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	padding: 6px 8px;
+	gap: 2px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	min-height: 34px;
+}
+
+.vk-topbar-btn {
+	width: 26px;
+	height: 26px;
+	border-radius: 13px;
+}
+
+.vk-topbar-btn svg {
+	width: 14px;
+	height: 14px;
+}
+
+.vk-topbar-title {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	min-width: 0;
+	padding: 4px 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-normal);
+	font-size: 13px;
+	font-weight: 600;
+	font-family: inherit;
+	line-height: 1.2;
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+	overflow: hidden;
+	transition: background-color 0.12s ease;
+}
+
+.vk-topbar-title:hover {
+	background: var(--background-modifier-hover);
+}
+
+.vk-topbar-title:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.vk-topbar-title-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.vk-topbar-title-chevron {
+	flex-shrink: 0;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+/* ---------- Message stream ---------- */
+
+.vk-stream {
+	flex: 1;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	padding: 16px 12px 8px;
+	scroll-behavior: smooth;
+}
+
+.vk-empty {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	color: var(--text-faint);
+	padding: 32px 16px;
+}
+
+.vk-empty-icon {
+	opacity: 0.4;
+}
+
+.vk-empty-icon svg {
+	width: 32px;
+	height: 32px;
+}
+
+.vk-empty-text {
+	font-size: 13px;
+	text-align: center;
+}
+
+/* ---------- Messages ---------- */
+
+.vk-msg {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	position: relative;
+}
+
+.vk-role {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.6px;
+	color: var(--text-faint);
+	font-weight: 600;
+}
+
+.vk-body {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.vk-text {
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	line-height: 1.55;
+	font-size: 14px;
+	color: var(--text-normal);
+}
+
+/* User: subtle muted background, slight indent */
+.vk-role-user .vk-body {
+	background: var(--background-modifier-hover);
+	padding: 10px 12px;
+	border-radius: 8px;
+}
+
+/* Assistant: no background, just text, full width */
+.vk-role-assistant .vk-body {
+	padding: 0;
+}
+
+.vk-role-assistant .vk-text {
+	/* Use Obsidian's reading view styles for rendered markdown children */
+}
+
+.vk-role-assistant .vk-text > *:first-child {
+	margin-top: 0;
+}
+
+.vk-role-assistant .vk-text > *:last-child {
+	margin-bottom: 0;
+}
+
+/* Tool messages have no visible wrapper — the cards inside speak for themselves */
+.vk-role-tool {
+	gap: 0;
+}
+
+.vk-role-tool .vk-body {
+	gap: 6px;
+}
+
+/* ---------- Tool cards (collapsible) ---------- */
+
+.vk-tool-call,
+.vk-tool-result {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	font-size: 11px;
+	background: var(--background-secondary);
+	margin: 0;
+	overflow: hidden;
+}
+
+.vk-tool-error {
+	border-color: var(--background-modifier-error);
+}
+
+.vk-tool-summary {
+	cursor: pointer;
+	padding: 5px 10px;
+	font-family: var(--font-monospace);
+	color: var(--text-muted);
+	user-select: none;
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.vk-tool-summary::-webkit-details-marker {
+	display: none;
+}
+
+.vk-tool-summary::before {
+	content: "▸";
+	display: inline-block;
+	width: 0.8em;
+	color: var(--text-faint);
+	transition: transform 0.12s ease;
+}
+
+details[open] > .vk-tool-summary::before {
+	transform: rotate(90deg);
+}
+
+.vk-tool-summary:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.vk-tool-args,
+.vk-tool-result-body {
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	margin: 0;
+	padding: 8px 10px;
+	max-height: 280px;
+	overflow-y: auto;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-muted);
+}
+
+/* ---------- Per-message actions (Edit on user messages) ---------- */
+
+.vk-msg-actions {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: flex;
+	gap: 2px;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+}
+
+.vk-msg-user:hover .vk-msg-actions,
+.vk-msg-user:focus-within .vk-msg-actions {
+	opacity: 1;
+}
+
+/* On touch devices (no hover), keep edit action visible but very subtle */
+@media (hover: none) {
+	.vk-msg-actions {
+		opacity: 0.4;
+	}
+}
+
+/* ---------- Composer ---------- */
+
+.vk-composer {
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 8px 12px 10px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+}
+
+.vk-input {
+	width: 100%;
+	min-height: 60px;
+	max-height: 200px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-family: inherit;
+	font-size: 14px;
+	line-height: 1.5;
+	resize: none;
+	overflow-y: auto;
+	transition: border-color 0.12s ease;
+}
+
+.vk-input:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.vk-input::placeholder {
+	color: var(--text-faint);
+}
+
+/* Toolbar beneath the textarea */
+.vk-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+}
+
+.vk-model-chip {
+	font-size: 12px;
+	padding: 3px 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	max-width: 60%;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-family: inherit;
+	line-height: 1.2;
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.vk-model-chip:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.vk-model-chip:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.vk-model-chip-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.vk-model-chip-chevron {
+	font-size: 10px;
+	opacity: 0.7;
+	flex-shrink: 0;
+}
+
+/* ---------- Model picker modal suggestions ---------- */
+
+.vk-model-suggestion {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 6px 12px;
+}
+
+.vk-model-suggestion-main {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.vk-model-suggestion-name {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-model-suggestion-current,
+.vk-model-suggestion-recent {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.vk-model-suggestion-current {
+	color: var(--interactive-accent);
+}
+
+.vk-model-suggestion-slug {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+}
+
+.vk-model-suggestion-meta {
+	font-size: 11px;
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.vk-model-suggestion-tools {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.vk-model-suggestion-endpoint {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+/* ---------- Settings tab: shared bits ---------- */
+
+.vk-section-blurb {
+	margin: 4px 0 12px;
+}
+
+/* ---------- Get started card (empty state) ---------- */
+
+.vk-getstarted-card {
+	margin: 12px 0 16px;
+	padding: 16px;
+	border: 1px solid var(--interactive-accent);
+	border-radius: 8px;
+	background: var(--background-secondary);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.vk-getstarted-title {
+	font-size: 15px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-getstarted-sub {
+	font-size: 12px;
+	color: var(--text-muted);
+	line-height: 1.4;
+}
+
+.vk-getstarted-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 4px;
+	flex-wrap: wrap;
+}
+
+.vk-getstarted-actions button {
+	padding: 6px 14px;
+	border-radius: 6px;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+/* ---------- Get-a-key hint (in modal) ---------- */
+
+.vk-key-hint {
+	font-size: 12px;
+	color: var(--text-muted);
+	margin: -4px 0 8px;
+	padding: 4px 0;
+}
+
+.vk-key-hint:empty {
+	display: none;
+}
+
+.vk-key-hint-info {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.vk-key-hint a {
+	color: var(--interactive-accent);
+	text-decoration: none;
+}
+
+.vk-key-hint a:hover {
+	text-decoration: underline;
+}
+
+/* ---------- Title-equals-chat-model state ---------- */
+
+.vk-title-same {
+	font-size: 13px;
+	color: var(--text-muted);
+	font-style: italic;
+	margin-right: 8px;
+}
+
+/* ---------- Endpoint list (compact rows) ---------- */
+
+.vk-endpoint-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 8px 0 12px;
+}
+
+.vk-endpoint-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.vk-endpoint-row-connected {
+	border-left: 3px solid var(--interactive-accent);
+	padding-left: 8px;
+}
+
+.vk-endpoint-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	border: 1.5px solid var(--text-faint);
+	background: transparent;
+	flex-shrink: 0;
+}
+
+.vk-endpoint-row-connected .vk-endpoint-dot {
+	background: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+.vk-endpoint-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.vk-endpoint-name-row {
+	font-weight: 600;
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-endpoint-summary-row {
+	font-size: 12px;
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.vk-endpoint-row-actions {
+	flex-shrink: 0;
+	display: flex;
+	gap: 4px;
+}
+
+.vk-endpoint-edit-btn {
+	padding: 4px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.vk-endpoint-edit-btn:hover {
+	background: var(--background-modifier-hover);
+}
+
+/* ---------- Endpoint edit modal ---------- */
+
+.vk-endpoint-modal .setting-item {
+	border-top: none;
+	padding: 8px 0;
+}
+
+.vk-endpoint-section {
+	margin: 8px 0;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 8px;
+}
+
+.vk-endpoint-section-summary {
+	cursor: pointer;
+	padding: 4px 0;
+	font-weight: 500;
+	color: var(--text-normal);
+	list-style: none;
+	user-select: none;
+}
+
+.vk-endpoint-section-summary::-webkit-details-marker {
+	display: none;
+}
+
+.vk-endpoint-section-summary::before {
+	content: "▸ ";
+	color: var(--text-faint);
+	transition: transform 0.12s ease;
+	display: inline-block;
+}
+
+.vk-endpoint-section[open] > .vk-endpoint-section-summary::before {
+	transform: rotate(90deg);
+}
+
+.vk-endpoint-section-body {
+	padding: 6px 0 4px;
+}
+
+.vk-modal-footer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.vk-test-status {
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	margin-right: 8px;
+}
+
+.vk-test-ok {
+	color: var(--text-success, var(--interactive-accent));
+}
+
+.vk-test-bad {
+	color: var(--text-error, var(--background-modifier-error));
+}
+
+/* ---------- Add endpoint modal (template chooser) ---------- */
+
+.vk-add-endpoint-modal .setting-item-description {
+	margin-bottom: 12px;
+}
+
+.vk-template-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	margin-bottom: 6px;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.vk-template-row:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-accent);
+}
+
+.vk-template-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.vk-template-name {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-template-hint {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.vk-template-url {
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	color: var(--text-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 240px;
+}
+
+/* ---------- System prompt collapsible ---------- */
+
+.vk-prompt-details {
+	margin: 8px 0 16px;
+}
+
+.vk-prompt-summary {
+	cursor: pointer;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	list-style: none;
+	user-select: none;
+}
+
+.vk-prompt-summary::-webkit-details-marker {
+	display: none;
+}
+
+.vk-prompt-details[open] > .vk-prompt-summary {
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.vk-prompt-preview {
+	flex: 1;
+	font-size: 12px;
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-prompt-summary-action {
+	flex-shrink: 0;
+	color: var(--interactive-accent);
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.vk-prompt-details[open] > .vk-prompt-summary > .vk-prompt-summary-action::after {
+	content: ' ▾';
+}
+
+.vk-prompt-body {
+	border: 1px solid var(--background-modifier-border);
+	border-top: none;
+	border-bottom-left-radius: 6px;
+	border-bottom-right-radius: 6px;
+	padding: 8px 12px;
+	background: var(--background-primary);
+}
+
+.vk-tokens {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.vk-spacer {
+	flex: 1;
+}
+
+/* Icon buttons (send, stop, edit) */
+.vk-icon-btn {
+	width: 28px;
+	height: 28px;
+	border-radius: 14px;
+	border: none;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+	background: transparent;
+	color: var(--text-muted);
+}
+
+.vk-icon-btn:hover:not(:disabled) {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.vk-icon-btn:disabled {
+	cursor: not-allowed;
+	opacity: 0.4;
+}
+
+.vk-icon-btn svg {
+	width: 16px;
+	height: 16px;
+}
+
+/* Send button: accent fill when active */
+.vk-send {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.vk-send:hover:not(:disabled) {
+	background: var(--interactive-accent-hover);
+	color: var(--text-on-accent);
+}
+
+.vk-send:disabled {
+	background: var(--background-modifier-border);
+	color: var(--text-faint);
+	opacity: 1;
+}
+
+/* Stop button: warning color */
+.vk-stop {
+	background: var(--background-modifier-error);
+	color: var(--text-on-accent);
+}
+
+.vk-stop:hover {
+	background: var(--background-modifier-error-hover, var(--background-modifier-error));
+	opacity: 0.9;
+}
+
+/* Edit button on user messages: smaller, subtle */
+.vk-edit {
+	width: 22px;
+	height: 22px;
+	border-radius: 11px;
+}
+
+.vk-edit svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* ---------- Thinking indicator (while waiting for first token) ---------- */
+
+.vk-thinking {
+	display: inline-flex;
+	gap: 4px;
+	padding: 4px 0;
+	align-items: center;
+}
+
+.vk-thinking-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--text-faint);
+	animation: vk-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+.vk-thinking-dot:nth-child(2) {
+	animation-delay: 0.15s;
+}
+
+.vk-thinking-dot:nth-child(3) {
+	animation-delay: 0.3s;
+}
+
+@keyframes vk-thinking-pulse {
+	0%, 100% {
+		opacity: 0.3;
+		transform: scale(0.85);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+/* ---------- Research chip (collapsed tool-call trail) ---------- */
+
+.vk-research {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	font-size: 12px;
+	overflow: hidden;
+}
+
+.vk-research-summary {
+	cursor: pointer;
+	padding: 6px 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-muted);
+	user-select: none;
+	list-style: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.vk-research-summary::-webkit-details-marker {
+	display: none;
+}
+
+.vk-research-summary::after {
+	content: "▸";
+	margin-left: auto;
+	color: var(--text-faint);
+	font-size: 10px;
+	transition: transform 0.12s ease;
+}
+
+details[open] > .vk-research-summary::after {
+	transform: rotate(90deg);
+}
+
+.vk-research-summary:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.vk-research-icon {
+	flex-shrink: 0;
+	opacity: 0.8;
+}
+
+.vk-research-headline {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-research-detail {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 6px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	background: var(--background-primary);
+}
+
+.vk-research-row {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+}
+
+.vk-research-call {
+	color: var(--text-muted);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.vk-research-result {
+	color: var(--text-faint);
+	padding-left: 12px;
+}
+
+.vk-research-error {
+	color: var(--text-error, var(--background-modifier-error));
+}
+
+/* ---------- Citation card (deep-linked note section) ---------- */
+
+.vk-citation {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	text-decoration: none;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.vk-citation:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+	text-decoration: none;
+}
+
+.vk-citation-top {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	font-size: 13px;
+}
+
+.vk-citation-icon {
+	flex-shrink: 0;
+	opacity: 0.8;
+}
+
+.vk-citation-title {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+}
+
+.vk-citation-path {
+	color: var(--text-muted);
+	font-weight: 500;
+}
+
+.vk-citation-sep {
+	color: var(--text-faint);
+	margin: 0 2px;
+}
+
+.vk-citation-heading {
+	color: var(--text-normal);
+}
+
+.vk-citation-lines {
+	flex-shrink: 0;
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	font-variant-numeric: tabular-nums;
+}
+
+.vk-citation-snippet {
+	font-size: 12px;
+	color: var(--text-muted);
+	line-height: 1.4;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+
+/* ---------- Copy button on code blocks ---------- */
+
+.vk-has-copy {
+	position: relative;
+}
+
+.vk-copy-btn {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	width: 24px;
+	height: 24px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+	padding: 0;
+}
+
+.vk-copy-btn svg {
+	width: 12px;
+	height: 12px;
+}
+
+.vk-has-copy:hover .vk-copy-btn,
+.vk-copy-btn:focus {
+	opacity: 1;
+}
+
+.vk-copy-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* On touch devices (no hover), keep the copy button always visible but subtle */
+@media (hover: none) {
+	.vk-copy-btn {
+		opacity: 0.5;
+	}
+}
+
+/* ---------- Chat picker suggestion with preview ---------- */
+
+.vk-chat-suggestion {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 6px 12px;
+}
+
+.vk-chat-suggestion-top {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+}
+
+.vk-chat-suggestion-date {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	white-space: nowrap;
+}
+
+.vk-chat-suggestion-title {
+	font-weight: 600;
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-chat-suggestion-preview {
+	font-size: 11px;
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ---------- Approval card (writes / deletes) ---------- */
+
+.vk-approval {
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	padding: 0;
+	font-size: 12px;
+	margin: 4px 0;
+	overflow: hidden;
+}
+
+.vk-approval-pending {
+	border-left-color: var(--text-warning, var(--interactive-accent));
+}
+
+.vk-approval-decided-approved {
+	border-left-color: var(--text-success, var(--interactive-accent));
+}
+
+.vk-approval-decided-rejected {
+	border-left-color: var(--text-error, var(--background-modifier-error));
+	opacity: 0.7;
+}
+
+.vk-approval-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: var(--background-secondary-alt);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vk-approval-lock {
+	font-size: 14px;
+}
+
+.vk-approval-summary {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-approval-diff {
+	max-height: 320px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.4;
+}
+
+.vk-diff-note {
+	padding: 6px 10px;
+	color: var(--text-muted);
+	font-style: italic;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vk-diff-preview {
+	margin: 0;
+	padding: 8px 10px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+
+.vk-diff-lines {
+	padding: 4px 0;
+}
+
+.vk-diff-line {
+	padding: 0 10px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+
+.vk-diff-add {
+	background: rgba(76, 175, 80, 0.15);
+	color: var(--text-normal);
+}
+
+.vk-diff-remove {
+	background: rgba(244, 67, 54, 0.15);
+	color: var(--text-normal);
+	text-decoration: line-through;
+	text-decoration-color: rgba(244, 67, 54, 0.4);
+}
+
+.vk-diff-context {
+	color: var(--text-muted);
+}
+
+.vk-approval-actions {
+	display: flex;
+	gap: 6px;
+	padding: 8px 10px;
+	border-top: 1px solid var(--background-modifier-border);
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.vk-approval-btn {
+	font-size: 12px;
+	padding: 4px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	cursor: pointer;
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.vk-approval-btn:hover {
+	background: var(--background-modifier-hover);
+}
+
+.vk-approval-approve {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: transparent;
+}
+
+.vk-approval-approve:hover {
+	background: var(--interactive-accent-hover);
+	color: var(--text-on-accent);
+}
+
+.vk-approval-reject {
+	color: var(--text-error, var(--text-muted));
+}
+
+.vk-approval-approve-all {
+	margin-left: auto;
+	font-size: 11px;
+}
+
+.vk-approval-decision {
+	font-size: 12px;
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+/* ---------- Settings tab tweaks ---------- */
+
+.vk-settings-textarea {
+	width: 100%;
+	min-height: 140px;
+	font-family: var(--font-monospace);
+	font-size: 12px;
+	line-height: 1.5;
+	resize: vertical;
+}
