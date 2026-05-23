@@ -1,0 +1,300 @@
+import { App, Notice, Setting } from 'obsidian';
+import { discoverModels } from './provider';
+import { Endpoint } from './types';
+
+export interface EndpointEditorContext {
+	app: App;
+	onChange: () => void;
+	onDelete: () => void;
+	onBack: () => void;
+	saveSettings: () => Promise<void>;
+}
+
+/**
+ * Render the endpoint editor inline into the given container. This is a sub-page
+ * pattern, not a modal — the container is the settings tab content area, which
+ * is natively scrollable and handles soft-keyboard focus on iOS.
+ */
+export function renderEndpointEditor(
+	container: HTMLElement,
+	endpoint: Endpoint,
+	ctx: EndpointEditorContext,
+): void {
+	let autoDiscoverTimer: number | undefined;
+	const scheduleAutoDiscover = () => {
+		if (autoDiscoverTimer !== undefined) {
+			window.clearTimeout(autoDiscoverTimer);
+			autoDiscoverTimer = undefined;
+		}
+		autoDiscoverTimer = window.setTimeout(async () => {
+			autoDiscoverTimer = undefined;
+			if (!endpoint.apiKey || !endpoint.baseURL) return;
+			try {
+				const models = await discoverModels(endpoint);
+				const now = new Date().toISOString();
+				endpoint.discoveredModels = models;
+				endpoint.discoveredAt = now.slice(0, 19);
+				endpoint.lastTest = { ok: true, at: now, message: `${models.length} models` };
+				await ctx.saveSettings();
+				ctx.onChange();
+			} catch {
+				// Silent — user can still inspect via the Test button.
+			}
+		}, 1500);
+	};
+
+	// Sub-page header: back button + endpoint name as the page title
+	const header = container.createDiv({ cls: 'vk-subpage-header' });
+	const backBtn = header.createEl('button', { cls: 'vk-back-btn' });
+	backBtn.setText('← Endpoints');
+	backBtn.addEventListener('click', () => ctx.onBack());
+
+	new Setting(container).setName(endpoint.name || 'Endpoint').setHeading();
+
+	new Setting(container).setName('Name').addText((t) =>
+		t.setValue(endpoint.name).onChange((v) => {
+			endpoint.name = v.trim() || endpoint.id;
+			void ctx.saveSettings();
+		}),
+	);
+
+	new Setting(container)
+		.setName('Base URL')
+		.setDesc('Include /v1 (or equivalent). No /chat/completions.')
+		.addText((t) =>
+			t
+				.setPlaceholder('https://api.openai.com/v1')
+				.setValue(endpoint.baseURL)
+				.onChange((v) => {
+					endpoint.baseURL = v.trim();
+					refreshKeyHint();
+					void ctx.saveSettings();
+				}),
+		);
+
+	let apiKeyInput: HTMLInputElement | undefined;
+	new Setting(container)
+		.setName('API key')
+		.addText((t) => {
+			apiKeyInput = t.inputEl;
+			apiKeyInput.type = 'password';
+			apiKeyInput.autocomplete = 'off';
+			t.setValue(endpoint.apiKey).onChange((v) => {
+				endpoint.apiKey = v.trim();
+				refreshKeyHint();
+				void ctx.saveSettings();
+				scheduleAutoDiscover();
+			});
+		})
+		.addExtraButton((btn) =>
+			btn
+				.setIcon('eye')
+				.setTooltip('Show / hide API key')
+				.onClick(() => {
+					if (!apiKeyInput) return;
+					const showing = apiKeyInput.type === 'text';
+					apiKeyInput.type = showing ? 'password' : 'text';
+					btn.setIcon(showing ? 'eye' : 'eye-off');
+				}),
+		);
+
+	const keyHint = container.createDiv({ cls: 'vk-key-hint' });
+	const refreshKeyHint = () => {
+		keyHint.empty();
+		if (endpoint.apiKey) return;
+		const help = keyHelpFor(endpoint.baseURL);
+		if (!help) return;
+		if ('noKey' in help) {
+			keyHint.addClass('vk-key-hint-info');
+			keyHint.removeClass('vk-key-hint-link');
+			keyHint.setText('No API key needed for local endpoints.');
+			return;
+		}
+		keyHint.removeClass('vk-key-hint-info');
+		keyHint.addClass('vk-key-hint-link');
+		keyHint.createSpan({ text: 'Get a key at ' });
+		const link = keyHint.createEl('a', { href: help.url, text: help.linkText });
+		link.target = '_blank';
+	};
+	refreshKeyHint();
+
+	// Test connection row
+	const testSetting = new Setting(container)
+		.setName('Test connection')
+		.setDesc('Probes /models. Tells you whether the URL + key work.');
+
+	const statusEl = testSetting.controlEl.createSpan({ cls: 'vk-test-status' });
+	if (endpoint.lastTest) {
+		const t = endpoint.lastTest;
+		statusEl.setText(`${t.ok ? '✓' : '✗'} ${t.message ?? (t.ok ? 'OK' : 'failed')}`);
+		statusEl.addClass(t.ok ? 'vk-test-ok' : 'vk-test-bad');
+	}
+
+	testSetting.addButton((btn) =>
+		btn.setButtonText('Test').onClick(async () => {
+			btn.setButtonText('Testing…').setDisabled(true);
+			statusEl.setText('');
+			statusEl.removeClass('vk-test-ok', 'vk-test-bad');
+			try {
+				const models = await discoverModels(endpoint);
+				const msg = `${models.length} models`;
+				statusEl.setText(`✓ ${msg}`);
+				statusEl.addClass('vk-test-ok');
+				endpoint.lastTest = { ok: true, at: new Date().toISOString(), message: msg };
+			} catch (e) {
+				const label = testFailureLabel(e as Error);
+				statusEl.setText(label);
+				statusEl.addClass('vk-test-bad');
+				endpoint.lastTest = {
+					ok: false,
+					at: new Date().toISOString(),
+					message: label.replace(/^✗\s*/, ''),
+				};
+			} finally {
+				await ctx.saveSettings();
+				btn.setButtonText('Test').setDisabled(false);
+			}
+		}),
+	);
+
+	// Models row — count + Refresh
+	const discoveredCount = endpoint.discoveredModels?.length ?? 0;
+	const summary = endpoint.discoveredAt
+		? `${discoveredCount} discovered · ${describeFreshness(endpoint.discoveredAt)}`
+		: 'No models discovered yet';
+
+	new Setting(container)
+		.setName('Models')
+		.setDesc(summary)
+		.addButton((btn) =>
+			btn
+				.setIcon('refresh-cw')
+				.setTooltip('Refresh model list')
+				.onClick(async () => {
+					btn.setDisabled(true);
+					try {
+						const models = await discoverModels(endpoint);
+						const now = new Date().toISOString();
+						endpoint.discoveredModels = models;
+						endpoint.discoveredAt = now.slice(0, 19);
+						endpoint.lastTest = { ok: true, at: now, message: `${models.length} models` };
+						await ctx.saveSettings();
+						new Notice(`Refreshed · ${models.length} models`);
+						ctx.onChange();
+					} catch (e) {
+						const label = testFailureLabel(e as Error);
+						endpoint.lastTest = {
+							ok: false,
+							at: new Date().toISOString(),
+							message: label.replace(/^✗\s*/, ''),
+						};
+						await ctx.saveSettings();
+						new Notice(`Refresh failed: ${(e as Error).message.slice(0, 100)}`);
+						btn.setDisabled(false);
+					}
+				}),
+		);
+
+	// Manual model list — collapsible
+	const manualCount = endpoint.models?.length ?? 0;
+	const manualDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
+	const manualSummary = manualDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
+	manualSummary.setText(`Manual model list${manualCount ? ` (${manualCount})` : ''}`);
+	const manualBody = manualDetails.createDiv({ cls: 'vk-endpoint-section-body' });
+	manualBody.createDiv({
+		cls: 'setting-item-description',
+		text: 'One slug per line. Use when /models is unavailable or to pin a curated subset.',
+	});
+	const manualTextarea = manualBody.createEl('textarea', { cls: 'vk-settings-textarea' });
+	manualTextarea.rows = 6;
+	manualTextarea.value = (endpoint.models ?? []).join('\n');
+	manualTextarea.addEventListener('input', () => {
+		const list = manualTextarea.value
+			.split(/[\n,]/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		endpoint.models = list.length ? list : undefined;
+		void ctx.saveSettings();
+	});
+
+	// Advanced — collapsible (headers)
+	const advDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
+	const advSummary = advDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
+	advSummary.setText('Advanced');
+	const advBody = advDetails.createDiv({ cls: 'vk-endpoint-section-body' });
+	advBody.createDiv({
+		cls: 'setting-item-description',
+		text: 'Custom request headers, one per line as "Key: value". For non-standard auth or routing.',
+	});
+	const advTextarea = advBody.createEl('textarea', { cls: 'vk-settings-textarea' });
+	advTextarea.rows = 4;
+	advTextarea.value = Object.entries(endpoint.headers ?? {})
+		.map(([k, v]) => `${k}: ${v}`)
+		.join('\n');
+	advTextarea.addEventListener('input', () => {
+		const headers: Record<string, string> = {};
+		for (const line of advTextarea.value.split('\n')) {
+			const idx = line.indexOf(':');
+			if (idx < 1) continue;
+			const k = line.slice(0, idx).trim();
+			const v = line.slice(idx + 1).trim();
+			if (k && v) headers[k] = v;
+		}
+		endpoint.headers = Object.keys(headers).length ? headers : undefined;
+		void ctx.saveSettings();
+	});
+
+	// Delete (two-click confirm)
+	const deleteContainer = container.createDiv({ cls: 'vk-subpage-footer' });
+	const deleteBtn = deleteContainer.createEl('button', { cls: 'mod-warning', text: 'Delete endpoint' });
+	let confirming = false;
+	let resetTimer: number | undefined;
+	deleteBtn.addEventListener('click', () => {
+		if (!confirming) {
+			confirming = true;
+			deleteBtn.setText('Click again to confirm');
+			resetTimer = window.setTimeout(() => {
+				confirming = false;
+				deleteBtn.setText('Delete endpoint');
+			}, 3000);
+			return;
+		}
+		if (resetTimer) window.clearTimeout(resetTimer);
+		ctx.onDelete();
+	});
+}
+
+type KeyHelp = { url: string; linkText: string } | { noKey: true };
+
+function keyHelpFor(baseURL: string): KeyHelp | null {
+	const url = baseURL.toLowerCase();
+	if (url.includes('openrouter.ai')) return { url: 'https://openrouter.ai/keys', linkText: 'openrouter.ai/keys' };
+	if (url.includes('api.openai.com')) return { url: 'https://platform.openai.com/api-keys', linkText: 'platform.openai.com/api-keys' };
+	if (url.includes('api.anthropic.com')) return { url: 'https://console.anthropic.com/settings/keys', linkText: 'console.anthropic.com/settings/keys' };
+	if (url.includes('localhost') || url.includes('127.0.0.1') || url.includes('0.0.0.0')) return { noKey: true };
+	return null;
+}
+
+function testFailureLabel(err: Error): string {
+	const msg = err.message || '';
+	if (msg.includes('401')) return '✗ Bad API key (401)';
+	if (msg.includes('403')) return '✗ Forbidden (403)';
+	if (msg.includes('404')) return '✗ Wrong URL (404)';
+	if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('ECONNREFUSED'))
+		return "✗ Couldn't reach the server";
+	return `✗ ${msg.slice(0, 80)}`;
+}
+
+function describeFreshness(iso: string): string {
+	const then = new Date(iso).getTime();
+	if (!Number.isFinite(then)) return iso.slice(0, 10);
+	const minutes = Math.floor((Date.now() - then) / 60_000);
+	if (minutes < 1) return 'just now';
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days === 1) return 'yesterday';
+	if (days < 30) return `${days}d ago`;
+	return iso.slice(0, 10);
+}

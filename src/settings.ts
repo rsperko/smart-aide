@@ -2,7 +2,7 @@ import { App, PluginSettingTab, Setting } from 'obsidian';
 import { DEFAULT_MODEL, DEFAULT_MODEL_LIST, friendlyModelName } from './models';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
 import { ModelPickerModal } from './picker-models';
-import { EndpointEditModal } from './modal-endpoint';
+import { renderEndpointEditor } from './endpoint-editor';
 import { AddEndpointModal, EndpointTemplate } from './modal-add-endpoint';
 import type SmartAidePlugin from './main';
 
@@ -170,6 +170,8 @@ function pickReplacementModelRef(settings: SmartAideSettings, removedId: string)
 }
 
 export class SmartAideSettingsTab extends PluginSettingTab {
+	private editingEndpointId: string | null = null;
+
 	constructor(app: App, private plugin: SmartAidePlugin) {
 		super(app, plugin);
 	}
@@ -177,6 +179,39 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		if (this.editingEndpointId !== null) {
+			const endpoint = findEndpoint(this.plugin.settings, this.editingEndpointId);
+			if (!endpoint) {
+				this.editingEndpointId = null;
+				this.display();
+				return;
+			}
+			renderEndpointEditor(containerEl, endpoint, {
+				app: this.app,
+				saveSettings: () => this.plugin.saveSettings(),
+				onChange: () => this.display(),
+				onBack: () => {
+					this.editingEndpointId = null;
+					this.display();
+				},
+				onDelete: async () => {
+					if (this.plugin.settings.endpoints.length <= 1) return;
+					const removedId = endpoint.id;
+					this.plugin.settings.endpoints = this.plugin.settings.endpoints.filter((e) => e !== endpoint);
+					if (this.plugin.settings.defaultModelRef.endpointId === removedId) {
+						this.plugin.settings.defaultModelRef = pickReplacementModelRef(this.plugin.settings, removedId);
+					}
+					if (this.plugin.settings.titleModelRef.endpointId === removedId) {
+						this.plugin.settings.titleModelRef = this.plugin.settings.defaultModelRef;
+					}
+					await this.plugin.saveSettings();
+					this.editingEndpointId = null;
+					this.display();
+				},
+			});
+			return;
+		}
 
 		this.renderEndpointsSection(containerEl);
 		this.renderModelDefaults(containerEl);
@@ -246,27 +281,8 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 	}
 
 	private openEndpointEditor(endpoint: Endpoint): void {
-		new EndpointEditModal(
-			this.app,
-			endpoint,
-			() => void this.plugin.saveSettings(),
-			async () => {
-				if (this.plugin.settings.endpoints.length <= 1) return;
-				const removedId = endpoint.id;
-				this.plugin.settings.endpoints = this.plugin.settings.endpoints.filter((e) => e !== endpoint);
-				if (this.plugin.settings.defaultModelRef.endpointId === removedId) {
-					this.plugin.settings.defaultModelRef = pickReplacementModelRef(this.plugin.settings, removedId);
-				}
-				if (this.plugin.settings.titleModelRef.endpointId === removedId) {
-					this.plugin.settings.titleModelRef = this.plugin.settings.defaultModelRef;
-				}
-				await this.plugin.saveSettings();
-				this.display();
-			},
-		).open();
-
-		// Re-render the settings tab once the modal closes so the row reflects any new state.
-		this.scheduleRedisplayOnNextTick();
+		this.editingEndpointId = endpoint.id;
+		this.display();
 	}
 
 	private openAddEndpointFlow(): void {
@@ -297,11 +313,6 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		}).open();
 	}
 
-	private scheduleRedisplayOnNextTick(): void {
-		// Modal.onClose fires before the next event loop tick; defer redraw so the row
-		// reflects the user's last edits and any discovered models.
-		window.setTimeout(() => this.display(), 0);
-	}
 
 	private renderModelDefaults(root: HTMLElement): void {
 		new Setting(root).setName('Models').setHeading();

@@ -568,22 +568,40 @@ details[open] > .vk-tool-summary::before {
 	background: var(--background-modifier-hover);
 }
 
-/* ---------- Endpoint edit modal ---------- */
+/* ---------- Endpoint editor sub-page (replaces the old modal) ---------- */
 
-/* Mobile keyboard occlusion: add scroll room at the bottom of the modal content
-   so the JS-driven scrollFieldToTop can lift the focused input above the keyboard.
-   Outer modal sizing is handled in JS via visualViewport. */
-.vk-endpoint-modal {
-	padding-bottom: 50dvh;
+.vk-subpage-header {
+	margin-bottom: 8px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.vk-back-btn {
+	background: transparent;
+	color: var(--interactive-accent);
+	border: none;
+	padding: 4px 0;
+	font-size: 13px;
+	cursor: pointer;
+	font-family: inherit;
+}
+
+.vk-back-btn:hover {
+	text-decoration: underline;
+}
+
+.vk-subpage-footer {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+	display: flex;
+	justify-content: flex-end;
+}
+
+/* Rename modal — single text input, stays as a modal (small enough that
+   keyboard occlusion isn't an issue on mobile). */
 .vk-rename-modal {
-	padding-bottom: 30dvh;
-}
-
-.vk-endpoint-modal .setting-item {
-	border-top: none;
-	padding: 8px 0;
+	padding-bottom: 8px;
 }
 
 .vk-endpoint-section {
