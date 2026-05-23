@@ -42,14 +42,22 @@ export class RenameChatModal extends Modal {
 			this.inputEl.select();
 		}, 0);
 
-		// Mobile keyboard occlusion fix — scroll the input into view after the keyboard appears.
+		// Mobile keyboard occlusion fix — scroll the input into view once the keyboard settles.
 		contentEl.addEventListener('focusin', (ev) => {
 			const target = ev.target as HTMLElement | null;
 			if (!target || !target.matches('input, textarea')) return;
 			window.setTimeout(() => {
-				target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-			}, 300);
+				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			}, 500);
 		});
+
+		// Top-anchor the outer modal so the keyboard doesn't sit on top of it on iOS.
+		const modalEl = contentEl.closest('.modal') as HTMLElement | null;
+		if (modalEl) {
+			modalEl.style.maxHeight = '85dvh';
+			modalEl.style.top = '4dvh';
+			modalEl.style.transform = 'translateX(-50%)';
+		}
 	}
 
 	onClose(): void {

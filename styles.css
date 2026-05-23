@@ -570,6 +570,24 @@ details[open] > .vk-tool-summary::before {
 
 /* ---------- Endpoint edit modal ---------- */
 
+/* Mobile keyboard occlusion: bound the scrollable content to the dynamic viewport
+   so it shrinks when the soft keyboard appears, and add bottom padding so the
+   focused field can be scrolled above the keyboard via scrollIntoView. */
+.vk-endpoint-modal,
+.vk-rename-modal {
+	max-height: 80dvh;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+}
+
+.vk-endpoint-modal {
+	padding-bottom: 50dvh;
+}
+
+.vk-rename-modal {
+	padding-bottom: 30dvh;
+}
+
 .vk-endpoint-modal .setting-item {
 	border-top: none;
 	padding: 8px 0;

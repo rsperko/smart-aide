@@ -46,17 +46,33 @@ export class EndpointEditModal extends Modal {
 		this.contentEl.addClass('vk-endpoint-modal');
 		this.render();
 		this.wireKeyboardAwareScroll();
+		this.anchorToTopOfViewport();
+	}
+
+	/**
+	 * Obsidian centers modals vertically using the layout viewport — on iOS that center
+	 * sits behind the soft keyboard. Top-anchor the outer .modal element so its content
+	 * is visible above the keyboard, and bound it to the dynamic viewport height.
+	 */
+	private anchorToTopOfViewport(): void {
+		const modalEl = this.contentEl.closest('.modal') as HTMLElement | null;
+		if (!modalEl) return;
+		modalEl.style.maxHeight = '85dvh';
+		modalEl.style.top = '4dvh';
+		modalEl.style.transform = 'translateX(-50%)';
 	}
 
 	private wireKeyboardAwareScroll(): void {
-		// On mobile (iOS in particular), the soft keyboard covers inputs near the bottom of a modal.
-		// When a field gets focus, wait for the viewport to shrink, then bring the field into view.
+		// On mobile (iOS), the soft keyboard hides the bottom of the modal. CSS handles the
+		// outer sizing via dvh + scroll padding; this brings the focused field to the top
+		// of the visible scroll area so it's never hidden.
 		this.contentEl.addEventListener('focusin', (ev) => {
 			const target = ev.target as HTMLElement | null;
 			if (!target || !target.matches('input, textarea')) return;
+			// Wait for the keyboard to finish animating (iOS ~400-500ms) so layout has settled.
 			window.setTimeout(() => {
-				target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-			}, 300);
+				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			}, 500);
 		});
 	}
 
