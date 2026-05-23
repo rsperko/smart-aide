@@ -404,6 +404,22 @@ Use for creating a new note OR replacing the full contents of an existing one. F
 OBSIDIAN CONVENTION — content format:
 Obsidian renders the filename as the page title (inline title). Do NOT start the note body with \`# <Filename>\` — it'll appear twice. Start with frontmatter (if any), then content using \`##\` for section headings. Smart Aide also strips a leading \`# <Filename>\` line automatically as a safety net.
 
+OBSIDIAN MARKDOWN — use Obsidian's native syntax, not GitHub-flavored equivalents:
+- Internal links: \`[[Note Name]]\` or \`[[Path/To/Note]]\` or \`[[Path/To/Note#Heading]]\` or \`[[Note|alias text]]\`. Use wikilinks, NOT \`[text](path.md)\` markdown links. Wikilinks resolve across folders and follow renames.
+- Embed another note inline: \`![[Other Note]]\` or \`![[Other Note#Section]]\`. Only when the user asks to embed/include another note's content.
+- Tags: inline \`#tag-name\` (kebab-case, no spaces, no punctuation) anywhere in the body. In frontmatter, use a YAML list: \`tags: [a, b]\` or a YAML block list. Don't quote tags or split them on spaces.
+- Callouts: \`> [!note]\`, \`> [!tip]\`, \`> [!warning]\`, \`> [!info]\`, \`> [!quote]\`, \`> [!example]\`. First line is \`> [!type] Optional Title\`; following lines start with \`> \`. Do NOT write \`> **Note:**\` — that's a plain blockquote, not a callout.
+- Highlight: \`==highlighted text==\`. Use sparingly, like a yellow highlighter in a book.
+- Private comments (won't render in preview): \`%%comment text%%\` — editor-only notes the user sees but a reader of an export won't.
+- Frontmatter: YAML between \`---\` fences at the very top, before any content. Common keys: \`tags\`, \`aliases\`, \`cssclass\`, \`date\`, plus any user-defined Dataview fields. Quote values that contain colons or hashes.
+- Task lists: \`- [ ]\` and \`- [x]\` (lowercase x). Tab-indent for nesting.
+
+OBSIDIAN MARKDOWN — worked examples:
+- "link to my ProjectX note" -> body contains \`[[ProjectX]]\` (NOT \`[ProjectX](ProjectX.md)\`)
+- "add a warning about pricing" -> \`> [!warning] Pricing\\n> The free tier is rate-limited.\`
+- "tag this #book and #review" -> body contains \`#book #review\`; in frontmatter \`tags: [book, review]\`
+- "summarize the Setup section of Onboarding.md and embed the original below" -> write_note with the summary followed by \`![[Onboarding#Setup]]\`
+
 EXAMPLES:
 - "create a note at Daily/2026-05-21.md with [...]" -> write_note(path, content)
 - "rewrite this section to be clearer" -> read_note first, modify, write_note with full new content
@@ -455,8 +471,10 @@ const appendToNote: Tool = {
 
 Lower friction than write_note when only adding content. The note must exist; use write_note to create.
 
+OBSIDIAN MARKDOWN: same conventions as write_note — use \`[[wikilinks]]\` not \`[md](links)\`, callouts as \`> [!note]\` not \`> **Note:**\`, inline tags as \`#kebab-case\`. See write_note's description for the full list.
+
 EXAMPLES:
-- "add a TODO at the end of today's daily note" -> append_to_note(path, content)
+- "add a TODO at the end of today's daily note" -> append_to_note(path, "\\n- [ ] follow up with [[Bob]]")
 - "log this insight in my journal" -> append_to_note(journal-path, content)`,
 	parameters: {
 		type: 'object',

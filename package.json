@@ -1,6 +1,6 @@
 {
   "name": "smart-aide",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "AI chat for your Obsidian vault. Tool-mediated search and writes, citation cards, multi-endpoint BYOK.",
   "main": "main.js",
   "scripts": {
