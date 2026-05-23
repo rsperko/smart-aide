@@ -1,8 +1,7 @@
 import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, parseLinktext, setIcon } from 'obsidian';
 import { LOAD_SKILL_NAME, LOAD_SKILL_TOOL_DEF, toolsToOpenAI, TOOLS } from './tools';
-import { runTurn, streamChat } from './provider';
-import { ChatSession, ChatStorage } from './storage';
-import { Skill } from './skills';
+import { runTurn } from './provider';
+import { ChatSession } from './storage';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
@@ -11,30 +10,30 @@ import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
 import { findEndpoint, resolveModelRef } from './settings';
 import {
-	buildResearchHeadline,
-	displayToolName,
 	extractToolCalls,
 	extractToolResults,
-	formatArgsInline,
 	formatTokens,
 	formatUsageTooltip,
-	lineDiff,
 	messageText,
-	researchIcon,
 	safeParse,
 	shouldShowRoleLabel,
-	summarizeToolResult,
-	tryFormatJson,
-	tryParseJSON,
 } from './view-helpers';
+import { ApprovalDecision, requestApproval } from './view-approval';
+import {
+	addCopyButtons,
+	renderCitationCard,
+	renderImageBlock,
+	renderResearchChip,
+	renderToolCallBlock,
+	renderToolResultBlock,
+} from './view-render';
+import { maybeAutoTitle } from './view-autotitle';
 import {
 	AgentMessage,
 	ContentBlock,
-	Entry,
 	ImageBlock,
 	MessageEntry,
 	ModelRef,
-	OpenAIToolCall,
 	Tool,
 	ToolCallBlock,
 	ToolResultBlock,
@@ -674,94 +673,17 @@ export class ChatView extends ItemView {
 		const wrap = this.streamEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-msg-tool-turn' });
 		const body = wrap.createDiv({ cls: 'vk-body' });
 
-		this.renderResearchChip(body, calls, results);
+		renderResearchChip(body, calls, results);
 
 		for (const call of calls) {
 			const result = results.find((r) => r.toolCallId === call.id);
 			if (!result || result.isError) continue;
-			if (call.name === 'read_note') this.renderCitationCard(body, result);
+			if (call.name === 'read_note') renderCitationCard(body, result);
 		}
 
 		// Per-turn token info lives in a title tooltip on the wrapper, not a footer.
 		const usage = this.turnUsageByEntry.get(entry.id);
 		if (usage) wrap.title = formatUsageTooltip(usage);
-	}
-
-	private renderResearchChip(
-		parent: HTMLElement,
-		calls: ToolCallBlock[],
-		results: ToolResultBlock[],
-	): void {
-		const chip = parent.createEl('details', { cls: 'vk-research' });
-		const summary = chip.createEl('summary', { cls: 'vk-research-summary' });
-		summary.createSpan({ cls: 'vk-research-icon', text: researchIcon(calls) });
-		summary.createSpan({ cls: 'vk-research-headline', text: buildResearchHeadline(calls, results) });
-
-		const detail = chip.createDiv({ cls: 'vk-research-detail' });
-		for (const call of calls) {
-			const row = detail.createDiv({ cls: 'vk-research-row' });
-			row.createSpan({
-				cls: 'vk-research-call',
-				text: `${call.name}${formatArgsInline(call.arguments)}`,
-			});
-			const result = results.find((r) => r.toolCallId === call.id);
-			if (result) {
-				const cls = result.isError ? 'vk-research-result vk-research-error' : 'vk-research-result';
-				row.createSpan({ cls, text: `→ ${summarizeToolResult(result.content)}` });
-			}
-		}
-	}
-
-	private renderCitationCard(parent: HTMLElement, result: ToolResultBlock): void {
-		const parsed = tryParseJSON(result.content);
-		if (!parsed || typeof parsed.path !== 'string') return;
-
-		const path = parsed.path;
-		const startLine = typeof parsed.startLine === 'number' ? parsed.startLine : undefined;
-		const endLine = typeof parsed.endLine === 'number' ? parsed.endLine : undefined;
-		const content = typeof parsed.content === 'string' ? parsed.content : '';
-
-		const headingMatch = content.match(/^\s*#{1,6}\s+(.+?)\s*$/m);
-		const heading = headingMatch ? headingMatch[1].trim() : undefined;
-
-		const basename = path.replace(/\.md$/, '');
-		const href = heading ? `${basename}#${heading}` : basename;
-
-		const snippetSource = headingMatch
-			? content.slice(headingMatch.index! + headingMatch[0].length)
-			: content;
-		const snippetLine = snippetSource
-			.split('\n')
-			.map((l) => l.trim())
-			.find((l) => l.length > 0 && !l.startsWith('#'));
-		const snippet = snippetLine
-			? snippetLine.replace(/^>\s*/, '').replace(/^[*\-+]\s*/, '').replace(/^\d+\.\s*/, '')
-			: '';
-
-		const card = parent.createEl('a', {
-			cls: 'vk-citation internal-link',
-			href: '#',
-			attr: { 'data-href': href },
-		});
-
-		const top = card.createDiv({ cls: 'vk-citation-top' });
-		top.createSpan({ cls: 'vk-citation-icon', text: '📄' });
-
-		const titleEl = top.createSpan({ cls: 'vk-citation-title' });
-		titleEl.createSpan({ cls: 'vk-citation-path', text: basename });
-		if (heading) {
-			titleEl.createSpan({ cls: 'vk-citation-sep', text: ' › ' });
-			titleEl.createSpan({ cls: 'vk-citation-heading', text: heading });
-		}
-
-		if (startLine !== undefined && endLine !== undefined) {
-			top.createSpan({ cls: 'vk-citation-lines', text: `L${startLine}–${endLine}` });
-		}
-
-		if (snippet) {
-			const snip = card.createDiv({ cls: 'vk-citation-snippet' });
-			snip.setText(snippet.length > 140 ? snippet.slice(0, 137) + '…' : snippet);
-		}
 	}
 
 	private renderEmptyState(): void {
@@ -787,9 +709,9 @@ export class ChatView extends ItemView {
 		} else {
 			for (const block of m.content) {
 				if (block.type === 'text') this.renderText(body, block.text, renderAsMarkdown);
-				else if (block.type === 'toolCall') this.renderToolCallBlock(body, block);
-				else if (block.type === 'toolResult') this.renderToolResultBlock(body, block);
-				else if (block.type === 'image') this.renderImageBlock(body, block);
+				else if (block.type === 'toolCall') renderToolCallBlock(body, block);
+				else if (block.type === 'toolResult') renderToolResultBlock(body, block);
+				else if (block.type === 'image') renderImageBlock(this.app, body, block);
 			}
 		}
 
@@ -822,38 +744,6 @@ export class ChatView extends ItemView {
 		void MarkdownRenderer.render(this.app, text, div, '', child).then(() => {
 			addCopyButtons(div);
 		});
-	}
-
-	private renderImageBlock(parent: HTMLElement, block: ImageBlock): void {
-		const wrap = parent.createDiv({ cls: 'vk-image-block' });
-		const file = this.app.vault.getFileByPath(block.path);
-		if (!file) {
-			wrap.createDiv({ cls: 'vk-image-missing', text: `[image not found: ${block.path}]` });
-			return;
-		}
-		const img = wrap.createEl('img', { cls: 'vk-image' });
-		img.src = this.app.vault.getResourcePath(file);
-		img.alt = block.path;
-		wrap.createDiv({ cls: 'vk-image-caption', text: block.path.split('/').pop() ?? block.path });
-	}
-
-	private renderToolCallBlock(parent: HTMLElement, block: ToolCallBlock): void {
-		const card = parent.createEl('details', { cls: 'vk-tool-call' });
-		const summary = card.createEl('summary', { cls: 'vk-tool-summary' });
-		summary.setText(`🔧 ${block.name}${formatArgsInline(block.arguments)}`);
-		const argsEl = card.createEl('pre', { cls: 'vk-tool-args' });
-		argsEl.setText(JSON.stringify(block.arguments, null, 2));
-	}
-
-	private renderToolResultBlock(parent: HTMLElement, block: ToolResultBlock): void {
-		const card = parent.createEl('details', {
-			cls: block.isError ? 'vk-tool-result vk-tool-error' : 'vk-tool-result',
-		});
-		const summary = card.createEl('summary', { cls: 'vk-tool-summary' });
-		summary.setText(block.isError ? `↳ error` : `↳ ${summarizeToolResult(block.content)}`);
-		const pre = card.createEl('pre', { cls: 'vk-tool-result-body' });
-		const text = tryFormatJson(block.content);
-		pre.setText(text.length > 2000 ? text.slice(0, 2000) + '\n…(truncated)' : text);
 	}
 
 	private scrollToBottom(): void {
@@ -1063,7 +953,14 @@ export class ChatView extends ItemView {
 		this.rerenderStream();
 
 		await this.runAssistantLoop();
-		void this.maybeAutoTitle();
+		if (this.session) {
+			void maybeAutoTitle({
+				session: this.session,
+				settings: this.plugin.settings,
+				storage: this.plugin.storage,
+				onTitled: () => this.updateTabTitle(),
+			});
+		}
 	}
 
 	private composeSystemPrompt(): string {
@@ -1320,7 +1217,14 @@ export class ChatView extends ItemView {
 				// Honor turn-scoped grant for writes only — deletes always confirm
 				decision = { approved: true, scope: 'inherited-turn' };
 			} else {
-				decision = await this.requestApproval(tool, preview, this.abort?.signal);
+				decision = await requestApproval(
+					this,
+					this.streamEl,
+					() => this.scrollToBottom(),
+					tool,
+					preview,
+					this.abort?.signal,
+				);
 			}
 
 			// Persist the decision as a custom entry (audit trail)
@@ -1345,150 +1249,6 @@ export class ChatView extends ItemView {
 		}
 	}
 
-	private requestApproval(
-		tool: Tool,
-		preview: { summary: string; diff?: { kind: 'overwrite' | 'append' | 'delete'; oldContent?: string; newContent?: string; path: string } },
-		abortSignal?: AbortSignal,
-	): Promise<ApprovalDecision> {
-		return new Promise((resolve) => {
-			const card = this.streamEl.createDiv({ cls: 'vk-approval vk-approval-pending' });
-
-			const header = card.createDiv({ cls: 'vk-approval-header' });
-			header.createSpan({ cls: 'vk-approval-lock', text: tool.risk === 'delete' ? '🗑' : '✎' });
-			header.createSpan({ cls: 'vk-approval-summary', text: preview.summary });
-
-			if (preview.diff) {
-				const diffEl = card.createDiv({ cls: 'vk-approval-diff' });
-				renderDiff(diffEl, preview.diff);
-			}
-
-			const actions = card.createDiv({ cls: 'vk-approval-actions' });
-			const rejectBtn = actions.createEl('button', { cls: 'vk-approval-btn vk-approval-reject', text: 'Reject' });
-			const approveBtn = actions.createEl('button', { cls: 'vk-approval-btn vk-approval-approve', text: 'Approve' });
-			let approveAllBtn: HTMLButtonElement | null = null;
-			if (tool.risk === 'write') {
-				approveAllBtn = actions.createEl('button', { cls: 'vk-approval-btn vk-approval-approve-all', text: 'Approve all writes in this turn' });
-			}
-
-			let settled = false;
-			let abortListener: (() => void) | null = null;
-			const decide = (decision: ApprovalDecision, cancelled = false) => {
-				if (settled) return;
-				settled = true;
-				if (abortListener && abortSignal) abortSignal.removeEventListener('abort', abortListener);
-				card.removeClass('vk-approval-pending');
-				card.addClass(
-					cancelled
-						? 'vk-approval-decided-cancelled'
-						: decision.approved
-							? 'vk-approval-decided-approved'
-							: 'vk-approval-decided-rejected',
-				);
-				actions.empty();
-				const label = cancelled
-					? '⊘ Cancelled — stopped'
-					: decision.approved
-						? `✓ Approved${decision.scope === 'turn' ? ' (all in turn)' : ''}`
-						: '✗ Rejected';
-				actions.createSpan({ cls: 'vk-approval-decision', text: label });
-				resolve(decision);
-				this.scrollToBottom();
-			};
-
-			this.registerDomEvent(rejectBtn, 'click', () => decide({ approved: false, reason: 'User clicked Reject.' }));
-			this.registerDomEvent(approveBtn, 'click', () => decide({ approved: true }));
-			if (approveAllBtn) {
-				this.registerDomEvent(approveAllBtn, 'click', () => decide({ approved: true, scope: 'turn' }));
-			}
-
-			if (abortSignal) {
-				if (abortSignal.aborted) {
-					decide({ approved: false, reason: 'Stopped by user.' }, true);
-				} else {
-					abortListener = () => decide({ approved: false, reason: 'Stopped by user.' }, true);
-					abortSignal.addEventListener('abort', abortListener);
-				}
-			}
-
-			// The card uses position: sticky so it stays at the bottom of the chat scroll
-			// area until the user decides. Notice nudges attention in case the chat panel
-			// is scrolled or in the background.
-			const label = preview.summary;
-			new Notice(`Approval needed: ${label}`, 4000);
-		});
-	}
-
-	/**
-	 * After the first user/assistant exchange completes, generate a 4-8 word title
-	 * via a cheap call and persist it as a session_info entry. Idempotent — only
-	 * runs when no session_info entry exists yet.
-	 */
-	private async maybeAutoTitle(): Promise<void> {
-		if (!this.session) return;
-		// Already titled?
-		if (this.session.entries.some((e) => e.type === 'session_info')) return;
-		// Need at least one user + one assistant
-		const hasUser = this.session.entries.some(
-			(e) => e.type === 'message' && e.message.role === 'user',
-		);
-		const hasAssistant = this.session.entries.some(
-			(e) => e.type === 'message' && e.message.role === 'assistant',
-		);
-		if (!hasUser || !hasAssistant) return;
-		const { endpoint: titleEndpoint, slug: titleSlug } = resolveModelRef(
-			this.plugin.settings,
-			this.plugin.settings.titleModelRef,
-		);
-		if (!titleEndpoint.apiKey) return;
-
-		try {
-			const firstUser = this.session.entries.find(
-				(e) => e.type === 'message' && e.message.role === 'user',
-			) as MessageEntry | undefined;
-			const firstAsst = this.session.entries.find(
-				(e) => e.type === 'message' && e.message.role === 'assistant',
-			) as MessageEntry | undefined;
-			if (!firstUser || !firstAsst) return;
-
-			const userText = messageText(firstUser.message, ' ');
-			const asstText = messageText(firstAsst.message, ' ');
-
-			let title = '';
-			for await (const ev of streamChat({
-				endpoint: titleEndpoint,
-				model: titleSlug,
-				messages: [
-					{
-						role: 'system',
-						content: [
-							'Title this conversation in 4-8 words. Reply with ONLY the title — no quotes, no punctuation.',
-							'Style: topic-first, descriptive, not "Discussion about X".',
-							'Examples: "Finding the weekly review template", "Recipes with miso paste", "Daily note for May 22".',
-						].join('\n'),
-					},
-					{ role: 'user', content: `User: ${userText.slice(0, 400)}\n\nAssistant: ${asstText.slice(0, 400)}` },
-				],
-			})) {
-				if (ev.type === 'text-delta' && ev.textDelta) title += ev.textDelta;
-				if (ev.type === 'error') return;
-			}
-			title = title.trim().replace(/^["']|["']$/g, '').replace(/\.$/, '');
-			if (!title) return;
-
-			const entry = this.plugin.storage.makeTitleEntry(title, this.session.leafId);
-			await this.plugin.storage.appendEntry(this.session, entry);
-			this.session.title = title;
-			this.updateTabTitle();
-		} catch (e) {
-			console.warn('smart-aide: auto-title failed', e);
-		}
-	}
-}
-
-interface ApprovalDecision {
-	approved: boolean;
-	scope?: 'turn' | 'inherited-turn';
-	reason?: string;
 }
 
 interface TurnUsage {
@@ -1496,74 +1256,3 @@ interface TurnUsage {
 	completionTokens: number;
 	cachedTokens?: number;
 }
-
-/**
- * Walk a rendered markdown subtree and attach a copy button to each <pre>.
- * Idempotent — won't double-add. Called after MarkdownRenderer.render completes.
- */
-function addCopyButtons(container: HTMLElement): void {
-	const pres = container.querySelectorAll('pre');
-	pres.forEach((pre) => {
-		if (pre.querySelector('.vk-copy-btn')) return;
-		pre.addClass('vk-has-copy');
-		const btn = pre.createEl('button', { cls: 'vk-copy-btn' });
-		setIcon(btn, 'copy');
-		btn.setAttribute('aria-label', 'Copy');
-		btn.title = 'Copy';
-		btn.addEventListener('click', async (ev) => {
-			ev.stopPropagation();
-			ev.preventDefault();
-			const code = pre.querySelector('code');
-			const text = code ? code.textContent : pre.textContent;
-			if (!text) return;
-			try {
-				await navigator.clipboard.writeText(text);
-				new Notice('Copied', 1200);
-				const original = btn.getAttribute('aria-label') || 'Copy';
-				setIcon(btn, 'check');
-				window.setTimeout(() => {
-					setIcon(btn, 'copy');
-					btn.setAttribute('aria-label', original);
-				}, 900);
-			} catch {
-				new Notice('Copy failed');
-			}
-		});
-	});
-}
-
-function renderDiff(parent: HTMLElement, diff: { kind: 'overwrite' | 'append' | 'delete'; oldContent?: string; newContent?: string; path: string }): void {
-	if (diff.kind === 'delete') {
-		const note = parent.createDiv({ cls: 'vk-diff-note', text: 'This will move the file to trash.' });
-		if (diff.oldContent !== undefined) {
-			const pre = parent.createEl('pre', { cls: 'vk-diff-preview vk-diff-remove' });
-			const preview = diff.oldContent.length > 800 ? diff.oldContent.slice(0, 800) + '\n…(truncated)' : diff.oldContent;
-			pre.setText(preview);
-		}
-		return;
-	}
-	if (diff.kind === 'append') {
-		parent.createDiv({ cls: 'vk-diff-note', text: 'Append to end of file:' });
-		const pre = parent.createEl('pre', { cls: 'vk-diff-preview vk-diff-add' });
-		pre.setText(diff.newContent ?? '');
-		return;
-	}
-	// overwrite — show line-by-line diff
-	const oldLines = (diff.oldContent ?? '').split('\n');
-	const newLines = (diff.newContent ?? '').split('\n');
-	const ops = lineDiff(oldLines, newLines);
-	const pre = parent.createEl('div', { cls: 'vk-diff-lines' });
-	for (const op of ops) {
-		const cls =
-			op.type === 'add'
-				? 'vk-diff-line vk-diff-add'
-				: op.type === 'remove'
-					? 'vk-diff-line vk-diff-remove'
-					: 'vk-diff-line vk-diff-context';
-		const lineEl = pre.createDiv({ cls });
-		const prefix = op.type === 'add' ? '+ ' : op.type === 'remove' ? '- ' : '  ';
-		lineEl.setText(prefix + op.line);
-	}
-}
-
-// Pure helpers live in ./view-helpers so they can be unit-tested without a DOM.
