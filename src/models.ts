@@ -65,7 +65,13 @@ const FRIENDLY_NAMES: Record<string, string> = {
 
 export function friendlyModelName(slug: string): string {
 	if (FRIENDLY_NAMES[slug]) return FRIENDLY_NAMES[slug];
-	// Fallback: take the segment after the last slash, title-case the words.
+	// Slugs from direct provider endpoints (OpenAI, Anthropic compat) have no `provider/` prefix —
+	// try common prefixes so they pick up the same friendly names as their OpenRouter form.
+	if (!slug.includes('/')) {
+		for (const prefix of ['anthropic/', 'openai/', 'google/']) {
+			if (FRIENDLY_NAMES[prefix + slug]) return FRIENDLY_NAMES[prefix + slug];
+		}
+	}
 	const tail = slug.includes('/') ? slug.slice(slug.lastIndexOf('/') + 1) : slug;
 	return tail
 		.split(/[-_]/)
@@ -93,11 +99,9 @@ export const DEFAULT_MODEL_LIST: string[] = [
 	'anthropic/claude-sonnet-4.6',
 	'anthropic/claude-opus-4.7',
 	'openai/gpt-5.5',
-	'openai/gpt-5.5-pro',
 	'google/gemini-3.5-flash',
 	'google/gemini-3.1-pro-preview',
 	'qwen/qwen3.6-plus',
-	'qwen/qwen3.6-flash',
 	'deepseek/deepseek-v4-flash',
 ];
 

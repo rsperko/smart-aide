@@ -3,6 +3,8 @@ import { discoverModels } from './provider';
 import { Endpoint } from './types';
 
 export class EndpointEditModal extends Modal {
+	private autoDiscoverTimer: number | undefined;
+
 	constructor(
 		app: App,
 		private endpoint: Endpoint,
@@ -10,6 +12,33 @@ export class EndpointEditModal extends Modal {
 		private onDelete: () => void,
 	) {
 		super(app);
+	}
+
+	/**
+	 * Debounced auto-discovery — fires shortly after the user finishes pasting/typing an API key.
+	 * Silent on failure so we don't nag mid-typing; explicit Test/Refresh buttons surface errors.
+	 */
+	private scheduleAutoDiscover(): void {
+		if (this.autoDiscoverTimer !== undefined) {
+			window.clearTimeout(this.autoDiscoverTimer);
+			this.autoDiscoverTimer = undefined;
+		}
+		this.autoDiscoverTimer = window.setTimeout(async () => {
+			this.autoDiscoverTimer = undefined;
+			if (!this.endpoint.apiKey || !this.endpoint.baseURL) return;
+			try {
+				const models = await discoverModels(this.endpoint);
+				const now = new Date().toISOString();
+				this.endpoint.discoveredModels = models;
+				this.endpoint.discoveredAt = now.slice(0, 19);
+				this.endpoint.lastTest = { ok: true, at: now, message: `${models.length} models` };
+				this.onChange();
+				// Re-render so the Models row shows the new count without forcing a reopen.
+				this.render();
+			} catch {
+				// Silent — user can still inspect via the Test button.
+			}
+		}, 1500);
 	}
 
 	onOpen(): void {
@@ -32,6 +61,10 @@ export class EndpointEditModal extends Modal {
 	}
 
 	onClose(): void {
+		if (this.autoDiscoverTimer !== undefined) {
+			window.clearTimeout(this.autoDiscoverTimer);
+			this.autoDiscoverTimer = undefined;
+		}
 		this.contentEl.empty();
 		this.onChange();
 	}
@@ -93,6 +126,7 @@ export class EndpointEditModal extends Modal {
 					this.endpoint.apiKey = v.trim();
 					refreshKeyHint();
 					this.onChange();
+					this.scheduleAutoDiscover();
 				});
 			})
 			.addExtraButton((btn) =>

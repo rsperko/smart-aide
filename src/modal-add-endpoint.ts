@@ -4,13 +4,35 @@ export interface EndpointTemplate {
 	name: string;
 	baseURL: string;
 	hint?: string;
+	/** Curated starter model slugs in the format this endpoint expects. */
+	models?: string[];
 }
 
 export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
-	{ name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', hint: 'Multi-provider gateway' },
-	{ name: 'OpenAI', baseURL: 'https://api.openai.com/v1', hint: 'GPT models, direct' },
-	{ name: 'Anthropic (compat)', baseURL: 'https://api.anthropic.com/v1', hint: 'Claude via OpenAI-compatible endpoint' },
-	{ name: 'Custom', baseURL: '', hint: 'Any OpenAI-compatible endpoint — local server, gateway, anything else' },
+	{
+		name: 'OpenRouter',
+		baseURL: 'https://openrouter.ai/api/v1',
+		hint: 'Multi-provider gateway',
+		// OpenRouter uses the project's DEFAULT_MODEL_LIST when models is undefined —
+		// see defaultOpenRouterEndpoint() in settings.ts.
+	},
+	{
+		name: 'OpenAI',
+		baseURL: 'https://api.openai.com/v1',
+		hint: 'GPT models, direct',
+		models: ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5-mini', 'o3', 'o3-mini'],
+	},
+	{
+		name: 'Anthropic (compat)',
+		baseURL: 'https://api.anthropic.com/v1',
+		hint: 'Claude via OpenAI-compatible endpoint',
+		models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+	},
+	{
+		name: 'Custom',
+		baseURL: '',
+		hint: 'Any OpenAI-compatible endpoint — local server, gateway, anything else',
+	},
 ];
 
 export class AddEndpointModal extends Modal {
@@ -26,7 +48,7 @@ export class AddEndpointModal extends Modal {
 
 		contentEl.createDiv({
 			cls: 'setting-item-description',
-			text: 'Pick a provider to prefill the base URL. You can rename and adjust afterwards.',
+			text: 'Pick a provider to prefill the base URL and a starter set of models. You can rename and adjust afterwards.',
 		});
 
 		for (const tmpl of ENDPOINT_TEMPLATES) {

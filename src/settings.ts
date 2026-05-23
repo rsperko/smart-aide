@@ -272,12 +272,24 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 	private openAddEndpointFlow(): void {
 		new AddEndpointModal(this.app, async (template: EndpointTemplate) => {
 			const id = newEndpointId(this.plugin.settings.endpoints);
-			const newEndpoint: Endpoint = {
-				id,
-				name: template.name === 'Custom' ? 'New endpoint' : template.name,
-				baseURL: template.baseURL,
-				apiKey: '',
-			};
+			// OpenRouter inherits DEFAULT_MODEL_LIST via defaultOpenRouterEndpoint;
+			// other templates carry their own curated models inline.
+			const isOpenRouterTemplate = template.baseURL.includes('openrouter.ai');
+			const newEndpoint: Endpoint = isOpenRouterTemplate
+				? defaultOpenRouterEndpoint('', undefined)
+				: {
+						id,
+						name: template.name === 'Custom' ? 'New endpoint' : template.name,
+						baseURL: template.baseURL,
+						apiKey: '',
+						...(template.models ? { models: [...template.models] } : {}),
+				  };
+			if (isOpenRouterTemplate) {
+				// defaultOpenRouterEndpoint hardcodes id 'openrouter'; rebind to a unique id
+				// to allow multiple OpenRouter endpoints (e.g., a personal + a work key).
+				newEndpoint.id = id;
+				if (template.name && template.name !== 'OpenRouter') newEndpoint.name = template.name;
+			}
 			this.plugin.settings.endpoints.push(newEndpoint);
 			await this.plugin.saveSettings();
 			this.display();

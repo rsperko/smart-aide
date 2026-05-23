@@ -32,11 +32,14 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 	getItems(): PickerItem[] {
 		const items: PickerItem[] = [];
 		const seen = new Set<string>();
+		const curatedKeys = new Set<string>();
 
 		for (const endpoint of this.endpoints) {
 			const discoveredById = new Map((endpoint.discoveredModels ?? []).map((m) => [m.id, m]));
+			const manualSlugs = endpoint.models ?? [];
+			for (const slug of manualSlugs) curatedKeys.add(`${endpoint.id}::${slug}`);
 			const slugs = new Set<string>([
-				...(endpoint.models ?? []),
+				...manualSlugs,
 				...(endpoint.discoveredModels ?? []).map((m) => m.id),
 			]);
 			for (const slug of slugs) {
@@ -57,11 +60,17 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 			const idx = recentKeys.indexOf(`${item.ref.endpointId}::${item.ref.slug}`);
 			return idx < 0 ? Infinity : idx;
 		};
+		const isCurated = (item: PickerItem) =>
+			curatedKeys.has(`${item.ref.endpointId}::${item.ref.slug}`);
 
+		// Sort priority: recents (preserve recents order) > curated (manual list) > discovered alphabetical.
 		items.sort((a, b) => {
 			const ra = rankRecent(a);
 			const rb = rankRecent(b);
 			if (ra !== rb) return ra - rb;
+			const ca = isCurated(a) ? 0 : 1;
+			const cb = isCurated(b) ? 0 : 1;
+			if (ca !== cb) return ca - cb;
 			return a.friendly.localeCompare(b.friendly);
 		});
 
