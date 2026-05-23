@@ -33,6 +33,7 @@ export class ChatView extends ItemView {
 	private approveAllInTurn = false;
 	private turnUsageByEntry: Map<string, TurnUsage> = new Map();
 	private loadedSkills: string[] = [];
+	private editingFromId: string | null = null;
 
 	// DOM refs
 	private titleBtn!: HTMLButtonElement;
@@ -416,7 +417,17 @@ export class ChatView extends ItemView {
 			return;
 		}
 
-		for (let i = 0; i < messageEntries.length; i++) {
+		// When editing a previous user message, render only the chain UP TO (but not
+		// including) that message. The message being edited and everything that
+		// followed it will be replaced when Send forks; show the user what they're
+		// actually committing to.
+		let endIndex = messageEntries.length;
+		if (this.editingFromId) {
+			const cutIdx = messageEntries.findIndex((e) => e.id === this.editingFromId);
+			if (cutIdx >= 0) endIndex = cutIdx;
+		}
+
+		for (let i = 0; i < endIndex; i++) {
 			const entry = messageEntries[i];
 			const role = entry.message.role;
 
@@ -675,6 +686,11 @@ export class ChatView extends ItemView {
 		this.updateSendState();
 		this.composerEl.focus();
 		this.showEditBanner();
+
+		// Hide the message being edited and everything after it so the chat reflects
+		// the post-fork state. Restored by cancelEdit or by send's rerender.
+		this.editingFromId = parentEntry.id;
+		this.rerenderStream();
 	}
 
 	private showEditBanner(): void {
@@ -703,6 +719,10 @@ export class ChatView extends ItemView {
 		this.autosizeComposer();
 		this.updateSendState();
 		this.removeEditBanner();
+		if (this.editingFromId) {
+			this.editingFromId = null;
+			this.rerenderStream();
+		}
 	}
 
 	private async send(): Promise<void> {
@@ -722,6 +742,7 @@ export class ChatView extends ItemView {
 			delete this.composerEl.dataset.branchFrom;
 			delete this.composerEl.dataset.branchParent;
 			this.removeEditBanner();
+			this.editingFromId = null;
 		} else {
 			parentId = this.session.leafId;
 		}
@@ -939,7 +960,11 @@ export class ChatView extends ItemView {
 			}
 
 			let decision: ApprovalDecision;
-			if (this.approveAllInTurn && tool.risk === 'write') {
+			if (this.plugin.settings.autoApproveWrites && tool.risk === 'write') {
+				// User opted into dangerous mode — writes bypass the approval card.
+				// Delete still requires explicit confirmation regardless.
+				decision = { approved: true, scope: 'inherited-turn' };
+			} else if (this.approveAllInTurn && tool.risk === 'write') {
 				// Honor turn-scoped grant for writes only — deletes always confirm
 				decision = { approved: true, scope: 'inherited-turn' };
 			} else {

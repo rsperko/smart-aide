@@ -12,6 +12,7 @@ export interface SmartAideSettings {
 	titleModelRef: ModelRef;
 	modelRecents: ModelRef[];
 	systemPrompt: string;
+	autoApproveWrites: boolean;
 }
 
 const OPENROUTER_ID = 'openrouter';
@@ -51,6 +52,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
 	modelRecents: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
+	autoApproveWrites: false,
 };
 
 /**
@@ -67,6 +69,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			titleModelRef: (r.titleModelRef as ModelRef) ?? (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.titleModelRef,
 			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
+			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
 		};
 	}
 
@@ -91,6 +94,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		titleModelRef: { endpointId: OPENROUTER_ID, slug: legacyTitle },
 		modelRecents: recents,
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
+		autoApproveWrites: false,
 	};
 }
 
@@ -215,7 +219,25 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		this.renderEndpointsSection(containerEl);
 		this.renderModelDefaults(containerEl);
+		this.renderApprovalSection(containerEl);
 		this.renderSystemPromptSection(containerEl);
+	}
+
+	private renderApprovalSection(root: HTMLElement): void {
+		new Setting(root).setName('Approvals').setHeading();
+
+		new Setting(root)
+			.setName('Auto-approve writes (dangerous)')
+			.setDesc(
+				'Skip the diff approval card for write_note and append_to_note — the model can edit your vault without confirmation. ' +
+				'Deletes still require explicit approval regardless of this setting.',
+			)
+			.addToggle((tg) =>
+				tg.setValue(this.plugin.settings.autoApproveWrites).onChange(async (v) => {
+					this.plugin.settings.autoApproveWrites = v;
+					await this.plugin.saveSettings();
+				}),
+			);
 	}
 
 	private renderEndpointsSection(root: HTMLElement): void {
