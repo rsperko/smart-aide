@@ -52,7 +52,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					const removedId = endpoint.id;
 					this.plugin.settings.endpoints = this.plugin.settings.endpoints.filter((e) => e !== endpoint);
 					if (this.plugin.settings.defaultModelRef.endpointId === removedId) {
-						this.plugin.settings.defaultModelRef = pickReplacementModelRef(this.plugin.settings, removedId);
+						this.plugin.settings.defaultModelRef = pickReplacementModelRef(this.plugin.settings);
 					}
 					if (this.plugin.settings.titleModelRef.endpointId === removedId) {
 						this.plugin.settings.titleModelRef = this.plugin.settings.defaultModelRef;

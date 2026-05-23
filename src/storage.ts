@@ -1,8 +1,8 @@
 import { TFile, TFolder, Vault, normalizePath } from 'obsidian';
 import { arrayBufferToBase64, dataUrlFor } from './image-helpers';
+import { messageText } from './view-helpers';
 import {
 	AgentMessage,
-	ContentBlock,
 	CustomEntry,
 	CustomMessageEntry,
 	Entry,
@@ -289,24 +289,17 @@ export class ChatStorage {
 				}
 			} else {
 				const hasImage = m.content.some((b) => b.type === 'image');
-				if (hasImage) {
-					const parts: OpenAIContentPart[] = [];
-					for (const block of m.content) {
-						if (block.type === 'text') {
-							parts.push({ type: 'text', text: block.text });
-						} else if (block.type === 'image') {
-							const part = await this.imageBlockToPart(block);
-							parts.push(part);
-						}
-					}
-					messages.push({ role: m.role, content: parts });
-				} else {
-					const text = m.content
-						.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-						.map((b) => b.text)
-						.join('');
-					messages.push({ role: m.role, content: text });
+				const parts: OpenAIContentPart[] = [];
+				for (const block of m.content) {
+					if (block.type === 'text') parts.push({ type: 'text', text: block.text });
+					else if (block.type === 'image') parts.push(await this.imageBlockToPart(block));
 				}
+				messages.push({
+					role: m.role,
+					content: hasImage
+						? parts
+						: parts.map((p) => (p as { type: 'text'; text: string }).text).join(''),
+				});
 			}
 		}
 		return messages;
@@ -351,13 +344,7 @@ export function findTitle(entries: Entry[]): string | null {
 export function firstUserPreview(entries: Entry[]): string {
 	for (const e of entries) {
 		if (e.type !== 'message' || e.message.role !== 'user') continue;
-		const content = typeof e.message.content === 'string'
-			? e.message.content
-			: e.message.content
-				.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-				.map((b) => b.text)
-				.join(' ');
-		const flat = content.replace(/\s+/g, ' ').trim();
+		const flat = messageText(e.message, ' ').replace(/\s+/g, ' ').trim();
 		return flat.length > 80 ? flat.slice(0, 77) + '…' : flat;
 	}
 	return '';
@@ -366,13 +353,7 @@ export function firstUserPreview(entries: Entry[]): string {
 export function deriveTitleFromMessages(entries: Entry[]): string | null {
 	for (const e of entries) {
 		if (e.type !== 'message' || e.message.role !== 'user') continue;
-		const content = typeof e.message.content === 'string'
-			? e.message.content
-			: e.message.content
-				.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-				.map((b) => b.text)
-				.join('');
-		const first = content.trim().split('\n')[0];
+		const first = messageText(e.message).trim().split('\n')[0];
 		return first.length > 60 ? first.slice(0, 57) + '…' : first || null;
 	}
 	return null;

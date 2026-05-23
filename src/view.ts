@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, parseLinktext, setIcon } from 'obsidian';
-import { dispatchTool, LOAD_SKILL_NAME, toolsToOpenAI, TOOLS } from './tools';
+import { LOAD_SKILL_NAME, LOAD_SKILL_TOOL_DEF, toolsToOpenAI, TOOLS } from './tools';
 import { runTurn, streamChat } from './provider';
 import { ChatSession, ChatStorage } from './storage';
 import { Skill } from './skills';
@@ -19,6 +19,7 @@ import {
 	formatTokens,
 	formatUsageTooltip,
 	lineDiff,
+	messageText,
 	researchIcon,
 	safeParse,
 	shouldShowRoleLabel,
@@ -596,11 +597,14 @@ export class ChatView extends ItemView {
 		if (!this.session) return;
 		const chain = this.plugin.storage.contextChain(this.session);
 
-		// Rebuild per-turn usage map and loaded-skills list from custom entries in chain
+		// Single pass: collect per-turn usage, loaded skills, and message entries.
 		this.turnUsageByEntry.clear();
 		const skills: string[] = [];
+		const messageEntries: MessageEntry[] = [];
 		for (const entry of chain) {
-			if (entry.type === 'custom' && entry.customType === 'turn-usage' && entry.data) {
+			if (entry.type === 'message') {
+				messageEntries.push(entry);
+			} else if (entry.type === 'custom' && entry.customType === 'turn-usage' && entry.data) {
 				const d = entry.data as Partial<TurnUsage & { targetEntryId: string }>;
 				if (d.targetEntryId && typeof d.promptTokens === 'number' && typeof d.completionTokens === 'number') {
 					this.turnUsageByEntry.set(d.targetEntryId, {
@@ -615,11 +619,9 @@ export class ChatView extends ItemView {
 				if (match) skills.push(match[1]);
 			}
 		}
-		// Dedupe preserving order
 		this.loadedSkills = [...new Set(skills)];
 		this.updateStatus();
 
-		const messageEntries = chain.filter((e): e is MessageEntry => e.type === 'message');
 		if (messageEntries.length === 0) {
 			this.renderEmptyState();
 			return;
@@ -967,14 +969,7 @@ export class ChatView extends ItemView {
 
 	private async startEditBranch(parentEntry: MessageEntry): Promise<void> {
 		if (!this.session) return;
-		const m = parentEntry.message;
-		const current = typeof m.content === 'string'
-			? m.content
-			: (m.content
-				.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-				.map((b) => b.text)
-				.join(''));
-		this.composerEl.value = current;
+		this.composerEl.value = messageText(parentEntry.message);
 		this.composerEl.dataset.branchParent = parentEntry.parentId ?? '';
 		this.composerEl.dataset.branchFrom = parentEntry.id;
 		this.autosizeComposer();
@@ -1144,7 +1139,7 @@ export class ChatView extends ItemView {
 							endpoint,
 							model: slug,
 							messages,
-							tools: toolsToOpenAI(TOOLS),
+							tools: [...toolsToOpenAI(TOOLS), LOAD_SKILL_TOOL_DEF],
 							signal: this.abort.signal,
 						},
 						{
@@ -1342,7 +1337,12 @@ export class ChatView extends ItemView {
 			if (decision.scope === 'turn') this.approveAllInTurn = true;
 		}
 
-		return await dispatchTool(TOOLS, name, args, this.app, this.plugin.settings.metaDir);
+		try {
+			return await tool.execute(args, { app: this.app, metaDir: this.plugin.settings.metaDir });
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			return JSON.stringify({ error: `tool ${name} failed: ${msg}` });
+		}
 	}
 
 	private requestApproval(
@@ -1450,18 +1450,8 @@ export class ChatView extends ItemView {
 			) as MessageEntry | undefined;
 			if (!firstUser || !firstAsst) return;
 
-			const userText = typeof firstUser.message.content === 'string'
-				? firstUser.message.content
-				: firstUser.message.content
-					.filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-					.map((b) => b.text)
-					.join(' ');
-			const asstText = typeof firstAsst.message.content === 'string'
-				? firstAsst.message.content
-				: firstAsst.message.content
-					.filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-					.map((b) => b.text)
-					.join(' ');
+			const userText = messageText(firstUser.message, ' ');
+			const asstText = messageText(firstAsst.message, ' ');
 
 			let title = '';
 			for await (const ev of streamChat({

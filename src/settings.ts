@@ -180,10 +180,9 @@ export function newEndpointId(existing: Endpoint[]): string {
 	return `endpoint-${i}`;
 }
 
-export function pickReplacementModelRef(settings: SmartAideSettings, removedId: string): ModelRef {
+export function pickReplacementModelRef(settings: SmartAideSettings): ModelRef {
 	const fallback = settings.endpoints[0];
 	const slug = fallback?.models?.[0] ?? fallback?.discoveredModels?.[0]?.id ?? DEFAULT_MODEL;
-	void removedId;
 	return { endpointId: fallback?.id ?? OPENROUTER_ID, slug };
 }
 

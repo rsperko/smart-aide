@@ -1,5 +1,6 @@
 import { App, FuzzyMatch, FuzzySuggestModal } from 'obsidian';
 import { friendlyModelName } from './models';
+import { sameRef } from './settings';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
 
 interface PickerItem {
@@ -127,10 +128,6 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 	private isRecent(ref: ModelRef): boolean {
 		return this.recents.some((r) => sameRef(r, ref));
 	}
-}
-
-function sameRef(a: ModelRef, b: ModelRef): boolean {
-	return a.endpointId === b.endpointId && a.slug === b.slug;
 }
 
 function formatContext(tokens: number): string {

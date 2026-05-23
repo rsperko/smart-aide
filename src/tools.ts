@@ -180,7 +180,11 @@ If results come back empty, read the 'hint' field and adjust. Results sort by ti
 					const r = fuzzy(h.heading);
 					if (!r) continue;
 					const startLine = h.position.start.line + 1;
-					const endLine = sectionEndLine(headings, i, file);
+					const endLine = sectionEndLine(
+						headings,
+						i,
+						file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : h.position.start.line + 1,
+					);
 					record(file, {
 						in: 'heading',
 						text: h.heading,
@@ -348,7 +352,7 @@ Response always includes path and mtime. Range/section modes also include startL
 				});
 			}
 			const startLine = headings[matchIdx].position.start.line + 1;
-			const endLine = sectionEndLineByTotal(headings, matchIdx, totalLines);
+			const endLine = sectionEndLine(headings, matchIdx, totalLines);
 			return rangeResponse(path, mtime, lines, startLine, endLine, totalLines);
 		}
 
@@ -600,33 +604,33 @@ Uses MetadataCache resolvedLinks — fast, no file reads. Returns paths sorted b
 	},
 };
 
-const loadSkill: Tool = {
-	risk: 'read',
-	name: 'load_skill',
-	description: `Load a skill's full body into context by name. Skill descriptions are visible to you at all times in the system prompt; call this to pull a specific skill's full content when you judge it relevant to the user's request.
+export const TOOLS: Tool[] = [searchVault, readNote, writeNote, appendToNote, deleteNote, listRecent, getBacklinks];
+
+export const LOAD_SKILL_NAME = 'load_skill';
+
+// load_skill is exposed to the model but executed by the view layer, which has
+// the SkillRegistry + active session needed to persist the loaded body as a
+// custom_message entry. Routed past dispatchTool entirely.
+export const LOAD_SKILL_TOOL_DEF: OpenAIToolDef = {
+	type: 'function',
+	function: {
+		name: LOAD_SKILL_NAME,
+		description: `Load a skill's full body into context by name. Skill descriptions are visible to you at all times in the system prompt; call this to pull a specific skill's full content when you judge it relevant to the user's request.
 
 EXAMPLES:
 - User asks for a daily log template and you see a skill named 'daily-log' -> load_skill('daily-log')
 - User asks to write a meeting recap and 'meeting-notes' skill is available -> load_skill('meeting-notes')
 
 The loaded body becomes part of the conversation and will guide subsequent responses.`,
-	parameters: {
-		type: 'object',
-		properties: {
-			name: { type: 'string', description: "Skill name as listed in the system prompt's skill manifest." },
+		parameters: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: "Skill name as listed in the system prompt's skill manifest." },
+			},
+			required: ['name'],
 		},
-		required: ['name'],
-	},
-	async execute(args, ctx) {
-		// Implementation is supplied by the view at dispatch time (it has the registry).
-		// The default implementation here returns an error so misuse is visible.
-		return JSON.stringify({ error: 'load_skill must be dispatched through the view' });
 	},
 };
-
-export const TOOLS: Tool[] = [searchVault, readNote, writeNote, appendToNote, deleteNote, listRecent, getBacklinks, loadSkill];
-
-export const LOAD_SKILL_NAME = 'load_skill';
 
 export function toolsToOpenAI(tools: Tool[]): OpenAIToolDef[] {
 	return tools.map((t) => ({
@@ -655,7 +659,7 @@ export async function dispatchTool(
 function sectionEndLine(
 	headings: { heading: string; level: number; position: { start: { line: number } } }[],
 	index: number,
-	file: TFile,
+	fallback: number,
 ): number {
 	const here = headings[index];
 	for (let j = index + 1; j < headings.length; j++) {
@@ -663,21 +667,7 @@ function sectionEndLine(
 			return headings[j].position.start.line;
 		}
 	}
-	return file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : here.position.start.line + 1;
-}
-
-function sectionEndLineByTotal(
-	headings: { heading: string; level: number; position: { start: { line: number } } }[],
-	index: number,
-	totalLines: number,
-): number {
-	const here = headings[index];
-	for (let j = index + 1; j < headings.length; j++) {
-		if (headings[j].level <= here.level) {
-			return headings[j].position.start.line;
-		}
-	}
-	return totalLines;
+	return fallback;
 }
 
 export function findSectionIndex(

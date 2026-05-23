@@ -305,7 +305,7 @@ describe('pickReplacementModelRef', () => {
 				{ id: 'b', name: 'B', baseURL: '', apiKey: '' },
 			],
 		} as unknown as SmartAideSettings;
-		expect(pickReplacementModelRef(settings, 'b')).toEqual({ endpointId: 'a', slug: 'first' });
+		expect(pickReplacementModelRef(settings)).toEqual({ endpointId: 'a', slug: 'first' });
 	});
 
 	it('falls back to discoveredModels[0] when no manual models', () => {
@@ -314,12 +314,12 @@ describe('pickReplacementModelRef', () => {
 				{ id: 'a', name: 'A', baseURL: '', apiKey: '', discoveredModels: [{ id: 'disc' }] },
 			],
 		} as unknown as SmartAideSettings;
-		expect(pickReplacementModelRef(settings, 'x').slug).toBe('disc');
+		expect(pickReplacementModelRef(settings).slug).toBe('disc');
 	});
 
 	it('falls back to OpenRouter id + DEFAULT_MODEL when no endpoints', () => {
 		const settings = { endpoints: [] } as unknown as SmartAideSettings;
-		const out = pickReplacementModelRef(settings, 'x');
+		const out = pickReplacementModelRef(settings);
 		expect(out.endpointId).toBe(OPENROUTER_ID);
 		expect(out.slug).toBeTruthy();
 	});

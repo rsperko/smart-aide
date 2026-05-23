@@ -740,10 +740,11 @@ describe('write/append/delete preview()', () => {
 	});
 });
 
-describe('load_skill default execute', () => {
-	it('returns an error pointing to view-level dispatch (the default body)', async () => {
+describe('load_skill is not in TOOLS', () => {
+	it('is routed past dispatchTool — the view layer handles it directly', async () => {
+		expect(TOOLS.find((t) => t.name === LOAD_SKILL_NAME)).toBeUndefined();
 		const out = await dispatchTool(TOOLS, LOAD_SKILL_NAME, { name: 'whatever' }, new App(), 'Meta');
-		expect(JSON.parse(out).error).toMatch(/dispatched through the view/);
+		expect(JSON.parse(out).error).toMatch(/unknown tool/);
 	});
 });
 

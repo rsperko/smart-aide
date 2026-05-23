@@ -61,10 +61,6 @@ export function dataUrlFor(mime: string, base64: string): string {
 }
 
 /**
- * Choose a filename for a freshly attached image. Honors a user-provided name
- * when present; otherwise mints a timestamped name keyed off the mime.
- */
-/**
  * Save bytes into Obsidian's configured attachment folder and return an
  * ImageBlock referencing the resolved vault path. The block is what gets
  * persisted in the session JSONL; bytes are read back on send.

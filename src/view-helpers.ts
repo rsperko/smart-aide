@@ -80,6 +80,14 @@ export function formatTokens(n: number): string {
 	return `${Math.round(n / 1000)}k tok`;
 }
 
+export function messageText(m: AgentMessage, sep = ''): string {
+	if (typeof m.content === 'string') return m.content;
+	return m.content
+		.filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+		.map((b) => b.text)
+		.join(sep);
+}
+
 export function extractToolCalls(entry: MessageEntry): ToolCallBlock[] {
 	const m = entry.message;
 	if (typeof m.content === 'string') return [];

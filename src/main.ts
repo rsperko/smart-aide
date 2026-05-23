@@ -131,10 +131,6 @@ export default class SmartAidePlugin extends Plugin {
 		}
 	}
 
-	async onunload(): Promise<void> {
-		// Leaves are cleaned up automatically by Obsidian.
-	}
-
 	async loadSettings(): Promise<void> {
 		const raw = (await this.loadData()) as Record<string, unknown> | null;
 		this.settings = migrateSettings(raw);
