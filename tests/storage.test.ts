@@ -261,6 +261,60 @@ describe('ChatStorage', () => {
 		expect(vault.files.has(session.path)).toBe(true);
 	});
 
+	it('toOpenAIMessages emits multi-part content for user messages with image blocks', async () => {
+		const session = await storage.createChat();
+		// Place an image file in the vault and back its bytes.
+		vault.files.set('attachments/p.jpg', { content: '', mtime: Date.now() });
+		// Override readBinary to return known bytes.
+		vault.readBinary = async () => new Uint8Array([0xff, 0xd8, 0xff]).buffer;
+		const user: MessageEntry = {
+			type: 'message',
+			id: 'u1',
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'what is in this photo?' },
+					{ type: 'image', path: 'attachments/p.jpg', mime: 'image/jpeg' },
+				],
+			},
+		};
+		session.entries.push(user);
+		session.leafId = user.id;
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
+		expect(msgs[1].role).toBe('user');
+		expect(Array.isArray(msgs[1].content)).toBe(true);
+		const parts = msgs[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+		expect(parts[0]).toEqual({ type: 'text', text: 'what is in this photo?' });
+		expect(parts[1].type).toBe('image_url');
+		expect(parts[1].image_url!.url).toBe('data:image/jpeg;base64,/9j/');
+	});
+
+	it('toOpenAIMessages drops image blocks that have no backing vault file with a stub note', async () => {
+		const session = await storage.createChat();
+		const user: MessageEntry = {
+			type: 'message',
+			id: 'u1',
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'see attached' },
+					{ type: 'image', path: 'attachments/missing.jpg', mime: 'image/jpeg' },
+				],
+			},
+		};
+		session.entries.push(user);
+		session.leafId = user.id;
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
+		const parts = msgs[1].content as Array<{ type: string; text?: string }>;
+		// Image gets replaced by a text note so the model isn't silently lied to.
+		const noteText = parts.map((p) => p.text ?? '').join(' ');
+		expect(noteText).toMatch(/missing|not found|attachments\/missing.jpg/);
+	});
+
 	it('toOpenAIMessages converts string + block content, including tool calls and results', async () => {
 		const session = await storage.createChat();
 		const user = storage.makeMessageEntry({ role: 'user', content: 'q' }, null);
@@ -285,7 +339,7 @@ describe('ChatStorage', () => {
 		);
 		await storage.appendEntry(session, tool);
 
-		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
 		expect(msgs[0]).toEqual({ role: 'system', content: 'SYS' });
 		expect(msgs[1].content).toBe('q');
 		expect(msgs[2].role).toBe('assistant');
@@ -301,7 +355,7 @@ describe('ChatStorage', () => {
 		await storage.appendEntry(session, user);
 		const skill = storage.makeCustomMessageEntry('skill', 'SKILL BODY', 'skill: note-capture', user.id);
 		await storage.appendEntry(session, skill);
-		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
 		const last = msgs[msgs.length - 1];
 		expect(last.role).toBe('user');
 		expect(last.content).toContain('Loaded skill: note-capture');
@@ -369,7 +423,7 @@ describe('ChatStorage', () => {
 		await storage.appendEntry(session, user);
 		const note = storage.makeCustomMessageEntry('agents_md', 'CONTEXT BODY', undefined, user.id);
 		await storage.appendEntry(session, note);
-		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
 		const last = msgs[msgs.length - 1];
 		expect(last.role).toBe('user');
 		expect(last.content).toContain('[agents_md]');
@@ -394,7 +448,7 @@ describe('ChatStorage', () => {
 		};
 		session.entries.push(user);
 		session.leafId = user.id;
-		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		const msgs = await storage.toOpenAIMessages(session, 'SYS');
 		expect(msgs[1]).toEqual({ role: 'user', content: 'hello world' });
 	});
 });

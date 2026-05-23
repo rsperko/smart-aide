@@ -22,7 +22,18 @@ export interface ToolResultBlock {
 	isError?: boolean;
 }
 
-export type ContentBlock = TextBlock | ToolCallBlock | ToolResultBlock;
+/**
+ * Image attachment in a user message. Stores the vault path (small in JSONL)
+ * rather than the bytes; the bytes are read on send and inlined as a base64
+ * data URL in the OpenAI-compat `image_url` block.
+ */
+export interface ImageBlock {
+	type: 'image';
+	path: string;
+	mime: string;
+}
+
+export type ContentBlock = TextBlock | ToolCallBlock | ToolResultBlock | ImageBlock;
 
 export interface AgentMessage {
 	role: Role;
@@ -118,9 +129,13 @@ export interface OpenAIToolCall {
 	function: { name: string; arguments: string };
 }
 
+export type OpenAIContentPart =
+	| { type: 'text'; text: string }
+	| { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
+
 export interface OpenAIMessage {
 	role: Role;
-	content?: string | null;
+	content?: string | OpenAIContentPart[] | null;
 	tool_calls?: OpenAIToolCall[];
 	tool_call_id?: string;
 	name?: string;

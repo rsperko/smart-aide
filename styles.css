@@ -417,6 +417,74 @@ details[open] > .vk-tool-summary::before {
 	display: none;
 }
 
+/* ---------- Attached images (above the composer textarea, below pinned context) ---------- */
+
+.vk-attachment-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0 0 6px;
+}
+
+.vk-attachment-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px 3px 6px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+	font-size: 11px;
+	color: var(--text-normal);
+	max-width: 200px;
+}
+
+.vk-attachment-thumb {
+	width: 28px;
+	height: 28px;
+	object-fit: cover;
+	border-radius: 4px;
+	flex-shrink: 0;
+}
+
+.vk-attachment-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-attachment-remove {
+	padding: 2px !important;
+	min-width: 18px;
+	min-height: 18px;
+	flex-shrink: 0;
+}
+
+/* ---------- Image blocks rendered in past messages ---------- */
+
+.vk-image-block {
+	margin: 6px 0;
+}
+
+.vk-image {
+	max-width: 100%;
+	max-height: 280px;
+	border-radius: 6px;
+	display: block;
+}
+
+.vk-image-caption {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 2px;
+}
+
+.vk-image-missing {
+	font-size: 12px;
+	color: var(--text-error);
+	font-style: italic;
+}
+
 .vk-context-chip {
 	display: inline-flex;
 	align-items: center;

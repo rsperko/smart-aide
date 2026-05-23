@@ -110,6 +110,15 @@ export class Vault {
 	async create(_path: string, _content: string): Promise<TFile> {
 		return new TFile();
 	}
+	async createBinary(_path: string, _data: ArrayBuffer): Promise<TFile> {
+		return new TFile();
+	}
+	async readBinary(_file: TFile): Promise<ArrayBuffer> {
+		return new ArrayBuffer(0);
+	}
+	getResourcePath(file: TFile): string {
+		return `app://local/${file.path}`;
+	}
 	async createFolder(_path: string): Promise<TFolder> {
 		return new TFolder();
 	}
@@ -145,6 +154,7 @@ export class App {
 	};
 	fileManager = {
 		trashFile: async (_f: TFile) => undefined,
+		getAvailablePathForAttachment: async (filename: string) => `attachments/${filename}`,
 	};
 }
 

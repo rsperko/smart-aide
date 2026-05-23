@@ -30,6 +30,7 @@ import {
 	AgentMessage,
 	ContentBlock,
 	Entry,
+	ImageBlock,
 	MessageEntry,
 	ModelRef,
 	OpenAIToolCall,
@@ -37,6 +38,7 @@ import {
 	ToolCallBlock,
 	ToolResultBlock,
 } from './types';
+import { attachImageToVault, isSupportedImageMime, mimeFromExtension } from './image-helpers';
 import type SmartAidePlugin from './main';
 
 export const CHAT_VIEW_TYPE = 'smart-aide-chat-view';
@@ -64,6 +66,8 @@ export class ChatView extends ItemView {
 	private composerEl!: HTMLTextAreaElement;
 	private sendBtn!: HTMLButtonElement;
 	private dangerChip: HTMLButtonElement | null = null;
+	private attachmentRowEl!: HTMLDivElement;
+	private pendingImages: ImageBlock[] = [];
 	private cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
 	// MarkdownRenderChild instances spawned by the current stream render. Unloaded
 	// before each rerender so long chats don't leak children/event handlers.
@@ -231,6 +235,10 @@ export class ChatView extends ItemView {
 		this.contextRowEl = composerWrap.createDiv({ cls: 'vk-context-row' });
 		this.refreshContextChips();
 
+		// Pending image attachments for the next send — chips with thumbnail + remove.
+		this.attachmentRowEl = composerWrap.createDiv({ cls: 'vk-attachment-row' });
+		this.refreshAttachmentChips();
+
 		this.composerEl = composerWrap.createEl('textarea', {
 			cls: 'vk-input',
 			placeholder: 'Ask anything about your vault…',
@@ -252,16 +260,29 @@ export class ChatView extends ItemView {
 		this.registerDomEvent(this.composerEl, 'input', () => this.autosizeComposer());
 		this.registerDomEvent(this.composerEl, 'input', () => this.updateSendState());
 
-		// Drag-drop: drop a note from the file explorer onto the composer → inserts a wikilink
+		// Drag-drop: vault wikilink OR a file (image) from Finder/Explorer / vault attachment
 		this.registerDomEvent(this.composerEl, 'dragover', (ev: DragEvent) => {
 			if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
 			ev.preventDefault();
 		});
 		this.registerDomEvent(this.composerEl, 'drop', (ev: DragEvent) => {
+			// File drop wins over wikilink drop — Finder/Explorer set dataTransfer.files.
+			const files = ev.dataTransfer?.files;
+			if (files && files.length > 0) {
+				ev.preventDefault();
+				void this.handleDroppedFiles(files);
+				return;
+			}
 			const data = ev.dataTransfer?.getData('text/plain') || '';
 			if (!data) return;
 			ev.preventDefault();
-			// If it looks like a vault path or wikilink, wrap as [[link]]; otherwise insert as-is.
+			// Vault attachment drag drops the path as text/plain. If it's an image
+			// path, attach it directly; otherwise treat as a wikilink/text drop.
+			const looksLikeImage = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i.test(data);
+			if (looksLikeImage) {
+				void this.attachVaultImage(data);
+				return;
+			}
 			let text = data;
 			if (!data.startsWith('[[') && (data.endsWith('.md') || this.app.vault.getFileByPath(data))) {
 				text = `[[${data.replace(/\.md$/, '')}]]`;
@@ -269,7 +290,24 @@ export class ChatView extends ItemView {
 			this.insertAtCursor(text);
 		});
 
-		// Toolbar beneath the textarea: model picker | tokens | spacer | stop | send
+		// Paste handler: any image on the clipboard becomes an attachment.
+		this.registerDomEvent(this.composerEl, 'paste', (ev: ClipboardEvent) => {
+			const items = ev.clipboardData?.items;
+			if (!items) return;
+			const images: File[] = [];
+			for (let i = 0; i < items.length; i++) {
+				const item = items[i];
+				if (item.kind === 'file' && item.type.startsWith('image/')) {
+					const f = item.getAsFile();
+					if (f) images.push(f);
+				}
+			}
+			if (images.length === 0) return;
+			ev.preventDefault();
+			void this.handleDroppedFiles(images as unknown as FileList);
+		});
+
+		// Toolbar beneath the textarea: model picker | tokens | spacer | attach | camera | stop | send
 		const toolbar = composerWrap.createDiv({ cls: 'vk-toolbar' });
 
 		this.modelChip = toolbar.createEl('button', { cls: 'vk-model-chip', attr: { type: 'button' } });
@@ -279,6 +317,42 @@ export class ChatView extends ItemView {
 		this.statusEl = toolbar.createSpan({ cls: 'vk-tokens' });
 
 		toolbar.createDiv({ cls: 'vk-spacer' });
+
+		// File picker button (paperclip). Works desktop + mobile.
+		const attachBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-attach', attr: { type: 'button' } });
+		setIcon(attachBtn, 'paperclip');
+		attachBtn.setAttribute('aria-label', 'Attach image');
+		const filePicker = composerWrap.createEl('input', {
+			type: 'file',
+			attr: { accept: 'image/jpeg,image/png,image/gif,image/webp', multiple: 'multiple' },
+		});
+		filePicker.style.display = 'none';
+		this.registerDomEvent(attachBtn, 'click', () => filePicker.click());
+		this.registerDomEvent(filePicker, 'change', () => {
+			if (filePicker.files && filePicker.files.length > 0) {
+				void this.handleDroppedFiles(filePicker.files);
+			}
+			filePicker.value = '';
+		});
+
+		// Camera button — mobile only. Uses the OS camera via capture=environment.
+		if (Platform.isMobile) {
+			const cameraBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-camera', attr: { type: 'button' } });
+			setIcon(cameraBtn, 'camera');
+			cameraBtn.setAttribute('aria-label', 'Take photo');
+			const cameraInput = composerWrap.createEl('input', {
+				type: 'file',
+				attr: { accept: 'image/*', capture: 'environment' },
+			});
+			cameraInput.style.display = 'none';
+			this.registerDomEvent(cameraBtn, 'click', () => cameraInput.click());
+			this.registerDomEvent(cameraInput, 'change', () => {
+				if (cameraInput.files && cameraInput.files.length > 0) {
+					void this.handleDroppedFiles(cameraInput.files);
+				}
+				cameraInput.value = '';
+			});
+		}
 
 		this.stopBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-stop' });
 		setIcon(this.stopBtn, 'square');
@@ -298,6 +372,74 @@ export class ChatView extends ItemView {
 		const max = 200;
 		const next = Math.min(max, this.composerEl.scrollHeight);
 		this.composerEl.style.height = next + 'px';
+	}
+
+	private async handleDroppedFiles(files: FileList): Promise<void> {
+		for (let i = 0; i < files.length; i++) {
+			const f = files[i];
+			if (!f.type.startsWith('image/')) {
+				new Notice(`Skipped non-image: ${f.name}`);
+				continue;
+			}
+			if (!isSupportedImageMime(f.type)) {
+				new Notice(`${f.type} isn't supported. Use JPEG, PNG, GIF, or WebP.`);
+				continue;
+			}
+			try {
+				const buf = await f.arrayBuffer();
+				const block = await attachImageToVault(this.app, buf, f.name, f.type);
+				this.pendingImages.push(block);
+			} catch (e) {
+				new Notice(`Could not attach ${f.name}: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		this.refreshAttachmentChips();
+		this.updateSendState();
+	}
+
+	private async attachVaultImage(path: string): Promise<void> {
+		const file = this.app.vault.getFileByPath(path);
+		if (!file) {
+			new Notice(`Not found: ${path}`);
+			return;
+		}
+		const mime = mimeFromExtension(path);
+		if (!isSupportedImageMime(mime)) {
+			new Notice(`${mime} isn't supported. Use JPEG, PNG, GIF, or WebP.`);
+			return;
+		}
+		// Reference the vault file in place — no copy. Same shape attachImageToVault returns.
+		this.pendingImages.push({ type: 'image', path, mime });
+		this.refreshAttachmentChips();
+		this.updateSendState();
+	}
+
+	private refreshAttachmentChips(): void {
+		this.attachmentRowEl.empty();
+		if (this.pendingImages.length === 0) {
+			this.attachmentRowEl.hide();
+			return;
+		}
+		this.attachmentRowEl.show();
+		for (let i = 0; i < this.pendingImages.length; i++) {
+			const block = this.pendingImages[i];
+			const chip = this.attachmentRowEl.createDiv({ cls: 'vk-attachment-chip' });
+			const file = this.app.vault.getFileByPath(block.path);
+			if (file) {
+				const img = chip.createEl('img', { cls: 'vk-attachment-thumb' });
+				img.src = this.app.vault.getResourcePath(file);
+			}
+			chip.createSpan({ cls: 'vk-attachment-name', text: block.path.split('/').pop() ?? block.path });
+			const removeBtn = chip.createEl('button', { cls: 'vk-icon-btn vk-attachment-remove', attr: { type: 'button' } });
+			setIcon(removeBtn, 'x');
+			removeBtn.setAttribute('aria-label', 'Remove attachment');
+			const idx = i;
+			this.registerDomEvent(removeBtn, 'click', () => {
+				this.pendingImages.splice(idx, 1);
+				this.refreshAttachmentChips();
+				this.updateSendState();
+			});
+		}
 	}
 
 	openNoteMentionPicker(): void {
@@ -341,7 +483,7 @@ export class ChatView extends ItemView {
 	}
 
 	private updateSendState(): void {
-		const empty = this.composerEl.value.trim().length === 0;
+		const empty = this.composerEl.value.trim().length === 0 && this.pendingImages.length === 0;
 		const streaming = this.abort !== null;
 		this.sendBtn.disabled = empty || streaming;
 	}
@@ -645,6 +787,7 @@ export class ChatView extends ItemView {
 				if (block.type === 'text') this.renderText(body, block.text, renderAsMarkdown);
 				else if (block.type === 'toolCall') this.renderToolCallBlock(body, block);
 				else if (block.type === 'toolResult') this.renderToolResultBlock(body, block);
+				else if (block.type === 'image') this.renderImageBlock(body, block);
 			}
 		}
 
@@ -677,6 +820,19 @@ export class ChatView extends ItemView {
 		void MarkdownRenderer.render(this.app, text, div, '', child).then(() => {
 			addCopyButtons(div);
 		});
+	}
+
+	private renderImageBlock(parent: HTMLElement, block: ImageBlock): void {
+		const wrap = parent.createDiv({ cls: 'vk-image-block' });
+		const file = this.app.vault.getFileByPath(block.path);
+		if (!file) {
+			wrap.createDiv({ cls: 'vk-image-missing', text: `[image not found: ${block.path}]` });
+			return;
+		}
+		const img = wrap.createEl('img', { cls: 'vk-image' });
+		img.src = this.app.vault.getResourcePath(file);
+		img.alt = block.path;
+		wrap.createDiv({ cls: 'vk-image-caption', text: block.path.split('/').pop() ?? block.path });
 	}
 
 	private renderToolCallBlock(parent: HTMLElement, block: ToolCallBlock): void {
@@ -872,7 +1028,7 @@ export class ChatView extends ItemView {
 			return;
 		}
 		const text = this.composerEl.value.trim();
-		if (!text) return;
+		if (!text && this.pendingImages.length === 0) return;
 
 		// Resolve parent: branch if editing, else current leaf
 		let parentId: string | null;
@@ -886,14 +1042,27 @@ export class ChatView extends ItemView {
 			parentId = this.session.leafId;
 		}
 
+		// Snapshot + clear pending images before composing so a re-entrant click can't double-send.
+		const images = this.pendingImages;
+		this.pendingImages = [];
 		this.composerEl.value = '';
+		this.refreshAttachmentChips();
 		this.autosizeComposer();
 		this.updateSendState();
 
 		// Per-turn grants reset at the start of each user turn
 		this.approveAllInTurn = false;
 
-		const userMessage: AgentMessage = { role: 'user', content: text };
+		let content: AgentMessage['content'];
+		if (images.length === 0) {
+			content = text;
+		} else {
+			const blocks: ContentBlock[] = [];
+			if (text) blocks.push({ type: 'text', text });
+			for (const img of images) blocks.push(img);
+			content = blocks;
+		}
+		const userMessage: AgentMessage = { role: 'user', content };
 		const userEntry = this.plugin.storage.makeMessageEntry(userMessage, parentId);
 		await this.plugin.storage.appendEntry(this.session, userEntry);
 		this.rerenderStream();
@@ -927,7 +1096,7 @@ export class ChatView extends ItemView {
 		let hitTurnCap = false;
 		try {
 			for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-				const messages = this.plugin.storage.toOpenAIMessages(
+				const messages = await this.plugin.storage.toOpenAIMessages(
 					this.session,
 					this.composeSystemPrompt(),
 				);
@@ -939,8 +1108,16 @@ export class ChatView extends ItemView {
 				if (preamble) {
 					for (let i = messages.length - 1; i >= 0; i--) {
 						const m = messages[i];
-						if (m.role === 'user' && typeof m.content === 'string') {
+						if (m.role !== 'user') continue;
+						if (typeof m.content === 'string') {
 							m.content = `${preamble}\n\n---\n\n${m.content}`;
+							break;
+						}
+						if (Array.isArray(m.content)) {
+							m.content = [
+								{ type: 'text', text: `${preamble}\n\n---\n\n` },
+								...m.content,
+							];
 							break;
 						}
 					}

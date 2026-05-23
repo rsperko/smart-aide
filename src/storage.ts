@@ -1,12 +1,15 @@
 import { TFile, TFolder, Vault, normalizePath } from 'obsidian';
+import { arrayBufferToBase64, dataUrlFor } from './image-helpers';
 import {
 	AgentMessage,
 	ContentBlock,
 	CustomEntry,
 	CustomMessageEntry,
 	Entry,
+	ImageBlock,
 	MessageEntry,
 	ModelChangeEntry,
+	OpenAIContentPart,
 	OpenAIMessage,
 	SessionHeader,
 	SessionInfoEntry,
@@ -238,13 +241,13 @@ export class ChatStorage {
 
 	/**
 	 * Build OpenAI-format messages for the API from the active context chain.
+	 * Async because image blocks resolve their bytes from the vault and base64-encode
+	 * them inline as `image_url` data URLs.
 	 */
-	toOpenAIMessages(session: ChatSession, systemPrompt: string): OpenAIMessage[] {
+	async toOpenAIMessages(session: ChatSession, systemPrompt: string): Promise<OpenAIMessage[]> {
 		const messages: OpenAIMessage[] = [{ role: 'system', content: systemPrompt }];
 		for (const entry of this.contextChain(session)) {
 			if (entry.type === 'custom_message') {
-				// Plugin-injected content the model should see (e.g., loaded skill bodies).
-				// Inject as a user-role message; the label tells the model these are in-effect instructions.
 				let label: string;
 				if (entry.customType === 'skill') {
 					const skillName = entry.display?.replace(/^skill:\s*/i, '').trim() || 'skill';
@@ -261,8 +264,6 @@ export class ChatStorage {
 				messages.push({ role: m.role, content: m.content });
 				continue;
 			}
-			// Block-structured content. Split tool results into separate tool messages,
-			// per OpenAI's expected shape.
 			if (m.role === 'assistant') {
 				const textParts: string[] = [];
 				const toolCalls: NonNullable<OpenAIMessage['tool_calls']> = [];
@@ -287,14 +288,44 @@ export class ChatStorage {
 					}
 				}
 			} else {
-				const text = m.content
-					.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-					.map((b) => b.text)
-					.join('');
-				messages.push({ role: m.role, content: text });
+				const hasImage = m.content.some((b) => b.type === 'image');
+				if (hasImage) {
+					const parts: OpenAIContentPart[] = [];
+					for (const block of m.content) {
+						if (block.type === 'text') {
+							parts.push({ type: 'text', text: block.text });
+						} else if (block.type === 'image') {
+							const part = await this.imageBlockToPart(block);
+							parts.push(part);
+						}
+					}
+					messages.push({ role: m.role, content: parts });
+				} else {
+					const text = m.content
+						.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+						.map((b) => b.text)
+						.join('');
+					messages.push({ role: m.role, content: text });
+				}
 			}
 		}
 		return messages;
+	}
+
+	/**
+	 * Resolve an image block to an OpenAI content part. Reads bytes from the
+	 * vault and inlines them as a base64 data URL. Falls back to a text-note part
+	 * if the file is missing — we never silently drop the image; the model needs
+	 * to know it referenced something that's no longer there.
+	 */
+	private async imageBlockToPart(block: ImageBlock): Promise<OpenAIContentPart> {
+		const file = this.vault.getFileByPath(block.path);
+		if (!file) {
+			return { type: 'text', text: `[image not found: ${block.path}]` };
+		}
+		const bytes = await this.vault.readBinary(file);
+		const base64 = arrayBufferToBase64(bytes);
+		return { type: 'image_url', image_url: { url: dataUrlFor(block.mime, base64) } };
 	}
 }
 
