@@ -6,7 +6,9 @@ import { Skill } from './skills';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
+import { TabPickerModal } from './picker-tabs';
 import { RenameChatModal } from './modal-rename-chat';
+import { PinnedContext } from './context-pins';
 import { findEndpoint, resolveModelRef } from './settings';
 import {
 	AgentMessage,
@@ -34,6 +36,7 @@ export class ChatView extends ItemView {
 	private turnUsageByEntry: Map<string, TurnUsage> = new Map();
 	private loadedSkills: string[] = [];
 	private editingFromId: string | null = null;
+	private pinned: PinnedContext;
 
 	// DOM refs
 	private titleBtn!: HTMLButtonElement;
@@ -41,6 +44,7 @@ export class ChatView extends ItemView {
 	private statusEl!: HTMLSpanElement;
 	private stopBtn!: HTMLButtonElement;
 	private streamEl!: HTMLDivElement;
+	private contextRowEl!: HTMLDivElement;
 	private composerEl!: HTMLTextAreaElement;
 	private sendBtn!: HTMLButtonElement;
 	private cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
@@ -49,6 +53,7 @@ export class ChatView extends ItemView {
 		super(leaf);
 		this.plugin = plugin;
 		this.modelRef = plugin.settings.defaultModelRef;
+		this.pinned = new PinnedContext(plugin.app);
 	}
 
 	getViewType(): string {
@@ -78,6 +83,8 @@ export class ChatView extends ItemView {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.createChat();
 		this.cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
+		this.pinned.clear();
+		this.autoPinActive();
 		// Queue the initial model_change in memory only — it'll be persisted alongside
 		// the first user message so empty new chats don't litter the picker.
 		const modelEntry = this.plugin.storage.makeModelChangeEntry(
@@ -104,6 +111,8 @@ export class ChatView extends ItemView {
 			}
 		}
 		this.cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
+		this.pinned.clear();
+		this.autoPinActive();
 		this.rerenderStream();
 		this.updateStatus();
 		this.updateTabTitle();
@@ -181,6 +190,12 @@ export class ChatView extends ItemView {
 
 		// Composer (sticky bottom, holds textarea + toolbar)
 		const composerWrap = root.createDiv({ cls: 'vk-composer' });
+
+		// Pinned-context chip row — sits above the textarea inside the composer wrap
+		// so it visually belongs with the input. Shows files pinned for this chat;
+		// content is injected into each user turn as a preamble.
+		this.contextRowEl = composerWrap.createDiv({ cls: 'vk-context-row' });
+		this.refreshContextChips();
 
 		this.composerEl = composerWrap.createEl('textarea', {
 			cls: 'vk-input',
@@ -670,6 +685,71 @@ export class ChatView extends ItemView {
 		this.app.workspace.revealLeaf(leaf);
 	}
 
+	private refreshContextChips(): void {
+		if (!this.contextRowEl) return;
+		this.contextRowEl.empty();
+
+		for (const path of this.pinned.list()) {
+			const chip = this.contextRowEl.createEl('button', {
+				cls: 'vk-context-chip',
+				attr: { type: 'button' },
+			});
+			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
+			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
+			const tokSpan = chip.createSpan({ cls: 'vk-context-chip-tokens', text: '' });
+			void this.pinned.estimateTokens(path).then((t) => {
+				if (t > 0) tokSpan.setText(` · ${formatTokens(t)}`);
+			});
+			const x = chip.createSpan({ cls: 'vk-context-chip-x', text: '×' });
+			x.setAttribute('aria-label', `Unpin ${basename}`);
+			this.registerDomEvent(x, 'click', (ev) => {
+				ev.stopPropagation();
+				this.pinned.remove(path);
+				this.refreshContextChips();
+			});
+			this.registerDomEvent(chip, 'click', (ev) => {
+				if ((ev.target as HTMLElement).classList.contains('vk-context-chip-x')) return;
+				void this.openInternalLink(path.replace(/\.md$/i, ''), false);
+			});
+		}
+
+		const addBtn = this.contextRowEl.createEl('button', {
+			cls: 'vk-context-add',
+			attr: { type: 'button' },
+			text: '+ Add tab',
+		});
+		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
+	}
+
+	private openContextPicker(): void {
+		const tabs: TFile[] = [];
+		const seen = new Set<string>();
+		this.app.workspace.iterateRootLeaves((leaf) => {
+			const view = leaf.view as { file?: TFile };
+			if (view.file instanceof TFile && view.file.extension === 'md' && !seen.has(view.file.path)) {
+				tabs.push(view.file);
+				seen.add(view.file.path);
+			}
+		});
+		const available = tabs.filter((t) => !this.pinned.has(t.path));
+		if (available.length === 0) {
+			new Notice(tabs.length === 0 ? 'No open tabs to pin.' : 'All open tabs are already pinned.');
+			return;
+		}
+		new TabPickerModal(this.app, available, (file) => {
+			this.pinned.add(file.path);
+			this.refreshContextChips();
+		}).open();
+	}
+
+	private autoPinActive(): void {
+		const active = this.app.workspace.getActiveFile();
+		if (active instanceof TFile && active.extension === 'md') {
+			this.pinned.add(active.path);
+			this.refreshContextChips();
+		}
+	}
+
 	private async startEditBranch(parentEntry: MessageEntry): Promise<void> {
 		if (!this.session) return;
 		const m = parentEntry.message;
@@ -784,6 +864,20 @@ export class ChatView extends ItemView {
 					this.session,
 					this.composeSystemPrompt(),
 				);
+
+				// Inject pinned-context preamble into the most recent user message so
+				// the model can reference open files without a read_note round-trip.
+				// Read on each iteration so file edits during the turn show up.
+				const preamble = await this.pinned.buildPreamble();
+				if (preamble) {
+					for (let i = messages.length - 1; i >= 0; i--) {
+						const m = messages[i];
+						if (m.role === 'user' && typeof m.content === 'string') {
+							m.content = `${preamble}\n\n---\n\n${m.content}`;
+							break;
+						}
+					}
+				}
 
 				// Live assistant message bubble that fills as text streams
 				const liveWrap = this.streamEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-streaming' });

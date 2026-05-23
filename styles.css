@@ -369,6 +369,89 @@ details[open] > .vk-tool-summary::before {
 	background: var(--background-primary);
 }
 
+/* ---------- Pinned-context chips (above the composer textarea) ---------- */
+
+.vk-context-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	padding: 0 0 6px;
+}
+
+.vk-context-row:empty {
+	display: none;
+}
+
+.vk-context-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: 11px;
+	padding: 3px 4px 3px 9px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 11px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	cursor: pointer;
+	font-family: inherit;
+	transition: background-color 0.12s ease;
+	max-width: 100%;
+}
+
+.vk-context-chip:hover {
+	background: var(--background-modifier-hover);
+}
+
+.vk-context-chip-name {
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 200px;
+}
+
+.vk-context-chip-tokens {
+	color: var(--text-faint);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.vk-context-chip-x {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	font-size: 14px;
+	line-height: 1;
+	margin-left: 2px;
+}
+
+.vk-context-chip-x:hover {
+	background: var(--background-modifier-error, var(--background-modifier-border));
+	color: var(--text-on-accent, var(--text-normal));
+}
+
+.vk-context-add {
+	font-size: 11px;
+	padding: 3px 10px;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: 11px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	font-family: inherit;
+}
+
+.vk-context-add:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+	border-style: solid;
+}
+
 /* ---------- Edit-and-fork banner above the composer ---------- */
 
 .vk-edit-banner {
