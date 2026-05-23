@@ -77,12 +77,15 @@ export class ChatView extends ItemView {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.createChat();
 		this.cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
+		// Queue the initial model_change in memory only — it'll be persisted alongside
+		// the first user message so empty new chats don't litter the picker.
 		const modelEntry = this.plugin.storage.makeModelChangeEntry(
 			this.modelRef.endpointId,
 			this.modelRef.slug,
 			null,
 		);
-		await this.plugin.storage.appendEntry(this.session, modelEntry);
+		this.session.entries.push(modelEntry);
+		this.session.leafId = modelEntry.id;
 		this.rerenderStream();
 		this.updateStatus();
 		this.updateTabTitle();
@@ -668,8 +671,38 @@ export class ChatView extends ItemView {
 		this.composerEl.value = current;
 		this.composerEl.dataset.branchParent = parentEntry.parentId ?? '';
 		this.composerEl.dataset.branchFrom = parentEntry.id;
+		this.autosizeComposer();
+		this.updateSendState();
 		this.composerEl.focus();
-		new Notice('Editing — Cmd/Ctrl+Enter to branch from this point.');
+		this.showEditBanner();
+	}
+
+	private showEditBanner(): void {
+		this.removeEditBanner();
+		const wrap = this.composerEl.parentElement;
+		if (!wrap) return;
+		const banner = wrap.createDiv({ cls: 'vk-edit-banner' });
+		banner.createSpan({ cls: 'vk-edit-banner-text', text: 'Editing — Send to fork from this message' });
+		const cancel = banner.createEl('button', { cls: 'vk-edit-banner-cancel', text: 'Cancel' });
+		this.registerDomEvent(cancel, 'click', () => this.cancelEdit());
+		// Place the banner above the textarea inside the composer wrap.
+		wrap.insertBefore(banner, this.composerEl);
+	}
+
+	private removeEditBanner(): void {
+		const wrap = this.composerEl?.parentElement;
+		if (!wrap) return;
+		const existing = wrap.querySelector('.vk-edit-banner');
+		if (existing) existing.remove();
+	}
+
+	private cancelEdit(): void {
+		delete this.composerEl.dataset.branchFrom;
+		delete this.composerEl.dataset.branchParent;
+		this.composerEl.value = '';
+		this.autosizeComposer();
+		this.updateSendState();
+		this.removeEditBanner();
 	}
 
 	private async send(): Promise<void> {
@@ -688,6 +721,7 @@ export class ChatView extends ItemView {
 			parentId = this.composerEl.dataset.branchParent || null;
 			delete this.composerEl.dataset.branchFrom;
 			delete this.composerEl.dataset.branchParent;
+			this.removeEditBanner();
 		} else {
 			parentId = this.session.leafId;
 		}

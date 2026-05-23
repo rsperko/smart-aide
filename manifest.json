@@ -1,7 +1,7 @@
 {
   "id": "smart-aide",
   "name": "Smart Aide",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "minAppVersion": "1.5.0",
   "description": "AI chat for your vault. Tool-mediated search and writes, citation cards, multi-endpoint BYOK.",
   "author": "rsperko",

@@ -66,7 +66,8 @@ export class ChatStorage {
 			timestamp: new Date().toISOString(),
 			cwd: this.vault.getName(),
 		};
-		await this.vault.create(path, JSON.stringify(header) + '\n');
+		// File creation is deferred to the first appendEntry. Otherwise every "New chat"
+		// tap creates a file even if the user never sends a message, polluting the picker.
 		return { path, header, entries: [], leafId: null, title: 'New chat' };
 	}
 
@@ -87,10 +88,55 @@ export class ChatStorage {
 
 	async appendEntry(session: ChatSession, entry: Entry): Promise<void> {
 		const file = this.vault.getFileByPath(session.path);
-		if (!file) throw new Error(`not a file: ${session.path}`);
-		await this.vault.append(file, JSON.stringify(entry) + '\n');
+		if (!file) {
+			// First persisted entry — create the session file with header + any entries
+			// queued in memory (e.g., the initial model_change) + this entry, all at once.
+			const lines = [JSON.stringify(session.header)];
+			for (const queued of session.entries) lines.push(JSON.stringify(queued));
+			lines.push(JSON.stringify(entry));
+			await this.vault.create(session.path, lines.join('\n') + '\n');
+		} else {
+			await this.vault.append(file, JSON.stringify(entry) + '\n');
+		}
 		session.entries.push(entry);
 		session.leafId = entry.id;
+	}
+
+	/**
+	 * Remove session files that contain no message entries (header + maybe a
+	 * model_change but nothing the user actually said). Runs on plugin load to
+	 * sweep up any pollution from older builds that persisted empty chats.
+	 */
+	async cleanupEmptyChats(): Promise<number> {
+		const folder = this.vault.getAbstractFileByPath(this.dir);
+		if (!(folder instanceof TFolder)) return 0;
+		let removed = 0;
+		for (const child of [...folder.children]) {
+			if (!(child instanceof TFile) || child.extension !== 'jsonl') continue;
+			try {
+				const content = await this.vault.cachedRead(child);
+				const lines = content.split('\n').filter((l) => l.trim());
+				let hasMessage = false;
+				for (let i = 1; i < lines.length; i++) {
+					try {
+						const e = JSON.parse(lines[i]) as Entry;
+						if (e.type === 'message') {
+							hasMessage = true;
+							break;
+						}
+					} catch {
+						// malformed line — skip
+					}
+				}
+				if (!hasMessage) {
+					await this.vault.delete(child);
+					removed++;
+				}
+			} catch {
+				// skip files we can't read
+			}
+		}
+		return removed;
 	}
 
 	makeMessageEntry(message: AgentMessage, parentId: string | null): MessageEntry {

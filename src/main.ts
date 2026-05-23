@@ -69,6 +69,8 @@ export default class SmartAidePlugin extends Plugin {
 		// per plugin load; if user closes the tab, it returns next time.
 		this.app.workspace.onLayoutReady(() => {
 			void this.ensureRightSidebarLeaf();
+			// Sweep up empty chat files from older builds that persisted on creation.
+			void this.storage.cleanupEmptyChats().catch(() => undefined);
 		});
 	}
 
