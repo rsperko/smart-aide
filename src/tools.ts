@@ -393,6 +393,9 @@ const writeNote: Tool = {
 
 Use for creating a new note OR replacing the full contents of an existing one. For appending to the end without touching existing content, prefer append_to_note (lower friction; smaller diff).
 
+OBSIDIAN CONVENTION — content format:
+Obsidian renders the filename as the page title (inline title). Do NOT start the note body with \`# <Filename>\` — it'll appear twice. Start with frontmatter (if any), then content using \`##\` for section headings. Smart Aide also strips a leading \`# <Filename>\` line automatically as a safety net.
+
 EXAMPLES:
 - "create a note at Daily/2026-05-21.md with [...]" -> write_note(path, content)
 - "rewrite this section to be clearer" -> read_note first, modify, write_note with full new content
@@ -410,7 +413,7 @@ Never writes outside the vault, never touches .obsidian/, never touches the acti
 		const path = normalizePath(strArg(args.path));
 		const file = ctx.app.vault.getFileByPath(path);
 		const oldContent = file ? await ctx.app.vault.read(file) : '';
-		const newContent = strArg(args.content);
+		const newContent = stripDuplicateTitleHeading(path, strArg(args.content));
 		return {
 			summary: file ? `Overwrite ${path}` : `Create ${path}`,
 			diff: { kind: 'overwrite', path, oldContent, newContent },
@@ -421,7 +424,7 @@ Never writes outside the vault, never touches .obsidian/, never touches the acti
 		if (!path) return JSON.stringify({ error: 'path is required' });
 		const guard = pathGuard(path);
 		if (guard) return JSON.stringify({ error: guard });
-		const content = strArg(args.content);
+		const content = stripDuplicateTitleHeading(path, strArg(args.content));
 		const existing = ctx.app.vault.getFileByPath(path);
 		if (existing) {
 			await ctx.app.vault.process(existing, () => content);
@@ -753,6 +756,23 @@ function normalizeTag(raw: string): string {
 	if (!raw) return '';
 	const trimmed = raw.startsWith('#') ? raw : '#' + raw;
 	return trimmed.toLowerCase();
+}
+
+/**
+ * Strip a leading `# <Filename>` heading if it exactly matches the basename of
+ * the file path. Obsidian renders the filename as the page title (inline title);
+ * a duplicate H1 in the body makes the title appear twice. Only triggers on
+ * exact-match — leaves any other H1 alone.
+ */
+function stripDuplicateTitleHeading(path: string, content: string): string {
+	const basename = path.replace(/\.md$/i, '').split('/').pop() ?? '';
+	if (!basename) return content;
+	const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	// Optional frontmatter block, optional whitespace, then `# Basename` and up to two newlines.
+	const pattern = new RegExp(
+		`^((?:---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n)?\\s*)# ${escaped}[ \\t]*(?:\\r?\\n){0,2}`,
+	);
+	return content.replace(pattern, '$1');
 }
 
 /**
