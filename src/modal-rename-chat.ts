@@ -41,6 +41,15 @@ export class RenameChatModal extends Modal {
 			this.inputEl.focus();
 			this.inputEl.select();
 		}, 0);
+
+		// Mobile keyboard occlusion fix — scroll the input into view after the keyboard appears.
+		contentEl.addEventListener('focusin', (ev) => {
+			const target = ev.target as HTMLElement | null;
+			if (!target || !target.matches('input, textarea')) return;
+			window.setTimeout(() => {
+				target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}, 300);
+		});
 	}
 
 	onClose(): void {

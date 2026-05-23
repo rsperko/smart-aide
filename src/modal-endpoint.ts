@@ -16,6 +16,19 @@ export class EndpointEditModal extends Modal {
 		this.titleEl.setText(this.endpoint.name || 'Endpoint');
 		this.contentEl.addClass('vk-endpoint-modal');
 		this.render();
+		this.wireKeyboardAwareScroll();
+	}
+
+	private wireKeyboardAwareScroll(): void {
+		// On mobile (iOS in particular), the soft keyboard covers inputs near the bottom of a modal.
+		// When a field gets focus, wait for the viewport to shrink, then bring the field into view.
+		this.contentEl.addEventListener('focusin', (ev) => {
+			const target = ev.target as HTMLElement | null;
+			if (!target || !target.matches('input, textarea')) return;
+			window.setTimeout(() => {
+				target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}, 300);
+		});
 	}
 
 	onClose(): void {
