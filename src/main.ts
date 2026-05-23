@@ -72,17 +72,36 @@ export default class SmartAidePlugin extends Plugin {
 			// Sweep up empty chat files from older builds that persisted on creation.
 			void this.storage.cleanupEmptyChats().catch(() => undefined);
 		});
+
+		// Defensive: if duplicates appear during runtime (e.g. cross-device workspace
+		// sync, manual "Open as new tab"), collapse them as soon as layout changes.
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				if (this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE).length > 1) {
+					this.collapseToSingleLeaf();
+				}
+			}),
+		);
+	}
+
+	/**
+	 * Collapse multiple chat leaves to a single one. Prefers a leaf that has an
+	 * instantiated ChatView (i.e. one the user is interacting with) over deferred
+	 * placeholders. Called at every entry point that touches leaves — plugin load,
+	 * open-chat command, and layout-change events.
+	 */
+	private collapseToSingleLeaf(): WorkspaceLeaf | null {
+		const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+		if (existing.length === 0) return null;
+		const keeper = existing.find((l) => l.view instanceof ChatView) ?? existing[0];
+		for (const leaf of existing) {
+			if (leaf !== keeper) leaf.detach();
+		}
+		return keeper;
 	}
 
 	private async ensureRightSidebarLeaf(): Promise<void> {
-		// Detach any duplicate leaves left behind by prior workspace states (e.g. the
-		// vault-keeper → smart-aide rename, or repeated plugin reloads).
-		const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-		for (let i = 1; i < existing.length; i++) {
-			existing[i].detach();
-		}
-
-		let leaf: WorkspaceLeaf | null = existing[0] ?? null;
+		let leaf = this.collapseToSingleLeaf();
 
 		if (!leaf) {
 			// Prefer ensureSideLeaf (Obsidian 1.7.2+); fall back for older builds.
@@ -142,8 +161,8 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	private async ensureChatLeaf(): Promise<WorkspaceLeaf> {
-		const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
-		if (existing) return existing;
+		const keeper = this.collapseToSingleLeaf();
+		if (keeper) return keeper;
 		const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
 		return leaf;
