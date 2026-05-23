@@ -969,9 +969,7 @@ export class ChatView extends ItemView {
 		const manifest = this.plugin.skills.manifestText();
 		const sections = [base];
 		if (agentsBody) {
-			sections.push(
-				`Vault context (user-maintained, from ${this.plugin.settings.metaDir}/AGENTS.md):\n\n${agentsBody}`,
-			);
+			sections.push(`Vault context (user-maintained):\n\n${agentsBody}`);
 		}
 		if (manifest) sections.push(manifest);
 		return sections.join('\n\n');

@@ -64,4 +64,26 @@ describe('AgentsMdRegistry', () => {
 		await reg.load();
 		expect(reg.text()).toBe('');
 	});
+
+	it('reads vault-root AGENTS.md when metaDir file is absent', async () => {
+		vault.addFile('AGENTS.md', 'root body');
+		const reg = new AgentsMdRegistry(app, 'Meta');
+		await reg.load();
+		expect(reg.text()).toBe('root body');
+	});
+
+	it('concatenates root and metaDir AGENTS.md with headers, root first', async () => {
+		vault.addFile('AGENTS.md', 'root body');
+		vault.addFile('sys/AGENTS.md', 'sys body');
+		const reg = new AgentsMdRegistry(app, 'sys');
+		await reg.load();
+		expect(reg.text()).toBe('# AGENTS.md\n\nroot body\n\n---\n\n# sys/AGENTS.md\n\nsys body');
+	});
+
+	it('reads the root file once when metaDir resolves to vault root', async () => {
+		vault.addFile('AGENTS.md', 'root body');
+		const reg = new AgentsMdRegistry(app, '.');
+		await reg.load();
+		expect(reg.text()).toBe('root body');
+	});
 });
