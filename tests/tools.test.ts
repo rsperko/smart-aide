@@ -4,13 +4,16 @@ import {
 	emptyHint,
 	findContentMatches,
 	findSectionIndex,
+	LOAD_SKILL_NAME,
 	matchesPathPrefix,
 	normalizePathPrefix,
 	normalizeTag,
 	pathGuard,
 	stripDuplicateTitleHeading,
 	TOOLS,
+	toolsToOpenAI,
 } from '../src/tools';
+import type { Tool } from '../src/types';
 import { App, TFile, TFolder } from 'obsidian';
 
 // ---------- pathGuard ----------
@@ -599,5 +602,190 @@ describe('search_vault advanced paths', () => {
 		expect(parsed.matches).toBe(15);
 		expect(parsed.returned).toBe(5);
 		expect(parsed.hint).toMatch(/Showing top/);
+	});
+
+	it('filters by pathPrefix combined with query (segment-boundary match)', async () => {
+		const inFolder = tfile('Daily/note.md');
+		const outOfFolder = tfile('DailyNotes/note.md');
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [inFolder, outOfFolder];
+		app.metadataCache.getFileCache = () => null;
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'note', pathPrefix: 'Daily' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].path).toBe('Daily/note.md');
+	});
+
+	it('records a tag hit when query fuzzy-matches a frontmatter tag', async () => {
+		const f = tfile('Notes/x.md');
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => ({
+			headings: [],
+			frontmatter: { tags: ['weekly-review'] },
+			tags: [],
+		});
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'weekly' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].hits.some((h: { in: string }) => h.in === 'tag')).toBe(true);
+	});
+
+	it('sorts hits within a file by tier (filename > heading)', async () => {
+		// A note whose filename + a heading both fuzzy-match "weekly".
+		const f = tfile('Notes/weekly.md');
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => ({
+			headings: [{ heading: 'weekly summary', level: 2, position: { start: { line: 5 } } }],
+		});
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'weekly' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		const hits = parsed.results[0].hits;
+		expect(hits.length).toBeGreaterThanOrEqual(2);
+		// filename tier should come before heading tier in the sorted display.
+		expect(hits[0].in).toBe('filename');
+	});
+
+	it('emits a heading hit endLine that points at the next same-level heading', async () => {
+		// Triggers sectionEndLine's "return next heading" branch.
+		const f = tfile('Notes/long.md');
+		(f as TFile & { stat: { size: number } }).stat.size = 1000;
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => ({
+			headings: [
+				{ heading: 'weekly review', level: 2, position: { start: { line: 5 } } },
+				{ heading: 'next section', level: 2, position: { start: { line: 12 } } },
+			],
+		});
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'weekly review' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		const headingHit = parsed.results[0].hits.find((h: { in: string }) => h.in === 'heading');
+		expect(headingHit.endLine).toBe(12);
+	});
+});
+
+describe('read_note section ends at end-of-file', () => {
+	it('returns the section through totalLines when no following same-or-higher heading', async () => {
+		// "Setup" is the last heading; sectionEndLineByTotal should return totalLines.
+		const content = ['# Top', 'intro', '## Setup', 'install', 'step 2', 'step 3'].join('\n');
+		const file = tfile('a.md', content);
+		const app = appWithFiles([file]);
+		app.metadataCache.getFileCache = () => ({
+			headings: [
+				{ heading: 'Top', level: 1, position: { start: { line: 0 } } },
+				{ heading: 'Setup', level: 2, position: { start: { line: 2 } } },
+			],
+		});
+		const out = await dispatchTool(TOOLS, 'read_note', { path: 'a.md', section: 'Setup' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.content).toContain('install');
+		expect(parsed.content).toContain('step 3');
+	});
+});
+
+describe('write/append/delete preview()', () => {
+	it('write_note preview reports Overwrite for an existing file', async () => {
+		const file = tfile('Notes/a.md', 'old');
+		const app = appWithFiles([file]);
+		const writeTool = TOOLS.find((t: Tool) => t.name === 'write_note')!;
+		const preview = await writeTool.preview!({ path: 'Notes/a.md', content: '# a\nnew' }, { app, metaDir: 'Meta' });
+		expect(preview.summary).toMatch(/Overwrite/);
+		expect(preview.diff?.kind).toBe('overwrite');
+		// stripDuplicateTitleHeading kicks in for the preview newContent.
+		expect(preview.diff?.newContent).not.toMatch(/^# a/);
+	});
+
+	it('write_note preview reports Create for a missing file', async () => {
+		const app = appWithFiles([]);
+		const writeTool = TOOLS.find((t: Tool) => t.name === 'write_note')!;
+		const preview = await writeTool.preview!({ path: 'Notes/new.md', content: 'body' }, { app, metaDir: 'Meta' });
+		expect(preview.summary).toMatch(/Create/);
+		expect(preview.diff?.oldContent).toBe('');
+	});
+
+	it('append_to_note preview reports "Append to" for an existing file', async () => {
+		const file = tfile('Notes/a.md', 'old');
+		const app = appWithFiles([file]);
+		const appendTool = TOOLS.find((t: Tool) => t.name === 'append_to_note')!;
+		const preview = await appendTool.preview!({ path: 'Notes/a.md', content: 'tail' }, { app, metaDir: 'Meta' });
+		expect(preview.summary).toMatch(/Append to/);
+		expect(preview.diff?.kind).toBe('append');
+		expect(preview.diff?.newContent).toBe('tail');
+	});
+
+	it('append_to_note preview flags a missing file in the summary', async () => {
+		const app = appWithFiles([]);
+		const appendTool = TOOLS.find((t: Tool) => t.name === 'append_to_note')!;
+		const preview = await appendTool.preview!({ path: 'Notes/missing.md', content: 'x' }, { app, metaDir: 'Meta' });
+		expect(preview.summary).toMatch(/Cannot append/);
+	});
+
+	it('delete_note preview reports "Delete" with the old content', async () => {
+		const file = tfile('Notes/a.md', 'doomed');
+		const app = appWithFiles([file]);
+		const deleteTool = TOOLS.find((t: Tool) => t.name === 'delete_note')!;
+		const preview = await deleteTool.preview!({ path: 'Notes/a.md' }, { app, metaDir: 'Meta' });
+		expect(preview.summary).toMatch(/Delete/);
+		expect(preview.diff?.kind).toBe('delete');
+		expect(preview.diff?.oldContent).toBe('doomed');
+	});
+
+	it('delete_note preview returns empty oldContent when the file is missing', async () => {
+		const app = appWithFiles([]);
+		const deleteTool = TOOLS.find((t: Tool) => t.name === 'delete_note')!;
+		const preview = await deleteTool.preview!({ path: 'Notes/missing.md' }, { app, metaDir: 'Meta' });
+		expect(preview.diff?.oldContent).toBe('');
+	});
+});
+
+describe('load_skill default execute', () => {
+	it('returns an error pointing to view-level dispatch (the default body)', async () => {
+		const out = await dispatchTool(TOOLS, LOAD_SKILL_NAME, { name: 'whatever' }, new App(), 'Meta');
+		expect(JSON.parse(out).error).toMatch(/dispatched through the view/);
+	});
+});
+
+describe('toolsToOpenAI', () => {
+	it('wraps each tool as an OpenAI function-type definition', () => {
+		const out = toolsToOpenAI(TOOLS);
+		expect(out.length).toBe(TOOLS.length);
+		for (const t of out) {
+			expect(t.type).toBe('function');
+			expect(typeof t.function.name).toBe('string');
+			expect(typeof t.function.description).toBe('string');
+			expect(t.function.parameters).toBeTruthy();
+		}
+		const names = out.map((t) => t.function.name);
+		expect(names).toContain('search_vault');
+		expect(names).toContain('read_note');
+	});
+});
+
+describe('dispatchTool — execute throws', () => {
+	it('catches the error and returns a JSON error payload', async () => {
+		const failing: Tool = {
+			name: 'boom',
+			description: 'always throws',
+			parameters: { type: 'object', properties: {} },
+			risk: 'read',
+			async execute() { throw new Error('kaboom'); },
+		};
+		const out = await dispatchTool([failing], 'boom', {}, new App(), 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.error).toMatch(/tool boom failed: kaboom/);
+	});
+
+	it('coerces non-Error throws into the error string', async () => {
+		const failing: Tool = {
+			name: 'boom',
+			description: 'always throws',
+			parameters: { type: 'object', properties: {} },
+			risk: 'read',
+			async execute() { throw 'rope'; },
+		};
+		const out = await dispatchTool([failing], 'boom', {}, new App(), 'Meta');
+		expect(JSON.parse(out).error).toMatch(/rope/);
 	});
 });

@@ -1,7 +1,8 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf, FuzzySuggestModal } from 'obsidian';
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
-import { chatsDirFor, migrateSettings, skillsDirFor, SmartAideSettings, SmartAideSettingsTab } from './settings';
+import { chatsDirFor, migrateSettings, skillsDirFor, SmartAideSettings } from './settings';
+import { SmartAideSettingsTab } from './settings-tab';
 import { SkillRegistry } from './skills';
 import { AgentsMdRegistry } from './agents-md';
 

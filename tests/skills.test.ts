@@ -205,4 +205,16 @@ describe('SkillRegistry', () => {
 		await registry.load();
 		expect(registry.all()).toEqual([]);
 	});
+
+	it('setDir falls back to the default when given an empty string', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const file = vault.addFile('Meta/skills/x.md', '---\nname: x\ndescription: d\n---\nbody');
+		attachToFolder(folder, file);
+
+		const registry = new SkillRegistry(app, 'tmp');
+		registry.setDir('');
+		await registry.load();
+		// Loaded from the default 'Meta/skills'.
+		expect(registry.all().map((s) => s.name)).toEqual(['x']);
+	});
 });

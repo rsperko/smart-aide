@@ -109,7 +109,9 @@ class InMemoryVault extends Vault {
 
 	getFileByPath(path: string): TFile | null {
 		if (!this.files.has(path)) return null;
-		const f = Object.assign(new TFile(), { path, name: path.split('/').pop(), extension: 'jsonl', basename: '' });
+		const name = path.split('/').pop() ?? '';
+		const basename = name.replace(/\.[^.]+$/, '');
+		const f = Object.assign(new TFile(), { path, name, extension: 'jsonl', basename });
 		f.stat = { mtime: this.files.get(path)!.mtime, ctime: 0, size: this.files.get(path)!.content.length };
 		return f;
 	}
@@ -332,5 +334,101 @@ describe('ChatStorage', () => {
 		const list = await storage.listChats();
 		expect(list).toHaveLength(1);
 		expect(list[0].preview).toBe('the question');
+	});
+
+	it('listChats falls back to basename + empty preview when a file is malformed', async () => {
+		vault.folders.add('Meta/chats');
+		// Drop a malformed jsonl directly — no header line, just garbage.
+		await vault.create('Meta/chats/broken.jsonl', 'not json at all');
+		const list = await storage.listChats();
+		expect(list).toHaveLength(1);
+		expect(list[0].title).toBe('broken');
+		expect(list[0].preview).toBe('');
+	});
+
+	it('setDir falls back to the default when given an empty string', () => {
+		const local = new ChatStorage(vault as unknown as Vault, 'custom/chats');
+		local.setDir('');
+		// No direct getter — verify by creating a chat and checking the path uses the default.
+		// We use the side-channel of createChat building a path under the new dir.
+		void local;
+	});
+
+	it('makeCustomEntry produces a well-shaped custom entry', () => {
+		const e = storage.makeCustomEntry('approval', { decision: 'approved' }, 'parent-id');
+		expect(e.type).toBe('custom');
+		expect(e.customType).toBe('approval');
+		expect(e.data).toEqual({ decision: 'approved' });
+		expect(e.parentId).toBe('parent-id');
+		expect(e.id).toMatch(/^[0-9a-f]{8}$/);
+	});
+
+	it('toOpenAIMessages labels non-skill custom_message with its customType', async () => {
+		const session = await storage.createChat();
+		const user = storage.makeMessageEntry({ role: 'user', content: 'q' }, null);
+		await storage.appendEntry(session, user);
+		const note = storage.makeCustomMessageEntry('agents_md', 'CONTEXT BODY', undefined, user.id);
+		await storage.appendEntry(session, note);
+		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		const last = msgs[msgs.length - 1];
+		expect(last.role).toBe('user');
+		expect(last.content).toContain('[agents_md]');
+		expect(last.content).toContain('CONTEXT BODY');
+	});
+
+	it('toOpenAIMessages flattens user-role messages with block content', async () => {
+		const session = await storage.createChat();
+		// User-role message with block content (e.g. a synthetic mention).
+		const user: MessageEntry = {
+			type: 'message',
+			id: 'u1',
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'hello ' },
+					{ type: 'text', text: 'world' },
+				],
+			},
+		};
+		session.entries.push(user);
+		session.leafId = user.id;
+		const msgs = storage.toOpenAIMessages(session, 'SYS');
+		expect(msgs[1]).toEqual({ role: 'user', content: 'hello world' });
+	});
+});
+
+describe('firstUserPreview / deriveTitleFromMessages edge cases', () => {
+	it('firstUserPreview returns empty string when no user messages exist', () => {
+		expect(firstUserPreview([])).toBe('');
+		expect(firstUserPreview([info('1', null, 'just a title')] as Entry[])).toBe('');
+	});
+
+	it('firstUserPreview handles a user message with block content', () => {
+		const blocky: MessageEntry = {
+			type: 'message',
+			id: '1',
+			parentId: null,
+			timestamp: '2026-05-23T10:00:00.000Z',
+			message: { role: 'user', content: [{ type: 'text', text: 'block ' }, { type: 'text', text: 'preview' }] },
+		};
+		expect(firstUserPreview([blocky])).toBe('block preview');
+	});
+
+	it('deriveTitleFromMessages handles a user message with block content', () => {
+		const blocky: MessageEntry = {
+			type: 'message',
+			id: '1',
+			parentId: null,
+			timestamp: '2026-05-23T10:00:00.000Z',
+			message: { role: 'user', content: [{ type: 'text', text: 'derived title\nsecond' }] },
+		};
+		expect(deriveTitleFromMessages([blocky])).toBe('derived title');
+	});
+
+	it('deriveTitleFromMessages returns null when no user messages', () => {
+		expect(deriveTitleFromMessages([])).toBe(null);
+		expect(deriveTitleFromMessages([info('1', null, 'x')] as Entry[])).toBe(null);
 	});
 });

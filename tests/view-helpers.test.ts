@@ -96,6 +96,9 @@ describe('shouldShowRoleLabel', () => {
 		expect(shouldShowRoleLabel({ role: 'assistant', content: 'hi' })).toBe(true);
 		expect(shouldShowRoleLabel({ role: 'assistant', content: [{ type: 'text', text: 'hi' }] })).toBe(true);
 	});
+	it('shows for non-user/assistant/tool roles (e.g. system)', () => {
+		expect(shouldShowRoleLabel({ role: 'system', content: 'cfg' })).toBe(true);
+	});
 });
 
 describe('formatArgValue / formatArgsInline', () => {
@@ -238,6 +241,14 @@ describe('summarizeToolResult', () => {
 
 	it('summarizes full-file reads', () => {
 		expect(summarizeToolResult(JSON.stringify({ path: 'a.md', lines: 5 }))).toBe('a.md (5 lines)');
+	});
+
+	it('falls back to the path alone when no line info is present', () => {
+		expect(summarizeToolResult(JSON.stringify({ path: 'a.md' }))).toBe('a.md');
+	});
+
+	it('falls back to byte count for parsed JSON with no recognized shape', () => {
+		expect(summarizeToolResult(JSON.stringify({ random: 'shape' }))).toBe(JSON.stringify({ random: 'shape' }).length + 'B');
 	});
 
 	it('summarizes errors with truncation', () => {

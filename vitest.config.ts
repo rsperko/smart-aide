@@ -22,6 +22,7 @@ export default defineConfig({
 				'src/provider.ts',
 				'src/main.ts',
 				'src/view.ts',
+				'src/settings-tab.ts',
 				// Type-only module (compiles to nothing).
 				'src/types.ts',
 			],
