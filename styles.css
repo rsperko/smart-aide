@@ -1142,6 +1142,19 @@ details[open] > .vk-research-summary::after {
 	font-size: 12px;
 	margin: 4px 0;
 	overflow: hidden;
+	/* Pending approvals stick to the bottom of the chat scroll area so they
+	   can't be hidden offscreen on mobile. Resolved (approved/rejected) cards
+	   release the sticky positioning via the class overrides below. */
+	position: sticky;
+	bottom: 8px;
+	z-index: 5;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.vk-approval.vk-approval-decided-approved,
+.vk-approval.vk-approval-decided-rejected {
+	position: static;
+	box-shadow: none;
 }
 
 .vk-approval-pending {

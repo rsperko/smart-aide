@@ -968,13 +968,11 @@ export class ChatView extends ItemView {
 				this.registerDomEvent(approveAllBtn, 'click', () => decide({ approved: true, scope: 'turn' }));
 			}
 
-			// On mobile (iOS especially), streamEl.scrollTop = scrollHeight is unreliable
-			// when called immediately after appending. scrollIntoView on the new card
-			// itself is more robust — and using block: 'end' puts the action buttons in
-			// the visible area rather than just the card's header.
-			window.setTimeout(() => {
-				card.scrollIntoView({ behavior: 'smooth', block: 'end' });
-			}, 50);
+			// The card uses position: sticky so it stays at the bottom of the chat scroll
+			// area until the user decides. Notice nudges attention in case the chat panel
+			// is scrolled or in the background.
+			const label = preview.summary;
+			new Notice(`Approval needed: ${label}`, 4000);
 		});
 	}
 
