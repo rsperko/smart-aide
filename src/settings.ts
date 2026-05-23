@@ -161,7 +161,7 @@ function endpointSummary(endpoint: Endpoint): string {
 	return parts.join(' · ');
 }
 
-function describeFreshness(iso: string): string {
+export function describeFreshness(iso: string): string {
 	const then = new Date(iso).getTime();
 	if (!Number.isFinite(then)) return iso.slice(0, 10);
 	const minutes = Math.floor((Date.now() - then) / 60_000);
@@ -175,7 +175,7 @@ function describeFreshness(iso: string): string {
 	return iso.slice(0, 10);
 }
 
-function sameRef(a: ModelRef, b: ModelRef): boolean {
+export function sameRef(a: ModelRef, b: ModelRef): boolean {
 	return a.endpointId === b.endpointId && a.slug === b.slug;
 }
 

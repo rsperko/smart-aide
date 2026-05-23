@@ -482,7 +482,10 @@ EXAMPLES:
 		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) return JSON.stringify({ error: `not found: ${path}` });
-		await ctx.app.vault.append(file, strArg(args.content));
+		// Don't trim — the tool description tells the model to use leading
+		// newlines for spacing, so trimming silently breaks that contract.
+		const content = typeof args.content === 'string' ? args.content : '';
+		await ctx.app.vault.append(file, content);
 		return JSON.stringify({ status: 'appended', path });
 	},
 };
@@ -565,8 +568,9 @@ Uses MetadataCache resolvedLinks — fast, no file reads. Returns paths sorted b
 		required: ['path'],
 	},
 	async execute(args, ctx) {
-		const target = normalizePath(strArg(args.path));
-		if (!target) return JSON.stringify({ error: 'path is required' });
+		const rawPath = strArg(args.path);
+		if (!rawPath) return JSON.stringify({ error: 'path is required' });
+		const target = normalizePath(rawPath);
 		const links = ctx.app.metadataCache.resolvedLinks;
 		const backlinks: { path: string; count: number }[] = [];
 		for (const [source, targets] of Object.entries(links)) {
@@ -658,7 +662,7 @@ function sectionEndLineByTotal(
 	return totalLines;
 }
 
-function findSectionIndex(
+export function findSectionIndex(
 	headings: { heading: string }[],
 	section: string,
 ): number {
@@ -699,7 +703,7 @@ function rangeResponse(
 	});
 }
 
-function findContentMatches(
+export function findContentMatches(
 	content: string,
 	query: string,
 	max: number,
@@ -728,7 +732,7 @@ function findContentMatches(
 	return out;
 }
 
-function emptyHint(args: {
+export function emptyHint(args: {
 	query: string;
 	tag: string;
 	pathPrefix: string;
@@ -764,7 +768,7 @@ function isoDate(ms: number): string {
 	return new Date(ms).toISOString().slice(0, 10);
 }
 
-function normalizeTag(raw: string): string {
+export function normalizeTag(raw: string): string {
 	if (!raw) return '';
 	const trimmed = raw.startsWith('#') ? raw : '#' + raw;
 	return trimmed.toLowerCase();
@@ -774,7 +778,7 @@ function normalizeTag(raw: string): string {
  * Strip leading and trailing slashes so the prefix represents a clean folder
  * (or file) segment. Empty string means "no filter".
  */
-function normalizePathPrefix(raw: string): string {
+export function normalizePathPrefix(raw: string): string {
 	return (raw ?? '').trim().replace(/^\/+|\/+$/g, '');
 }
 
@@ -783,7 +787,7 @@ function normalizePathPrefix(raw: string): string {
  * `Daily` matches `Daily/2026-05-20.md` but not `DailyNotes/...`. An exact
  * match (e.g. for a file path) also matches.
  */
-function matchesPathPrefix(path: string, prefix: string): boolean {
+export function matchesPathPrefix(path: string, prefix: string): boolean {
 	if (!prefix) return true;
 	if (path === prefix) return true;
 	return path.startsWith(prefix + '/');
@@ -795,13 +799,15 @@ function matchesPathPrefix(path: string, prefix: string): boolean {
  * a duplicate H1 in the body makes the title appear twice. Only triggers on
  * exact-match — leaves any other H1 alone.
  */
-function stripDuplicateTitleHeading(path: string, content: string): string {
+export function stripDuplicateTitleHeading(path: string, content: string): string {
 	const basename = path.replace(/\.md$/i, '').split('/').pop() ?? '';
 	if (!basename) return content;
 	const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	// Optional frontmatter block, optional whitespace, then `# Basename` and up to two newlines.
+	// Optional frontmatter block, optional whitespace, then `# Basename` followed
+	// by end-of-line or end-of-file (so `# FooBar` does NOT match basename `Foo`),
+	// then optionally a blank line below.
 	const pattern = new RegExp(
-		`^((?:---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n)?\\s*)# ${escaped}[ \\t]*(?:\\r?\\n){0,2}`,
+		`^((?:---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n)?\\s*)# ${escaped}[ \\t]*(?=\\r?\\n|$)(?:\\r?\\n){0,2}`,
 	);
 	return content.replace(pattern, '$1');
 }
@@ -812,7 +818,7 @@ function stripDuplicateTitleHeading(path: string, content: string): string {
  * a trailing slash in user settings can't produce a `meta//chats/` prefix that
  * a vault-relative path would silently bypass.
  */
-function pathGuard(
+export function pathGuard(
 	path: string,
 	metaDir: string,
 	opts: { requireMarkdown?: boolean } = {},

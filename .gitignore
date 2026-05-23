@@ -5,6 +5,9 @@ main.js
 data.json
 .obsidian/
 
+# Test coverage output (regenerated via `npm run coverage`).
+coverage/
+
 # Internal design notes — kept locally, excluded from the public repo.
 agent_notes/
 

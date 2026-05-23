@@ -298,7 +298,7 @@ export class ChatStorage {
 	}
 }
 
-function computeLeaf(entries: Entry[]): string | null {
+export function computeLeaf(entries: Entry[]): string | null {
 	if (entries.length === 0) return null;
 	const hasChild = new Set<string>();
 	for (const e of entries) if (e.parentId) hasChild.add(e.parentId);
@@ -309,7 +309,7 @@ function computeLeaf(entries: Entry[]): string | null {
 	return leaves[0].id;
 }
 
-function findTitle(entries: Entry[]): string | null {
+export function findTitle(entries: Entry[]): string | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const e = entries[i];
 		if (e.type === 'session_info' && e.name) return e.name;
@@ -317,7 +317,7 @@ function findTitle(entries: Entry[]): string | null {
 	return null;
 }
 
-function firstUserPreview(entries: Entry[]): string {
+export function firstUserPreview(entries: Entry[]): string {
 	for (const e of entries) {
 		if (e.type !== 'message' || e.message.role !== 'user') continue;
 		const content = typeof e.message.content === 'string'
@@ -332,7 +332,7 @@ function firstUserPreview(entries: Entry[]): string {
 	return '';
 }
 
-function deriveTitleFromMessages(entries: Entry[]): string | null {
+export function deriveTitleFromMessages(entries: Entry[]): string | null {
 	for (const e of entries) {
 		if (e.type !== 'message' || e.message.role !== 'user') continue;
 		const content = typeof e.message.content === 'string'

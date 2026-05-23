@@ -96,7 +96,7 @@ export class SkillRegistry {
 }
 
 /** Minimal frontmatter parser — `name`, `description`, and the optional `mobile` flag. */
-function parseSkillContent(content: string, path: string): Skill | null {
+export function parseSkillContent(content: string, path: string): Skill | null {
 	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 	if (!fmMatch) return null;
 	const fmText = fmMatch[1];
@@ -108,7 +108,7 @@ function parseSkillContent(content: string, path: string): Skill | null {
 	return { name, description, body, path, mobile };
 }
 
-function scalarField(yaml: string, key: string): string {
+export function scalarField(yaml: string, key: string): string {
 	// Supports `key: value`, `key: 'value'`, `key: "value"`. Single-line only.
 	const re = new RegExp(`^${key}\\s*:\\s*(.*)$`, 'mi');
 	const match = yaml.match(re);

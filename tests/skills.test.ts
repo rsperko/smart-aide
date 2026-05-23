@@ -1,0 +1,208 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { App, Platform, TFile, TFolder, Vault } from 'obsidian';
+import { parseSkillContent, scalarField, SkillRegistry } from '../src/skills';
+
+describe('scalarField', () => {
+	it('reads a bare value', () => {
+		expect(scalarField('name: foo\ndescription: bar', 'name')).toBe('foo');
+	});
+
+	it('strips matching single and double quotes', () => {
+		expect(scalarField('name: "Quoted"\n', 'name')).toBe('Quoted');
+		expect(scalarField("name: 'Quoted'\n", 'name')).toBe('Quoted');
+	});
+
+	it('returns empty for a missing key', () => {
+		expect(scalarField('name: foo', 'missing')).toBe('');
+	});
+
+	it('is case-insensitive on the key', () => {
+		expect(scalarField('Name: foo', 'name')).toBe('foo');
+	});
+});
+
+describe('parseSkillContent', () => {
+	it('parses name + description + body', () => {
+		const md = '---\nname: note-capture\ndescription: capture notes\n---\nBody here';
+		const skill = parseSkillContent(md, 'Meta/skills/note-capture.md');
+		expect(skill).not.toBeNull();
+		expect(skill!.name).toBe('note-capture');
+		expect(skill!.description).toBe('capture notes');
+		expect(skill!.body).toBe('Body here');
+		expect(skill!.mobile).toBe(true);
+	});
+
+	it('returns null when frontmatter is missing', () => {
+		expect(parseSkillContent('just body, no fm', 'a.md')).toBeNull();
+	});
+
+	it('returns null when name or description is missing', () => {
+		const md = '---\nname: only-name\n---\nbody';
+		expect(parseSkillContent(md, 'a.md')).toBeNull();
+	});
+
+	it('honors `mobile: false` to flag a desktop-only skill', () => {
+		const md = '---\nname: desk\ndescription: d\nmobile: false\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.mobile).toBe(false);
+	});
+});
+
+// ---------- SkillRegistry ----------
+
+class MiniVault extends Vault {
+	files = new Map<string, string>();
+	folders = new Map<string, TFolder>();
+
+	getAbstractFileByPath(path: string): TFolder | TFile | null {
+		if (this.folders.has(path)) return this.folders.get(path)!;
+		if (this.files.has(path)) {
+			const f = new TFile();
+			f.path = path;
+			f.extension = 'md';
+			f.basename = (path.split('/').pop() ?? '').replace(/\.md$/, '');
+			return f;
+		}
+		return null;
+	}
+
+	async cachedRead(file: TFile): Promise<string> {
+		return this.files.get(file.path) ?? '';
+	}
+
+	addFile(path: string, content: string): TFile {
+		this.files.set(path, content);
+		return this.getAbstractFileByPath(path) as TFile;
+	}
+
+	addFolder(path: string): TFolder {
+		const folder = new TFolder();
+		folder.path = path;
+		folder.name = path.split('/').pop() ?? path;
+		folder.children = [];
+		this.folders.set(path, folder);
+		return folder;
+	}
+}
+
+function attachToFolder(folder: TFolder, child: TFile | TFolder): void {
+	child.parent = folder;
+	folder.children.push(child);
+}
+
+describe('SkillRegistry', () => {
+	let vault: MiniVault;
+	let app: App;
+
+	beforeEach(() => {
+		Platform.isMobile = false;
+		vault = new MiniVault();
+		app = new App();
+		app.vault = vault as unknown as Vault;
+	});
+
+	it('reads a flat single-file skill', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const file = vault.addFile('Meta/skills/note-capture.md', '---\nname: note-capture\ndescription: capture\n---\nbody');
+		attachToFolder(folder, file);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+		const all = registry.all();
+		expect(all).toHaveLength(1);
+		expect(all[0].name).toBe('note-capture');
+	});
+
+	it('reads a SKILL.md inside a subfolder', async () => {
+		const root = vault.addFolder('Meta/skills');
+		const sub = vault.addFolder('Meta/skills/my-skill');
+		const skillFile = vault.addFile(
+			'Meta/skills/my-skill/SKILL.md',
+			'---\nname: my-skill\ndescription: d\n---\nbody',
+		);
+		attachToFolder(root, sub);
+		attachToFolder(sub, skillFile);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+		expect(registry.all().map((s) => s.name)).toEqual(['my-skill']);
+	});
+
+	it('visibleOnThisPlatform filters mobile-hidden skills on mobile', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const desktop = vault.addFile(
+			'Meta/skills/desk.md',
+			'---\nname: desk\ndescription: d\nmobile: false\n---\nbody',
+		);
+		const mobile = vault.addFile(
+			'Meta/skills/mob.md',
+			'---\nname: mob\ndescription: m\n---\nbody',
+		);
+		attachToFolder(folder, desktop);
+		attachToFolder(folder, mobile);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		Platform.isMobile = false;
+		expect(registry.visibleOnThisPlatform().map((s) => s.name).sort()).toEqual(['desk', 'mob']);
+
+		Platform.isMobile = true;
+		expect(registry.visibleOnThisPlatform().map((s) => s.name)).toEqual(['mob']);
+	});
+
+	it('loadable() refuses mobile-hidden skills on mobile (the v0.1.16 fix)', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const desktop = vault.addFile(
+			'Meta/skills/desk.md',
+			'---\nname: desk\ndescription: d\nmobile: false\n---\nbody',
+		);
+		attachToFolder(folder, desktop);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		// getByName still finds it (kept for any future generic lookup), but
+		// loadable() — the resolver load_skill uses — refuses on mobile.
+		Platform.isMobile = true;
+		expect(registry.getByName('desk')?.name).toBe('desk');
+		expect(registry.loadable('desk')).toBeNull();
+
+		Platform.isMobile = false;
+		expect(registry.loadable('desk')?.name).toBe('desk');
+	});
+
+	it('manifestText omits hidden skills on mobile', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const desktop = vault.addFile(
+			'Meta/skills/desk.md',
+			'---\nname: desk\ndescription: d\nmobile: false\n---\nbody',
+		);
+		const mobile = vault.addFile(
+			'Meta/skills/mob.md',
+			'---\nname: mob\ndescription: m\n---\nbody',
+		);
+		attachToFolder(folder, desktop);
+		attachToFolder(folder, mobile);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		Platform.isMobile = true;
+		const text = registry.manifestText();
+		expect(text).toContain('mob: m');
+		expect(text).not.toContain('desk: d');
+	});
+
+	it('manifestText returns "" with no skills', async () => {
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load(); // folder missing → no skills
+		expect(registry.manifestText()).toBe('');
+	});
+
+	it('returns no skills when the dir is missing entirely', async () => {
+		const registry = new SkillRegistry(app, 'Missing/dir');
+		await registry.load();
+		expect(registry.all()).toEqual([]);
+	});
+});
