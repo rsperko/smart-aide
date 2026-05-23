@@ -1,20 +1,24 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf, FuzzySuggestModal } from 'obsidian';
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
-import { migrateSettings, SmartAideSettings, SmartAideSettingsTab } from './settings';
+import { chatsDirFor, migrateSettings, skillsDirFor, SmartAideSettings, SmartAideSettingsTab } from './settings';
 import { SkillRegistry } from './skills';
+import { AgentsMdRegistry } from './agents-md';
 
 export default class SmartAidePlugin extends Plugin {
 	settings!: SmartAideSettings;
 	storage!: ChatStorage;
 	skills!: SkillRegistry;
+	agents!: AgentsMdRegistry;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		this.storage = new ChatStorage(this.app.vault);
-		this.skills = new SkillRegistry(this.app, this.settings.skillsDir);
-		// Discover skills in the background — don't block plugin load
+		this.storage = new ChatStorage(this.app.vault, chatsDirFor(this.settings.metaDir));
+		this.skills = new SkillRegistry(this.app, skillsDirFor(this.settings.metaDir));
+		this.agents = new AgentsMdRegistry(this.app, this.settings.metaDir);
+		// Discover skills + AGENTS.md in the background — don't block plugin load
 		this.skills.load().catch((e) => console.warn('smart-aide: skill load failed', e));
+		this.agents.load().catch((e) => console.warn('smart-aide: AGENTS.md load failed', e));
 
 		this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
 		this.addSettingTab(new SmartAideSettingsTab(this.app, this));
@@ -23,9 +27,9 @@ export default class SmartAidePlugin extends Plugin {
 
 		this.addCommand({
 			id: 'reload-skills',
-			name: 'Reload skills',
+			name: 'Reload skills & AGENTS.md',
 			callback: async () => {
-				await this.skills.load();
+				await Promise.all([this.skills.load(), this.agents.load()]);
 				new Notice(`Loaded ${this.skills.all().length} skills.`);
 			},
 		});

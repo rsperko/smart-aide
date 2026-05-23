@@ -845,9 +845,16 @@ export class ChatView extends ItemView {
 
 	private composeSystemPrompt(): string {
 		const base = this.plugin.settings.systemPrompt;
+		const agentsBody = this.plugin.agents.text();
 		const manifest = this.plugin.skills.manifestText();
-		if (!manifest) return base;
-		return base + '\n\n' + manifest;
+		const sections = [base];
+		if (agentsBody) {
+			sections.push(
+				`Vault context (user-maintained, from ${this.plugin.settings.metaDir}/AGENTS.md):\n\n${agentsBody}`,
+			);
+		}
+		if (manifest) sections.push(manifest);
+		return sections.join('\n\n');
 	}
 
 	private async runAssistantLoop(): Promise<void> {
@@ -1048,7 +1055,7 @@ export class ChatView extends ItemView {
 		if (tool.risk === 'write' || tool.risk === 'delete') {
 			let preview;
 			try {
-				preview = tool.preview ? await tool.preview(args, { app: this.app }) : { summary: `${name}(${Object.keys(args).join(', ')})` };
+				preview = tool.preview ? await tool.preview(args, { app: this.app, metaDir: this.plugin.settings.metaDir }) : { summary: `${name}(${Object.keys(args).join(', ')})` };
 			} catch (e) {
 				preview = { summary: `${name} — preview failed: ${(e as Error).message}` };
 			}
@@ -1079,7 +1086,7 @@ export class ChatView extends ItemView {
 			if (decision.scope === 'turn') this.approveAllInTurn = true;
 		}
 
-		return await dispatchTool(TOOLS, name, args, this.app);
+		return await dispatchTool(TOOLS, name, args, this.app, this.plugin.settings.metaDir);
 	}
 
 	private requestApproval(tool: Tool, preview: { summary: string; diff?: { kind: 'overwrite' | 'append' | 'delete'; oldContent?: string; newContent?: string; path: string } }): Promise<ApprovalDecision> {

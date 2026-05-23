@@ -422,7 +422,7 @@ Never writes outside the vault, never touches .obsidian/, never touches the acti
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path);
+		const guard = pathGuard(path, ctx.metaDir);
 		if (guard) return JSON.stringify({ error: guard });
 		const content = stripDuplicateTitleHeading(path, strArg(args.content));
 		const existing = ctx.app.vault.getFileByPath(path);
@@ -470,7 +470,7 @@ EXAMPLES:
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path);
+		const guard = pathGuard(path, ctx.metaDir);
 		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) return JSON.stringify({ error: `not found: ${path}` });
@@ -504,7 +504,7 @@ Only use when the user explicitly asks to delete. Don't use to "tidy up" or "cle
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path);
+		const guard = pathGuard(path, ctx.metaDir);
 		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) return JSON.stringify({ error: `not found: ${path}` });
@@ -607,11 +607,12 @@ export async function dispatchTool(
 	name: string,
 	args: Record<string, unknown>,
 	app: App,
+	metaDir: string,
 ): Promise<string> {
 	const tool = tools.find((t) => t.name === name);
 	if (!tool) return JSON.stringify({ error: `unknown tool: ${name}` });
 	try {
-		return await tool.execute(args, { app });
+		return await tool.execute(args, { app, metaDir });
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return JSON.stringify({ error: `tool ${name} failed: ${msg}` });
@@ -779,10 +780,12 @@ function stripDuplicateTitleHeading(path: string, content: string): string {
  * Path allowlist for write/delete operations. Returns an error message if blocked,
  * or empty string if allowed.
  */
-function pathGuard(path: string): string {
+function pathGuard(path: string, metaDir: string): string {
 	if (path.startsWith('.obsidian/') || path === '.obsidian') return 'writes to .obsidian/ are forbidden';
-	if (path.startsWith('sys/.smart-aide/')) return 'writes to sys/.smart-aide/ are forbidden (plugin internal)';
-	if (path.startsWith('sys/chats/')) return 'writes to sys/chats/ are forbidden (chat history is managed by the plugin)';
+	const internalPrefix = `${metaDir}/.smart-aide/`;
+	const chatsPrefix = `${metaDir}/chats/`;
+	if (path.startsWith(internalPrefix)) return `writes to ${internalPrefix} are forbidden (plugin internal)`;
+	if (path.startsWith(chatsPrefix)) return `writes to ${chatsPrefix} are forbidden (chat history is managed by the plugin)`;
 	if (path.startsWith('/') || path.includes('../') || path.includes('..\\')) return 'absolute or parent-relative paths are forbidden';
 	return '';
 }

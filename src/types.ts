@@ -131,6 +131,7 @@ export type ToolRisk = 'read' | 'write' | 'delete' | 'network';
 
 export interface ToolContext {
 	app: import('obsidian').App;
+	metaDir: string;
 }
 
 export interface ApprovalPreview {

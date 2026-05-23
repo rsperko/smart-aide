@@ -11,8 +11,8 @@ export interface Skill {
 /**
  * Skill discovery and lookup.
  *
- * Skills live in a single vault-relative directory (default `sys/skills/`,
- * configurable in settings). Both desktop and mobile read from the same place
+ * Skills live in a single vault-relative directory (default `Meta/skills/`,
+ * configurable in settings via the Meta folder path). Both desktop and mobile read from the same place
  * — no Node-fs fallback, no platform divergence. Users who want to share their
  * skills with Pi or Claude Code can symlink the vault directory to
  * `~/.agents/skills/` themselves; the plugin doesn't reach outside the vault.
@@ -24,14 +24,14 @@ export interface Skill {
 export class SkillRegistry {
 	private skills: Skill[] = [];
 
-	constructor(private app: App, private dir: string = 'sys/skills') {}
+	constructor(private app: App, private dir: string = 'Meta/skills') {}
 
 	setDir(dir: string): void {
-		this.dir = normalizePath(dir || 'sys/skills');
+		this.dir = normalizePath(dir || 'Meta/skills');
 	}
 
 	async load(): Promise<void> {
-		const dir = normalizePath(this.dir || 'sys/skills');
+		const dir = normalizePath(this.dir || 'Meta/skills');
 		const folder = this.app.vault.getAbstractFileByPath(dir);
 		if (!(folder instanceof TFolder)) {
 			this.skills = [];

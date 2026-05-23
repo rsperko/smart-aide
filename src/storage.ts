@@ -14,7 +14,7 @@ import {
 	ToolResultBlock,
 } from './types';
 
-const CHATS_DIR = 'sys/chats';
+const DEFAULT_CHATS_DIR = 'Meta/chats';
 
 function uuid(): string {
 	if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -47,7 +47,11 @@ export interface ChatSession {
 }
 
 export class ChatStorage {
-	constructor(private vault: Vault, private dir: string = CHATS_DIR) {}
+	constructor(private vault: Vault, private dir: string = DEFAULT_CHATS_DIR) {}
+
+	setDir(dir: string): void {
+		this.dir = normalizePath(dir || DEFAULT_CHATS_DIR);
+	}
 
 	async ensureDir(): Promise<void> {
 		if (!(await this.vault.adapter.exists(this.dir))) {

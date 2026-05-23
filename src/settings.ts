@@ -13,8 +13,13 @@ export interface SmartAideSettings {
 	modelRecents: ModelRef[];
 	systemPrompt: string;
 	autoApproveWrites: boolean;
-	skillsDir: string;
+	metaDir: string;
 }
+
+export const DEFAULT_META_DIR = 'Meta';
+export const chatsDirFor = (metaDir: string): string => `${metaDir}/chats`;
+export const skillsDirFor = (metaDir: string): string => `${metaDir}/skills`;
+export const internalDirFor = (metaDir: string): string => `${metaDir}/.smart-aide`;
 
 const OPENROUTER_ID = 'openrouter';
 
@@ -54,7 +59,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	modelRecents: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
-	skillsDir: 'sys/skills',
+	metaDir: DEFAULT_META_DIR,
 };
 
 /**
@@ -72,7 +77,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
-			skillsDir: typeof r.skillsDir === 'string' && r.skillsDir.trim() ? r.skillsDir.trim() : 'sys/skills',
+			metaDir: typeof r.metaDir === 'string' && r.metaDir.trim() ? r.metaDir.trim() : DEFAULT_META_DIR,
 		};
 	}
 
@@ -98,7 +103,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		modelRecents: recents,
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: false,
-		skillsDir: 'sys/skills',
+		metaDir: DEFAULT_META_DIR,
 	};
 }
 
@@ -223,9 +228,44 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		this.renderEndpointsSection(containerEl);
 		this.renderModelDefaults(containerEl);
+		this.renderStorageSection(containerEl);
 		this.renderSkillsSection(containerEl);
 		this.renderApprovalSection(containerEl);
 		this.renderSystemPromptSection(containerEl);
+	}
+
+	private renderStorageSection(root: HTMLElement): void {
+		new Setting(root).setName('Storage').setHeading();
+
+		root.createDiv({
+			cls: 'setting-item-description vk-section-blurb',
+			text:
+				'Vault-relative folder where Smart Aide stores its content. Chats live under {meta}/chats, skills under {meta}/skills, plugin internals under {meta}/.smart-aide. Default: Meta. Common alternative: sys.',
+		});
+
+		new Setting(root)
+			.setName('Meta folder')
+			.setDesc('Change here to keep your existing chats and skills wired up if you previously used a different folder.')
+			.addText((t) =>
+				t
+					.setPlaceholder(DEFAULT_META_DIR)
+					.setValue(this.plugin.settings.metaDir)
+					.onChange(async (v) => {
+						const next = v.trim() || DEFAULT_META_DIR;
+						this.plugin.settings.metaDir = next;
+						await this.plugin.saveSettings();
+						this.plugin.storage.setDir(chatsDirFor(next));
+						this.plugin.skills.setDir(skillsDirFor(next));
+						this.plugin.agents.setDir(next);
+						await Promise.all([this.plugin.skills.load(), this.plugin.agents.load()]);
+					}),
+			);
+
+		root.createDiv({
+			cls: 'setting-item-description vk-section-blurb',
+			text:
+				`Optional: a Markdown file at {meta}/AGENTS.md (e.g. ${this.plugin.settings.metaDir}/AGENTS.md) is appended to the system prompt as vault context — layout, tag conventions, projects, paths to avoid. Standard cross-tool format (agents.md). Reload with the button below after edits.`,
+		});
 	}
 
 	private renderSkillsSection(root: HTMLElement): void {
@@ -234,31 +274,15 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		root.createDiv({
 			cls: 'setting-item-description vk-section-blurb',
 			text:
-				'Skills are markdown files with YAML frontmatter (name + description). Their descriptions are injected into the system prompt; the model loads a body on demand via load_skill(name) when a user request matches the description. Same path on desktop and mobile — both read from the vault.',
+				'Skills are markdown files with YAML frontmatter (name + description) under {meta}/skills. Their descriptions are injected into the system prompt; the model loads a body on demand via load_skill(name) when a user request matches the description. Same path on desktop and mobile — both read from the vault.',
 		});
 
 		new Setting(root)
-			.setName('Skills directory')
-			.setDesc('Vault-relative path. Default: sys/skills. The folder is scanned recursively for *.md files with name + description frontmatter.')
-			.addText((t) =>
-				t
-					.setPlaceholder('sys/skills')
-					.setValue(this.plugin.settings.skillsDir)
-					.onChange(async (v) => {
-						const next = v.trim() || 'sys/skills';
-						this.plugin.settings.skillsDir = next;
-						await this.plugin.saveSettings();
-						this.plugin.skills.setDir(next);
-						await this.plugin.skills.load();
-					}),
-			);
-
-		new Setting(root)
-			.setName('Reload skills')
-			.setDesc('Re-scan the skills directory. Run after creating or editing a skill file.')
+			.setName('Reload skills & AGENTS.md')
+			.setDesc('Re-scan the skills directory and re-read AGENTS.md. Run after creating or editing either.')
 			.addButton((btn) =>
 				btn.setButtonText('Reload').onClick(async () => {
-					await this.plugin.skills.load();
+					await Promise.all([this.plugin.skills.load(), this.plugin.agents.load()]);
 					const count = this.plugin.skills.all().length;
 					new Notice(`Loaded ${count} skill${count === 1 ? '' : 's'}.`);
 				}),

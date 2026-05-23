@@ -7,9 +7,11 @@ AI chat for your Obsidian vault — desktop and iPhone. Tool-mediated search and
 - **Conversational vault retrieval.** Ask "where did I write about X?" — Smart Aide searches your vault, reads the relevant section, and answers with a citation card that jumps to the exact heading on click.
 - **No embeddings, no index.** Uses Obsidian's MetadataCache + fuzzy search + targeted reads. Works identically on iPhone and desktop; nothing to build, nothing to keep in sync.
 - **Bring your own model, any provider.** Plug in any OpenAI-compatible endpoint — OpenRouter (default), OpenAI direct, Anthropic compat, local servers (LM Studio / Ollama / oMLX), or your own gateway. Pick the model per chat; the picker shows context window, cost ($/M tokens), and tool support inline.
-- **Writes with diff approval.** `write_note`, `append_to_note`, `delete_note` all surface a diff card before they touch the vault. Approval state is persisted in the chat history.
-- **Skills.** Drop a markdown file into `<vault>/sys/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
-- **Pi session format.** Chat history is JSONL in `<vault>/sys/chats/`, branch-aware (edit any user message to fork from there). Interops with the `session-manager` tooling.
+- **Writes with diff approval.** `write_note`, `append_to_note`, `delete_note` surface a diff card before they touch the vault. Approval state is persisted in the chat history. Optional **dangerous mode** in settings auto-approves writes (deletes always still confirm).
+- **Edit and fork.** Tap (or hover) the pencil on any of your past messages to edit it. Send forks the conversation from that point — the branch and everything downstream are hidden, the new turn becomes the leaf. The original branch stays in the JSONL file.
+- **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
+- **Vault context via AGENTS.md.** Drop an `AGENTS.md` at `<vault>/Meta/AGENTS.md` to tell the agent about your vault — folder layout, tag conventions, projects, paths to leave alone. The body is appended to the system prompt. Standard cross-tool format ([agents.md](https://agents.md/)) so the same file works with other agent tools.
+- **Pi session format.** Chat history is JSONL in `<vault>/Meta/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
 
 ## Install (BRAT)
 
@@ -30,12 +32,12 @@ Skills let you teach Smart Aide repeatable workflows without bloating every chat
 
 ### Where they live
 
-Default: `<vault>/sys/skills/`. Configurable in Settings → Skills.
+Default: `<vault>/Meta/skills/`. The parent folder (`Meta`) is configurable in Settings → Storage; a common alternative is `sys`. Skills and chats live under the same meta folder.
 
 The same folder is used on desktop and mobile — there is no `~/.agents/skills/` fallback. If you also use Pi or Claude Code with skills at `~/.agents/skills/`, symlink them yourself:
 
 ```bash
-ln -s "$(pwd)/your-vault/sys/skills" ~/.agents/skills
+ln -s "$(pwd)/your-vault/Meta/skills" ~/.agents/skills
 # or in the other direction
 ```
 
@@ -88,6 +90,35 @@ When you edit a skill file, run **Settings → Skills → Reload** (or restart t
 ### Mobile note
 
 iPhone Obsidian can read the skills folder but can't execute scripts referenced from a skill body. If your skill depends on running a Python script (like a template resolver) or anything that needs Node APIs, set `mobile: false` in the frontmatter.
+
+## Vault context (AGENTS.md)
+
+If a file exists at `<vault>/Meta/AGENTS.md` (or wherever your meta folder is configured), its contents are appended to the system prompt as vault context. This is the [AGENTS.md cross-tool standard](https://agents.md/) repurposed for a vault: tell the agent about your folder layout, tag conventions, ongoing projects, and paths you don't want it writing into.
+
+Plain Markdown with any headings you like. A useful starter outline:
+
+```markdown
+# Vault context
+
+## Layout
+- `Daily/` — daily notes, one per day
+- `Projects/<name>/` — active projects
+- `Archive/` — anything I'm not touching
+
+## Tags
+- `#book` — books I've read or want to read
+- `#idea` — half-baked thoughts to revisit
+
+## Conventions
+- Headings in sentence case
+- Wikilinks for cross-references, no inline URLs
+
+## Avoid
+- Don't write into `Archive/`
+- Don't modify daily notes from prior days
+```
+
+Edits picked up via **Settings → Skills & AGENTS.md → Reload** (or restart the plugin). Note: this is the *vault* AGENTS.md, not a code-repo AGENTS.md — if you symlink from a project repo, you'll get crossed wires.
 
 ## Mobile
 
