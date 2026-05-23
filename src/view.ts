@@ -323,10 +323,10 @@ export class ChatView extends ItemView {
 		setIcon(attachBtn, 'paperclip');
 		attachBtn.setAttribute('aria-label', 'Attach image');
 		const filePicker = composerWrap.createEl('input', {
+			cls: 'vk-hidden',
 			type: 'file',
 			attr: { accept: 'image/jpeg,image/png,image/gif,image/webp', multiple: 'multiple' },
 		});
-		filePicker.style.display = 'none';
 		this.registerDomEvent(attachBtn, 'click', () => filePicker.click());
 		this.registerDomEvent(filePicker, 'change', () => {
 			if (filePicker.files && filePicker.files.length > 0) {
@@ -341,10 +341,10 @@ export class ChatView extends ItemView {
 			setIcon(cameraBtn, 'camera');
 			cameraBtn.setAttribute('aria-label', 'Take photo');
 			const cameraInput = composerWrap.createEl('input', {
+				cls: 'vk-hidden',
 				type: 'file',
 				attr: { accept: 'image/*', capture: 'environment' },
 			});
-			cameraInput.style.display = 'none';
 			this.registerDomEvent(cameraBtn, 'click', () => cameraInput.click());
 			this.registerDomEvent(cameraInput, 'change', () => {
 				if (cameraInput.files && cameraInput.files.length > 0) {

@@ -12,6 +12,11 @@
 	background: var(--background-primary);
 }
 
+/* Visually-hidden file inputs (paperclip / camera triggers click() on these). */
+.vk-hidden {
+	display: none;
+}
+
 /* ---------- Top action bar ---------- */
 
 .vk-topbar {
