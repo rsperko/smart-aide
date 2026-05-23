@@ -2,6 +2,7 @@ import { App, Modal, Setting } from 'obsidian';
 
 export class RenameChatModal extends Modal {
 	private inputEl!: HTMLInputElement;
+	private viewportCleanup: (() => void) | undefined;
 
 	constructor(
 		app: App,
@@ -42,25 +43,43 @@ export class RenameChatModal extends Modal {
 			this.inputEl.select();
 		}, 0);
 
-		// Mobile keyboard occlusion fix — scroll the input into view once the keyboard settles.
+		this.fitToVisualViewport();
+
+		// Mobile keyboard occlusion fix — explicit scroll of the actual scroll ancestor.
 		contentEl.addEventListener('focusin', (ev) => {
 			const target = ev.target as HTMLElement | null;
 			if (!target || !target.matches('input, textarea')) return;
-			window.setTimeout(() => {
-				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-			}, 500);
+			window.setTimeout(() => scrollFieldToTop(target), 500);
 		});
+	}
 
-		// Top-anchor the outer modal so the keyboard doesn't sit on top of it on iOS.
-		const modalEl = contentEl.closest('.modal') as HTMLElement | null;
-		if (modalEl) {
-			modalEl.style.maxHeight = '85dvh';
-			modalEl.style.top = '4dvh';
+	private fitToVisualViewport(): void {
+		const modalEl = this.contentEl.closest('.modal') as HTMLElement | null;
+		if (!modalEl) return;
+		const vv = window.visualViewport;
+		const apply = () => {
+			const h = vv ? vv.height : window.innerHeight;
+			const offsetTop = vv ? vv.offsetTop : 0;
+			modalEl.style.maxHeight = `${Math.max(h * 0.92, 220)}px`;
+			modalEl.style.top = `${offsetTop + h * 0.04}px`;
 			modalEl.style.transform = 'translateX(-50%)';
+		};
+		apply();
+		if (vv) {
+			vv.addEventListener('resize', apply);
+			vv.addEventListener('scroll', apply);
+			this.viewportCleanup = () => {
+				vv.removeEventListener('resize', apply);
+				vv.removeEventListener('scroll', apply);
+			};
 		}
 	}
 
 	onClose(): void {
+		if (this.viewportCleanup) {
+			this.viewportCleanup();
+			this.viewportCleanup = undefined;
+		}
 		this.contentEl.empty();
 	}
 
@@ -73,4 +92,25 @@ export class RenameChatModal extends Modal {
 		this.onSave(value);
 		this.close();
 	}
+}
+
+function scrollFieldToTop(target: HTMLElement): void {
+	const scrollContainer = findScrollContainer(target);
+	if (!scrollContainer) return;
+	const targetRect = target.getBoundingClientRect();
+	const containerRect = scrollContainer.getBoundingClientRect();
+	const targetInContainer = scrollContainer.scrollTop + (targetRect.top - containerRect.top);
+	scrollContainer.scrollTo({ top: Math.max(0, targetInContainer - 24), behavior: 'smooth' });
+}
+
+function findScrollContainer(el: HTMLElement): HTMLElement | null {
+	let cur: HTMLElement | null = el.parentElement;
+	while (cur) {
+		const overflowY = window.getComputedStyle(cur).overflowY;
+		if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+			return cur;
+		}
+		cur = cur.parentElement;
+	}
+	return null;
 }

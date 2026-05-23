@@ -4,6 +4,7 @@ import { Endpoint } from './types';
 
 export class EndpointEditModal extends Modal {
 	private autoDiscoverTimer: number | undefined;
+	private viewportCleanup: (() => void) | undefined;
 
 	constructor(
 		app: App,
@@ -46,33 +47,46 @@ export class EndpointEditModal extends Modal {
 		this.contentEl.addClass('vk-endpoint-modal');
 		this.render();
 		this.wireKeyboardAwareScroll();
-		this.anchorToTopOfViewport();
+		this.fitToVisualViewport();
 	}
 
 	/**
-	 * Obsidian centers modals vertically using the layout viewport — on iOS that center
-	 * sits behind the soft keyboard. Top-anchor the outer .modal element so its content
-	 * is visible above the keyboard, and bound it to the dynamic viewport height.
+	 * Track iOS visualViewport so the outer .modal stays inside the visible area when
+	 * the soft keyboard appears. Obsidian's default centers the modal on the layout
+	 * viewport, which sits behind the keyboard.
 	 */
-	private anchorToTopOfViewport(): void {
+	private fitToVisualViewport(): void {
 		const modalEl = this.contentEl.closest('.modal') as HTMLElement | null;
 		if (!modalEl) return;
-		modalEl.style.maxHeight = '85dvh';
-		modalEl.style.top = '4dvh';
-		modalEl.style.transform = 'translateX(-50%)';
+		const vv = window.visualViewport;
+
+		const apply = () => {
+			const h = vv ? vv.height : window.innerHeight;
+			const offsetTop = vv ? vv.offsetTop : 0;
+			modalEl.style.maxHeight = `${Math.max(h * 0.92, 220)}px`;
+			modalEl.style.top = `${offsetTop + h * 0.04}px`;
+			modalEl.style.transform = 'translateX(-50%)';
+		};
+		apply();
+
+		if (vv) {
+			vv.addEventListener('resize', apply);
+			vv.addEventListener('scroll', apply);
+			this.viewportCleanup = () => {
+				vv.removeEventListener('resize', apply);
+				vv.removeEventListener('scroll', apply);
+			};
+		}
 	}
 
 	private wireKeyboardAwareScroll(): void {
-		// On mobile (iOS), the soft keyboard hides the bottom of the modal. CSS handles the
-		// outer sizing via dvh + scroll padding; this brings the focused field to the top
-		// of the visible scroll area so it's never hidden.
+		// scrollIntoView is unreliable inside Obsidian's flex modal layout. Compute the
+		// exact scroll delta against the actual scrolling ancestor and apply it.
 		this.contentEl.addEventListener('focusin', (ev) => {
 			const target = ev.target as HTMLElement | null;
 			if (!target || !target.matches('input, textarea')) return;
-			// Wait for the keyboard to finish animating (iOS ~400-500ms) so layout has settled.
-			window.setTimeout(() => {
-				target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-			}, 500);
+			// Wait for the keyboard animation (iOS ~400-500ms) so visualViewport has resized.
+			window.setTimeout(() => scrollFieldToTop(target), 500);
 		});
 	}
 
@@ -80,6 +94,10 @@ export class EndpointEditModal extends Modal {
 		if (this.autoDiscoverTimer !== undefined) {
 			window.clearTimeout(this.autoDiscoverTimer);
 			this.autoDiscoverTimer = undefined;
+		}
+		if (this.viewportCleanup) {
+			this.viewportCleanup();
+			this.viewportCleanup = undefined;
 		}
 		this.contentEl.empty();
 		this.onChange();
@@ -323,6 +341,33 @@ export class EndpointEditModal extends Modal {
 		const doneBtn = footer.createEl('button', { cls: 'mod-cta', text: 'Done' });
 		doneBtn.addEventListener('click', () => this.close());
 	}
+}
+
+/**
+ * Walk up to the nearest scrolling ancestor and scroll it so `target` lands near
+ * the top. More reliable than `scrollIntoView` inside Obsidian's flex modal layout,
+ * which sometimes refuses to scroll because the layout assumes the outer element
+ * is sized to fit content.
+ */
+function scrollFieldToTop(target: HTMLElement): void {
+	const scrollContainer = findScrollContainer(target);
+	if (!scrollContainer) return;
+	const targetRect = target.getBoundingClientRect();
+	const containerRect = scrollContainer.getBoundingClientRect();
+	const targetInContainer = scrollContainer.scrollTop + (targetRect.top - containerRect.top);
+	scrollContainer.scrollTo({ top: Math.max(0, targetInContainer - 24), behavior: 'smooth' });
+}
+
+function findScrollContainer(el: HTMLElement): HTMLElement | null {
+	let cur: HTMLElement | null = el.parentElement;
+	while (cur) {
+		const overflowY = window.getComputedStyle(cur).overflowY;
+		if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+			return cur;
+		}
+		cur = cur.parentElement;
+	}
+	return null;
 }
 
 type KeyHelp = { url: string; linkText: string } | { noKey: true };
