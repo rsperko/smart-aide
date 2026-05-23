@@ -828,8 +828,14 @@ export class ChatView extends ItemView {
 					await this.plugin.storage.appendEntry(this.session, usageEntry);
 				}
 
+				// Render the persisted assistant message now — before entering the dispatch
+				// loop — so the user sees the model's preamble + tool call list above any
+				// approval card we're about to render. Without this, a write_note that
+				// requires approval surfaces the card against stale DOM, and on mobile the
+				// card lands below the visible viewport with no anchor for the user.
+				this.rerenderStream();
+
 				if (assembled.toolCalls.length === 0) {
-					this.rerenderStream();
 					break;
 				}
 
@@ -962,7 +968,13 @@ export class ChatView extends ItemView {
 				this.registerDomEvent(approveAllBtn, 'click', () => decide({ approved: true, scope: 'turn' }));
 			}
 
-			this.scrollToBottom();
+			// On mobile (iOS especially), streamEl.scrollTop = scrollHeight is unreliable
+			// when called immediately after appending. scrollIntoView on the new card
+			// itself is more robust — and using block: 'end' puts the action buttons in
+			// the visible area rather than just the card's header.
+			window.setTimeout(() => {
+				card.scrollIntoView({ behavior: 'smooth', block: 'end' });
+			}, 50);
 		});
 	}
 
