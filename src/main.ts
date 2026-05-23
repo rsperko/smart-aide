@@ -74,24 +74,35 @@ export default class SmartAidePlugin extends Plugin {
 
 	private async ensureRightSidebarLeaf(): Promise<void> {
 		// Detach any duplicate leaves left behind by prior workspace states (e.g. the
-		// vault-keeper → smart-aide rename, or repeated plugin reloads). Keep the first
-		// and drop the rest before ensuring a leaf exists.
+		// vault-keeper → smart-aide rename, or repeated plugin reloads).
 		const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
 		for (let i = 1; i < existing.length; i++) {
 			existing[i].detach();
 		}
-		if (existing.length > 0) return;
 
-		// Prefer ensureSideLeaf (Obsidian 1.7.2+); fall back for older builds.
-		const ws = this.app.workspace as unknown as {
-			ensureSideLeaf?: (type: string, side: 'left' | 'right', opts: { active?: boolean; reveal?: boolean }) => Promise<WorkspaceLeaf | null>;
-		};
-		if (typeof ws.ensureSideLeaf === 'function') {
-			await ws.ensureSideLeaf(CHAT_VIEW_TYPE, 'right', { active: false, reveal: false });
-			return;
+		let leaf: WorkspaceLeaf | null = existing[0] ?? null;
+
+		if (!leaf) {
+			// Prefer ensureSideLeaf (Obsidian 1.7.2+); fall back for older builds.
+			const ws = this.app.workspace as unknown as {
+				ensureSideLeaf?: (type: string, side: 'left' | 'right', opts: { active?: boolean; reveal?: boolean }) => Promise<WorkspaceLeaf | null>;
+			};
+			if (typeof ws.ensureSideLeaf === 'function') {
+				leaf = (await ws.ensureSideLeaf(CHAT_VIEW_TYPE, 'right', { active: false, reveal: false })) ?? null;
+			} else {
+				leaf = this.app.workspace.getRightLeaf(false);
+				if (leaf) await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: false });
+			}
 		}
-		const leaf = this.app.workspace.getRightLeaf(false);
-		if (leaf) await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: false });
+
+		// Obsidian defers side-leaf view instantiation until the leaf is shown — this is
+		// why the panel picker showed our chat view as a ghost icon with the kebab-case
+		// view-type id instead of the proper icon and name. Force-instantiate by setting
+		// the view state explicitly. No-op if the view is already a ChatView, so this is
+		// safe to run on every plugin load.
+		if (leaf && !(leaf.view instanceof ChatView)) {
+			await leaf.setViewState({ type: CHAT_VIEW_TYPE });
+		}
 	}
 
 	async onunload(): Promise<void> {
