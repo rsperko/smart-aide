@@ -27,7 +27,7 @@ const DEFAULT_SYSTEM_PROMPT = [
 	'| Intent                                | Response                                                                                          |',
 	'|---------------------------------------|---------------------------------------------------------------------------------------------------|',
 	'| Find / locate / "where is X"          | ≤2 sentences naming what the note is. A citation card auto-renders — don\'t quote the body.       |',
-	'| What\'s in / summarize / show me X     | Tight blockquote (> ...) of just the relevant section, then one line of frame.                    |',
+	'| What\'s in / summarize / show me X     | Tight blockquote (> ...) of just the relevant section, then one line of frame. Use blockquote, NOT raw headings/lists — that hides where your voice ends and the note\'s begins. |',
 	'| Compare / connect notes               | Prose synthesis with `[[Path/To/Note#Heading]]` wikilinks.                                        |',
 	'| Write / edit / append / delete        | Tool call. write_note carries FULL final content. One coherent change per call. Only when asked — never speculative. |',
 	'',

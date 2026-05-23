@@ -175,6 +175,91 @@
 	margin-bottom: 0;
 }
 
+/* Tighten Obsidian's default markdown spacing for the narrow chat panel.
+   Obsidian's reading-view defaults are tuned for full-page notes (big
+   h3/h4 margins, wide list indents); inside a sidebar they create huge
+   gaps and over-indented bullets. */
+.vk-text h1,
+.vk-text h2,
+.vk-text h3,
+.vk-text h4,
+.vk-text h5,
+.vk-text h6 {
+	margin-top: 0.7em;
+	margin-bottom: 0.3em;
+	font-weight: 600;
+	line-height: 1.25;
+}
+
+.vk-text h1 { font-size: 1.25em; }
+.vk-text h2 { font-size: 1.15em; }
+.vk-text h3 { font-size: 1.08em; }
+.vk-text h4,
+.vk-text h5,
+.vk-text h6 { font-size: 1em; }
+
+.vk-text p {
+	margin: 0.4em 0;
+}
+
+.vk-text ul,
+.vk-text ol {
+	margin: 0.35em 0;
+	padding-left: 1.4em;
+}
+
+.vk-text li {
+	margin: 0.1em 0;
+}
+
+/* A list item that contains a paragraph (common when the model emits
+   `- text` with blank lines between) shouldn't add extra spacing. */
+.vk-text li > p {
+	margin: 0;
+}
+
+.vk-text li > ul,
+.vk-text li > ol {
+	margin: 0.15em 0;
+}
+
+/* Blockquotes render as a callout — distinct from the model's own voice so
+   the boundary between commentary and quoted-from-a-note content is obvious. */
+.vk-text blockquote {
+	margin: 0.6em 0;
+	padding: 8px 12px;
+	border-left: 3px solid var(--interactive-accent);
+	background: var(--background-secondary);
+	border-radius: 0 6px 6px 0;
+	color: var(--text-normal);
+}
+
+.vk-text blockquote > *:first-child {
+	margin-top: 0;
+}
+
+.vk-text blockquote > *:last-child {
+	margin-bottom: 0;
+}
+
+/* Inside a callout, dial headings down — they shouldn't pretend to be
+   document-level. */
+.vk-text blockquote h1,
+.vk-text blockquote h2,
+.vk-text blockquote h3,
+.vk-text blockquote h4 {
+	font-size: 1em;
+	font-weight: 600;
+	margin: 0.3em 0 0.2em;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+
+.vk-text hr {
+	margin: 0.6em 0;
+}
+
 /* Tool messages have no visible wrapper — the cards inside speak for themselves */
 .vk-role-tool {
 	gap: 0;
