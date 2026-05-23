@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { DEFAULT_MODEL, DEFAULT_MODEL_LIST, friendlyModelName } from './models';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
 import { ModelPickerModal } from './picker-models';
@@ -13,6 +13,7 @@ export interface SmartAideSettings {
 	modelRecents: ModelRef[];
 	systemPrompt: string;
 	autoApproveWrites: boolean;
+	skillsDir: string;
 }
 
 const OPENROUTER_ID = 'openrouter';
@@ -53,6 +54,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	modelRecents: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
+	skillsDir: 'sys/skills',
 };
 
 /**
@@ -70,6 +72,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
+			skillsDir: typeof r.skillsDir === 'string' && r.skillsDir.trim() ? r.skillsDir.trim() : 'sys/skills',
 		};
 	}
 
@@ -95,6 +98,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		modelRecents: recents,
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: false,
+		skillsDir: 'sys/skills',
 	};
 }
 
@@ -219,8 +223,46 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		this.renderEndpointsSection(containerEl);
 		this.renderModelDefaults(containerEl);
+		this.renderSkillsSection(containerEl);
 		this.renderApprovalSection(containerEl);
 		this.renderSystemPromptSection(containerEl);
+	}
+
+	private renderSkillsSection(root: HTMLElement): void {
+		new Setting(root).setName('Skills').setHeading();
+
+		root.createDiv({
+			cls: 'setting-item-description vk-section-blurb',
+			text:
+				'Skills are markdown files with YAML frontmatter (name + description). Their descriptions are injected into the system prompt; the model loads a body on demand via load_skill(name) when a user request matches the description. Same path on desktop and mobile — both read from the vault.',
+		});
+
+		new Setting(root)
+			.setName('Skills directory')
+			.setDesc('Vault-relative path. Default: sys/skills. The folder is scanned recursively for *.md files with name + description frontmatter.')
+			.addText((t) =>
+				t
+					.setPlaceholder('sys/skills')
+					.setValue(this.plugin.settings.skillsDir)
+					.onChange(async (v) => {
+						const next = v.trim() || 'sys/skills';
+						this.plugin.settings.skillsDir = next;
+						await this.plugin.saveSettings();
+						this.plugin.skills.setDir(next);
+						await this.plugin.skills.load();
+					}),
+			);
+
+		new Setting(root)
+			.setName('Reload skills')
+			.setDesc('Re-scan the skills directory. Run after creating or editing a skill file.')
+			.addButton((btn) =>
+				btn.setButtonText('Reload').onClick(async () => {
+					await this.plugin.skills.load();
+					const count = this.plugin.skills.all().length;
+					new Notice(`Loaded ${count} skill${count === 1 ? '' : 's'}.`);
+				}),
+			);
 	}
 
 	private renderApprovalSection(root: HTMLElement): void {

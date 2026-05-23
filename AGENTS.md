@@ -16,14 +16,14 @@ Everything lives in `src/`. One concept per file — don't merge back into one m
 - `settings.ts` — `SmartAideSettings` shape, legacy-schema migration, settings tab UI (Endpoints → Models → System prompt).
 - `picker-models.ts`, `picker-notes.ts` — `FuzzySuggestModal` subclasses for model picking and `@`-mention.
 - `modal-endpoint.ts`, `modal-add-endpoint.ts`, `modal-rename-chat.ts` — Obsidian `Modal` subclasses for endpoint editing, template-based endpoint creation, and chat renaming.
-- `skills.ts` — `SkillRegistry`. Reads `~/.agents/skills/` on desktop, `<vault>/sys/skills/` on mobile. Exposes a manifest for the system prompt.
+- `skills.ts` — `SkillRegistry`. Reads from a single vault-relative directory (default `sys/skills/`, configurable via `settings.skillsDir`). Same path on desktop and mobile — no Node-fs fallback. Exposes a manifest for the system prompt.
 - `models.ts` — friendly-name map (`anthropic/claude-haiku-4.5` → "Claude Haiku 4.5"), default model list, recents helper.
 - `types.ts` — domain types: `Endpoint`, `DiscoveredModel`, `ModelRef`, `AgentMessage`, content blocks, Pi `Entry` variants, OpenAI message shapes.
 
 ## Current code surface
 
 - **8 tools.** Reads: `search_vault` (fuzzy multi-surface, `deepSearch` opt-in), `read_note` (range / section / auto-truncate, fuzzy section), `list_recent`, `get_backlinks`, `load_skill`. Writes (with diff-approval card): `write_note`, `append_to_note`, `delete_note`. Per-turn "approve all writes" override; delete-class always confirms. Approval decisions persist as `custom` entries in the JSONL.
-- **Skills.** Manifest of skill descriptions injected into the cached system prompt; `load_skill(name)` pulls the body on demand and records it as a `custom_message` entry so the chat history shows what the model saw. Don't splice bodies into the system prefix — it breaks prompt caching.
+- **Skills.** Single vault directory (`sys/skills/` by default, configurable). Manifest of skill descriptions injected into the cached system prompt; `load_skill(name)` pulls the body on demand and records it as a `custom_message` entry so the chat history shows what the model saw. Don't splice bodies into the system prefix — it breaks prompt caching.
 - **Providers.** Multi-endpoint OpenAI-compatible config. Each endpoint is `{id, name, baseURL, apiKey, headers?, models?, discoveredModels?, lastTest?}`. `GET {baseURL}/models` auto-discovery populates the picker. Per-chat `ModelRef = {endpointId, slug}` so the same slug on different endpoints stays unambiguous.
 - **Model picker.** Friendly names, recents-at-top, context window + cost + tool support inline per row, endpoint badge when >1 endpoint configured.
 - **Message rendering.** Tool calls collapse into a single research chip per turn (`🔍 4 searches · 12 hits`); `read_note` results render as clickable citation cards with deep-link subpath (`path#Heading`), line range, and one-line snippet; intra-turn narration suppressed; copy button on every code block; per-turn token usage in a hover tooltip.
@@ -47,7 +47,7 @@ Everything lives in `src/`. One concept per file — don't merge back into one m
 - **Tools are first-class. Writes require approval with a diff preview** (per-turn "approve all writes" override; delete-class always confirms). Approval state is durable (`custom` entries), not a transient modal.
 - **OpenAI-compatible endpoints, multi-endpoint config.** One streaming code path against `{baseURL}/chat/completions` SSE. OpenRouter is the default-installed endpoint; users can add direct providers (OpenAI, Anthropic compat), local servers (oMLX / LM Studio / Ollama), or gateways. Each chat persists a `ModelRef`. Native Anthropic / OpenAI / Google protocols intentionally not adopted — keeps the surface small. Mobile-safe: every endpoint is just `fetch` + SSE.
 - **No on-device embedding index on mobile.** Ever. Tool-call grep is the retrieval strategy. This is the architectural bet that distinguishes Smart Aide from Smart Composer (which fails iPhone search because it needs RAG).
-- **Skills directory on desktop is `~/.agents/skills/`** (shared with Pi and Claude Code). Mobile reads `<vault>/sys/skills/` (populated by a one-way publish from desktop, mobile-safe subset only).
+- **Skills live in the vault** (`sys/skills/` by default, configurable in settings). Same path on desktop and mobile. Power users who want to share skills with Pi or Claude Code symlink `~/.agents/skills/` → the vault skills dir themselves — the plugin never reaches outside the vault.
 
 ## Build / release workflow
 

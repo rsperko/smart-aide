@@ -12,7 +12,7 @@ export default class SmartAidePlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.storage = new ChatStorage(this.app.vault);
-		this.skills = new SkillRegistry(this.app);
+		this.skills = new SkillRegistry(this.app, this.settings.skillsDir);
 		// Discover skills in the background — don't block plugin load
 		this.skills.load().catch((e) => console.warn('smart-aide: skill load failed', e));
 
