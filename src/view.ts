@@ -55,7 +55,7 @@ export class ChatView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return this.session?.title ?? 'smart-aide';
+		return this.session?.title || 'Smart Aide';
 	}
 
 	getIcon(): string {
@@ -361,7 +361,7 @@ export class ChatView extends ItemView {
 
 	private refreshTopbarTitle(): void {
 		if (!this.titleBtn) return;
-		const title = this.session?.title ?? 'smart-aide';
+		const title = this.session?.title || 'Smart Aide';
 		this.titleBtn.empty();
 		this.titleBtn.createSpan({ cls: 'vk-topbar-title-name', text: title });
 		this.titleBtn.createSpan({ cls: 'vk-topbar-title-chevron', text: '▾' });

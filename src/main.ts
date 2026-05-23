@@ -73,7 +73,15 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	private async ensureRightSidebarLeaf(): Promise<void> {
-		if (this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE).length > 0) return;
+		// Detach any duplicate leaves left behind by prior workspace states (e.g. the
+		// vault-keeper → smart-aide rename, or repeated plugin reloads). Keep the first
+		// and drop the rest before ensuring a leaf exists.
+		const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+		for (let i = 1; i < existing.length; i++) {
+			existing[i].detach();
+		}
+		if (existing.length > 0) return;
+
 		// Prefer ensureSideLeaf (Obsidian 1.7.2+); fall back for older builds.
 		const ws = this.app.workspace as unknown as {
 			ensureSideLeaf?: (type: string, side: 'left' | 'right', opts: { active?: boolean; reveal?: boolean }) => Promise<WorkspaceLeaf | null>;
