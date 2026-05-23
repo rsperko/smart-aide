@@ -30,6 +30,40 @@
 	border-radius: 13px;
 }
 
+/* Auto-approve "dangerous mode" chip. Hidden by default; shown only when
+   settings.autoApproveWrites is on so the user can't forget they're in it. */
+.vk-danger-chip {
+	display: none;
+	align-items: center;
+	gap: 4px;
+	margin-right: 4px;
+	padding: 2px 8px;
+	border: 1px solid var(--text-warning, var(--background-modifier-error));
+	border-radius: 10px;
+	background: transparent;
+	color: var(--text-warning, var(--text-error, var(--text-normal)));
+	font-size: 11px;
+	font-family: inherit;
+	cursor: pointer;
+	transition: background-color 0.12s ease;
+}
+
+.vk-danger-chip.is-visible {
+	display: inline-flex;
+}
+
+.vk-danger-chip:hover {
+	background: var(--background-modifier-hover);
+}
+
+.vk-danger-chip-icon {
+	font-size: 11px;
+}
+
+.vk-danger-chip-text {
+	letter-spacing: 0.3px;
+}
+
 .vk-topbar-btn svg {
 	width: 14px;
 	height: 14px;
@@ -401,6 +435,14 @@ details[open] > .vk-tool-summary::before {
 
 .vk-context-chip:hover {
 	background: var(--background-modifier-hover);
+}
+
+.vk-context-chip-truncated {
+	border-color: var(--text-warning, var(--interactive-accent));
+}
+
+.vk-context-chip-truncated .vk-context-chip-tokens {
+	color: var(--text-warning, var(--text-muted));
 }
 
 .vk-context-chip-name {
@@ -1368,9 +1410,15 @@ details[open] > .vk-research-summary::after {
 }
 
 .vk-approval.vk-approval-decided-approved,
-.vk-approval.vk-approval-decided-rejected {
+.vk-approval.vk-approval-decided-rejected,
+.vk-approval.vk-approval-decided-cancelled {
 	position: static;
 	box-shadow: none;
+}
+
+.vk-approval-decided-cancelled {
+	border-left-color: var(--text-faint);
+	opacity: 0.6;
 }
 
 .vk-approval-pending {

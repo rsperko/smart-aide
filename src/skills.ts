@@ -73,6 +73,16 @@ export class SkillRegistry {
 		return this.skills.find((s) => s.name.toLowerCase() === lower) ?? null;
 	}
 
+	/**
+	 * Resolve a skill that the current platform is allowed to load. Mobile-hidden
+	 * skills resolve to null on mobile so the model cannot bypass the manifest by
+	 * guessing a name.
+	 */
+	loadable(name: string): Skill | null {
+		const lower = name.toLowerCase();
+		return this.visibleOnThisPlatform().find((s) => s.name.toLowerCase() === lower) ?? null;
+	}
+
 	/** One-line manifest of skill descriptions for the system prompt. */
 	manifestText(): string {
 		const visible = this.visibleOnThisPlatform();

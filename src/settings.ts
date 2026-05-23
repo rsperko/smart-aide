@@ -21,6 +21,16 @@ export const chatsDirFor = (metaDir: string): string => `${metaDir}/chats`;
 export const skillsDirFor = (metaDir: string): string => `${metaDir}/skills`;
 export const internalDirFor = (metaDir: string): string => `${metaDir}/.smart-aide`;
 
+/**
+ * Strip leading/trailing slashes and collapse repeats. `pathGuard` also
+ * normalizes its input as a safety net; this keeps the persisted setting clean
+ * so derived paths (chats/skills/internal) don't carry stray separators.
+ */
+export function normalizeMetaDir(raw: string): string {
+	const trimmed = (raw ?? '').trim().replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
+	return trimmed || DEFAULT_META_DIR;
+}
+
 const OPENROUTER_ID = 'openrouter';
 
 const DEFAULT_SYSTEM_PROMPT = [
@@ -77,7 +87,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
-			metaDir: typeof r.metaDir === 'string' && r.metaDir.trim() ? r.metaDir.trim() : DEFAULT_META_DIR,
+			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
 		};
 	}
 
@@ -251,7 +261,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					.setPlaceholder(DEFAULT_META_DIR)
 					.setValue(this.plugin.settings.metaDir)
 					.onChange(async (v) => {
-						const next = v.trim() || DEFAULT_META_DIR;
+						const next = normalizeMetaDir(v);
 						this.plugin.settings.metaDir = next;
 						await this.plugin.saveSettings();
 						this.plugin.storage.setDir(chatsDirFor(next));
@@ -296,12 +306,14 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			.setName('Auto-approve writes (dangerous)')
 			.setDesc(
 				'Skip the diff approval card for write_note and append_to_note — the model can edit your vault without confirmation. ' +
-				'Deletes still require explicit approval regardless of this setting.',
+				'Deletes still require explicit approval regardless of this setting. ' +
+				'When on, a ⚠ chip appears in the chat top bar so it stays visible.',
 			)
 			.addToggle((tg) =>
 				tg.setValue(this.plugin.settings.autoApproveWrites).onChange(async (v) => {
 					this.plugin.settings.autoApproveWrites = v;
 					await this.plugin.saveSettings();
+					this.plugin.refreshDangerChips();
 				}),
 			);
 	}

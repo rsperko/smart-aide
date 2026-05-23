@@ -40,7 +40,9 @@ The query parameter fuzzy-matches against four surfaces in order of signal stren
   3. tag      - the concept may be a tag name like #book
   4. content  - only if deepSearch=true; substring scan of note bodies (slower)
 
-By default ONLY filename + heading + tag are scanned. This is fast on mobile (all in-memory). Set deepSearch=true to also scan note content - use this when the cheap passes returned 0 results.
+By default ONLY filename + heading + tag are scanned. This is fast on mobile (all in-memory). Set deepSearch=true to also scan note content for files that did NOT match by filename/heading/tag — use this when the cheap passes returned 0 results, or when you specifically want notes whose body contains a phrase but whose title/headings/tags do not.
+
+Note: deepSearch's content scan SKIPS files already matched by metadata, to keep results focused. If you need a content snippet from a file that matched on filename or heading, follow up with read_note using the section= or startLine= the metadata hit gave you.
 
 Word order, case, and punctuation are ignored: query "weekly review" matches a file named "Weekly Reviews" or a heading "Weekly-review template".
 
@@ -100,9 +102,10 @@ If results come back empty, read the 'hint' field and adjust. Results sort by ti
 			deepSearch: {
 				type: 'boolean',
 				description:
-					"When true, also substring-scan note content (slower, reads files). " +
+					"When true, ALSO substring-scan the bodies of notes that did NOT match by filename/heading/tag (slower, reads files). " +
 					"Default false - only filename + heading + tag fuzzy match. " +
-					"Set true when default search returns 0 results or user says 'search inside notes'.",
+					"Set true when default search returns 0 results or user says 'search inside notes'. " +
+					"For metadata-matched files, fetch snippets with read_note(section=...) using the heading hit.",
 			},
 			maxResults: {
 				type: 'integer',
@@ -127,7 +130,10 @@ If results come back empty, read the 'hint' field and adjust. Results sort by ti
 		const sinceMs = sinceDays !== undefined ? Date.now() - sinceDays * 86_400_000 : 0;
 
 		let files = ctx.app.vault.getMarkdownFiles();
-		if (pathPrefix) files = files.filter((f) => f.path.startsWith(pathPrefix));
+		if (pathPrefix) {
+			const prefix = normalizePathPrefix(pathPrefix);
+			files = files.filter((f) => matchesPathPrefix(f.path, prefix));
+		}
 		if (sinceDays !== undefined) files = files.filter((f) => f.stat.mtime >= sinceMs);
 		if (tag) {
 			files = files.filter((f) => {
@@ -300,6 +306,8 @@ Response always includes path and mtime. Range/section modes also include startL
 		const rawPath = strArg(args.path);
 		if (!rawPath) return JSON.stringify({ error: 'path is required' });
 		const path = normalizePath(rawPath);
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
+		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) {
 			return JSON.stringify({ error: `not a file or not found: ${path}` });
@@ -530,7 +538,10 @@ Returns path + mtime, sorted newest first.`,
 		const pathPrefix = strArg(args.pathPrefix);
 		const limit = clamp(intArg(args.limit) ?? 10, 1, 50);
 		let files = ctx.app.vault.getMarkdownFiles();
-		if (pathPrefix) files = files.filter((f) => f.path.startsWith(pathPrefix));
+		if (pathPrefix) {
+			const prefix = normalizePathPrefix(pathPrefix);
+			files = files.filter((f) => matchesPathPrefix(f.path, prefix));
+		}
 		files.sort((a, b) => b.stat.mtime - a.stat.mtime);
 		const results = files.slice(0, limit).map((f) => ({
 			path: f.path,
@@ -760,6 +771,25 @@ function normalizeTag(raw: string): string {
 }
 
 /**
+ * Strip leading and trailing slashes so the prefix represents a clean folder
+ * (or file) segment. Empty string means "no filter".
+ */
+function normalizePathPrefix(raw: string): string {
+	return (raw ?? '').trim().replace(/^\/+|\/+$/g, '');
+}
+
+/**
+ * Match a vault path against a folder/file prefix on segment boundaries so
+ * `Daily` matches `Daily/2026-05-20.md` but not `DailyNotes/...`. An exact
+ * match (e.g. for a file path) also matches.
+ */
+function matchesPathPrefix(path: string, prefix: string): boolean {
+	if (!prefix) return true;
+	if (path === prefix) return true;
+	return path.startsWith(prefix + '/');
+}
+
+/**
  * Strip a leading `# <Filename>` heading if it exactly matches the basename of
  * the file path. Obsidian renders the filename as the page title (inline title);
  * a duplicate H1 in the body makes the title appear twice. Only triggers on
@@ -777,16 +807,34 @@ function stripDuplicateTitleHeading(path: string, content: string): string {
 }
 
 /**
- * Path allowlist for write/delete operations. Returns an error message if blocked,
- * or empty string if allowed.
+ * Path allowlist used by both read and write/delete tools. Returns an error
+ * message if blocked, or empty string if allowed. `metaDir` is normalized so
+ * a trailing slash in user settings can't produce a `meta//chats/` prefix that
+ * a vault-relative path would silently bypass.
  */
-function pathGuard(path: string, metaDir: string): string {
-	if (path.startsWith('.obsidian/') || path === '.obsidian') return 'writes to .obsidian/ are forbidden';
-	const internalPrefix = `${metaDir}/.smart-aide/`;
-	const chatsPrefix = `${metaDir}/chats/`;
-	if (path.startsWith(internalPrefix)) return `writes to ${internalPrefix} are forbidden (plugin internal)`;
-	if (path.startsWith(chatsPrefix)) return `writes to ${chatsPrefix} are forbidden (chat history is managed by the plugin)`;
-	if (path.startsWith('/') || path.includes('../') || path.includes('..\\')) return 'absolute or parent-relative paths are forbidden';
+function pathGuard(
+	path: string,
+	metaDir: string,
+	opts: { requireMarkdown?: boolean } = {},
+): string {
+	if (path.startsWith('/') || path.includes('../') || path.includes('..\\')) {
+		return 'absolute or parent-relative paths are forbidden';
+	}
+	if (path.startsWith('.obsidian/') || path === '.obsidian') return 'access to .obsidian/ is forbidden';
+	const meta = normalizePath(metaDir || '').replace(/\/+$/, '');
+	if (meta) {
+		const internalPrefix = `${meta}/.smart-aide/`;
+		const chatsPrefix = `${meta}/chats/`;
+		if (path === `${meta}/.smart-aide` || path.startsWith(internalPrefix)) {
+			return `access to ${internalPrefix} is forbidden (plugin internal)`;
+		}
+		if (path === `${meta}/chats` || path.startsWith(chatsPrefix)) {
+			return `access to ${chatsPrefix} is forbidden (chat history is managed by the plugin)`;
+		}
+	}
+	if (opts.requireMarkdown && !/\.md$/i.test(path)) {
+		return 'only .md notes can be read';
+	}
 	return '';
 }
 

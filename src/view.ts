@@ -47,7 +47,11 @@ export class ChatView extends ItemView {
 	private contextRowEl!: HTMLDivElement;
 	private composerEl!: HTMLTextAreaElement;
 	private sendBtn!: HTMLButtonElement;
+	private dangerChip: HTMLButtonElement | null = null;
 	private cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
+	// MarkdownRenderChild instances spawned by the current stream render. Unloaded
+	// before each rerender so long chats don't leak children/event handlers.
+	private streamRenderChildren: MarkdownRenderChild[] = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: SmartAidePlugin) {
 		super(leaf);
@@ -102,8 +106,11 @@ export class ChatView extends ItemView {
 	async loadChat(path: string): Promise<void> {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.loadChat(path);
-		for (let i = this.session.entries.length - 1; i >= 0; i--) {
-			const e = this.session.entries[i];
+		// Walk the active branch (leaf → root) so a model_change on a dead branch
+		// can't become the visible model. contextChain returns chronological order.
+		const chain = this.plugin.storage.contextChain(this.session);
+		for (let i = chain.length - 1; i >= 0; i--) {
+			const e = chain[i];
 			if (e.type === 'model_change') {
 				this.modelRef = { endpointId: e.provider, slug: e.modelId };
 				if (this.modelChip) this.refreshModelChip();
@@ -154,6 +161,17 @@ export class ChatView extends ItemView {
 		this.registerDomEvent(this.titleBtn, 'pointercancel', cancelLongPress);
 
 		topbar.createDiv({ cls: 'vk-spacer' });
+
+		this.dangerChip = topbar.createEl('button', {
+			cls: 'vk-danger-chip',
+			attr: { type: 'button' },
+		});
+		this.dangerChip.createSpan({ cls: 'vk-danger-chip-icon', text: '⚠' });
+		this.dangerChip.createSpan({ cls: 'vk-danger-chip-text', text: 'auto-approve' });
+		this.dangerChip.title = 'Writes are auto-approved without a diff. Click to open settings.';
+		this.dangerChip.setAttribute('aria-label', 'Auto-approve writes is on. Click to open settings.');
+		this.registerDomEvent(this.dangerChip, 'click', () => this.openPluginSettings());
+		this.refreshDangerChip();
 
 		const newBtn = topbar.createEl('button', { cls: 'vk-icon-btn vk-topbar-btn' });
 		setIcon(newBtn, 'plus');
@@ -378,6 +396,21 @@ export class ChatView extends ItemView {
 		refresh?.call(this.app.workspace, 'layout-change');
 	}
 
+	refreshDangerChip(): void {
+		if (!this.dangerChip) return;
+		const on = this.plugin.settings.autoApproveWrites;
+		this.dangerChip.toggleClass('is-visible', on);
+	}
+
+	private openPluginSettings(): void {
+		const setting = (this.app as unknown as {
+			setting?: { open?: () => void; openTabById?: (id: string) => void };
+		}).setting;
+		if (!setting?.open) return;
+		setting.open();
+		setting.openTabById?.('smart-aide');
+	}
+
 	private refreshTopbarTitle(): void {
 		if (!this.titleBtn) return;
 		const title = this.session?.title || 'Smart Aide';
@@ -399,6 +432,8 @@ export class ChatView extends ItemView {
 	}
 
 	private rerenderStream(): void {
+		for (const child of this.streamRenderChildren) this.removeChild(child);
+		this.streamRenderChildren = [];
 		this.streamEl.empty();
 		if (!this.session) return;
 		const chain = this.plugin.storage.contextChain(this.session);
@@ -622,6 +657,7 @@ export class ChatView extends ItemView {
 		}
 		const child = new MarkdownRenderChild(div);
 		this.addChild(child);
+		this.streamRenderChildren.push(child);
 		void MarkdownRenderer.render(this.app, text, div, '', child).then(() => {
 			addCopyButtons(div);
 		});
@@ -697,8 +733,15 @@ export class ChatView extends ItemView {
 			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
 			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
 			const tokSpan = chip.createSpan({ cls: 'vk-context-chip-tokens', text: '' });
-			void this.pinned.estimateTokens(path).then((t) => {
-				if (t > 0) tokSpan.setText(` · ${formatTokens(t)}`);
+			void this.pinned.statusOf(path).then((status) => {
+				if (!status) return;
+				if (status.truncated) {
+					chip.addClass('vk-context-chip-truncated');
+					tokSpan.setText(` · ${formatTokens(status.tokens)} · truncated`);
+					chip.title = `Pinned content capped at ~${Math.round(status.sentBytes / 1000)}KB; full file is ${Math.round(status.totalBytes / 1000)}KB. Use read_note for the rest.`;
+				} else if (status.tokens > 0) {
+					tokSpan.setText(` · ${formatTokens(status.tokens)}`);
+				}
 			});
 			const x = chip.createSpan({ cls: 'vk-context-chip-x', text: '×' });
 			x.setAttribute('aria-label', `Unpin ${basename}`);
@@ -865,6 +908,7 @@ export class ChatView extends ItemView {
 		this.sendBtn.hide();
 		this.updateSendState();
 
+		let hitTurnCap = false;
 		try {
 			for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
 				const messages = this.plugin.storage.toOpenAIMessages(
@@ -1010,7 +1054,23 @@ export class ChatView extends ItemView {
 				this.rerenderStream();
 
 				if (this.abort.signal.aborted) break;
+				if (turn === MAX_TOOL_TURNS - 1) {
+					hitTurnCap = true;
+					break;
+				}
 				// Loop continues — model sees tool results in next turn.
+			}
+
+			if (hitTurnCap && this.session) {
+				const notice =
+					`_Stopped after ${MAX_TOOL_TURNS} tool turns to avoid runaway tool use. ` +
+					`Ask again if you want me to continue from here._`;
+				const capEntry = this.plugin.storage.makeMessageEntry(
+					{ role: 'assistant', content: notice },
+					this.session.leafId,
+				);
+				await this.plugin.storage.appendEntry(this.session, capEntry);
+				this.rerenderStream();
 			}
 		} finally {
 			this.stopBtn.hide();
@@ -1032,7 +1092,7 @@ export class ChatView extends ItemView {
 		if (name === LOAD_SKILL_NAME) {
 			const skillName = String(args.name ?? '').trim();
 			if (!skillName) return JSON.stringify({ error: 'name is required' });
-			const skill = this.plugin.skills.getByName(skillName);
+			const skill = this.plugin.skills.loadable(skillName);
 			if (!skill) {
 				return JSON.stringify({
 					error: `no skill named '${skillName}'`,
@@ -1061,7 +1121,10 @@ export class ChatView extends ItemView {
 			}
 
 			let decision: ApprovalDecision;
-			if (this.plugin.settings.autoApproveWrites && tool.risk === 'write') {
+			if (this.abort?.signal.aborted) {
+				// Stop was hit before we even got here in this dispatch batch.
+				decision = { approved: false, reason: 'Stopped by user.' };
+			} else if (this.plugin.settings.autoApproveWrites && tool.risk === 'write') {
 				// User opted into dangerous mode — writes bypass the approval card.
 				// Delete still requires explicit confirmation regardless.
 				decision = { approved: true, scope: 'inherited-turn' };
@@ -1069,7 +1132,7 @@ export class ChatView extends ItemView {
 				// Honor turn-scoped grant for writes only — deletes always confirm
 				decision = { approved: true, scope: 'inherited-turn' };
 			} else {
-				decision = await this.requestApproval(tool, preview);
+				decision = await this.requestApproval(tool, preview, this.abort?.signal);
 			}
 
 			// Persist the decision as a custom entry (audit trail)
@@ -1089,7 +1152,11 @@ export class ChatView extends ItemView {
 		return await dispatchTool(TOOLS, name, args, this.app, this.plugin.settings.metaDir);
 	}
 
-	private requestApproval(tool: Tool, preview: { summary: string; diff?: { kind: 'overwrite' | 'append' | 'delete'; oldContent?: string; newContent?: string; path: string } }): Promise<ApprovalDecision> {
+	private requestApproval(
+		tool: Tool,
+		preview: { summary: string; diff?: { kind: 'overwrite' | 'append' | 'delete'; oldContent?: string; newContent?: string; path: string } },
+		abortSignal?: AbortSignal,
+	): Promise<ApprovalDecision> {
 		return new Promise((resolve) => {
 			const card = this.streamEl.createDiv({ cls: 'vk-approval vk-approval-pending' });
 
@@ -1110,13 +1177,26 @@ export class ChatView extends ItemView {
 				approveAllBtn = actions.createEl('button', { cls: 'vk-approval-btn vk-approval-approve-all', text: 'Approve all writes in this turn' });
 			}
 
-			const decide = (decision: ApprovalDecision) => {
+			let settled = false;
+			let abortListener: (() => void) | null = null;
+			const decide = (decision: ApprovalDecision, cancelled = false) => {
+				if (settled) return;
+				settled = true;
+				if (abortListener && abortSignal) abortSignal.removeEventListener('abort', abortListener);
 				card.removeClass('vk-approval-pending');
-				card.addClass(decision.approved ? 'vk-approval-decided-approved' : 'vk-approval-decided-rejected');
+				card.addClass(
+					cancelled
+						? 'vk-approval-decided-cancelled'
+						: decision.approved
+							? 'vk-approval-decided-approved'
+							: 'vk-approval-decided-rejected',
+				);
 				actions.empty();
-				const label = decision.approved
-					? `✓ Approved${decision.scope === 'turn' ? ' (all in turn)' : ''}`
-					: `✗ Rejected`;
+				const label = cancelled
+					? '⊘ Cancelled — stopped'
+					: decision.approved
+						? `✓ Approved${decision.scope === 'turn' ? ' (all in turn)' : ''}`
+						: '✗ Rejected';
 				actions.createSpan({ cls: 'vk-approval-decision', text: label });
 				resolve(decision);
 				this.scrollToBottom();
@@ -1126,6 +1206,15 @@ export class ChatView extends ItemView {
 			this.registerDomEvent(approveBtn, 'click', () => decide({ approved: true }));
 			if (approveAllBtn) {
 				this.registerDomEvent(approveAllBtn, 'click', () => decide({ approved: true, scope: 'turn' }));
+			}
+
+			if (abortSignal) {
+				if (abortSignal.aborted) {
+					decide({ approved: false, reason: 'Stopped by user.' }, true);
+				} else {
+					abortListener = () => decide({ approved: false, reason: 'Stopped by user.' }, true);
+					abortSignal.addEventListener('abort', abortListener);
+				}
 			}
 
 			// The card uses position: sticky so it stays at the bottom of the chat scroll

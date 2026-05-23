@@ -30,18 +30,37 @@ export class PinnedContext {
 		this.paths = [];
 	}
 
-	/** Rough token estimate (chars ÷ 4) for a single pinned file. 0 if missing. */
+	/**
+	 * Per-file cap mirrors read_note's auto-truncation so a single huge active
+	 * note can't blow the context window or multiply spend across tool turns.
+	 */
+	static MAX_BYTES_PER_FILE = 25_000;
+
+	/** Rough token estimate (chars ÷ 4) for the truncated contribution. 0 if missing. */
 	async estimateTokens(path: string): Promise<number> {
+		const status = await this.statusOf(path);
+		return status ? status.tokens : 0;
+	}
+
+	/**
+	 * Returns the contribution of a pin: tokens/bytes actually sent to the model,
+	 * and the file's total bytes (for surfacing how much was clipped). Returns
+	 * null when the file is missing.
+	 */
+	async statusOf(path: string): Promise<{ tokens: number; sentBytes: number; totalBytes: number; truncated: boolean } | null> {
 		const file = this.app.vault.getFileByPath(path);
-		if (!(file instanceof TFile)) return 0;
+		if (!(file instanceof TFile)) return null;
 		const content = await this.app.vault.cachedRead(file);
-		return Math.ceil(content.length / 4);
+		const truncated = content.length > PinnedContext.MAX_BYTES_PER_FILE;
+		const sentBytes = truncated ? PinnedContext.MAX_BYTES_PER_FILE : content.length;
+		return { tokens: Math.ceil(sentBytes / 4), sentBytes, totalBytes: content.length, truncated };
 	}
 
 	/**
 	 * Build a preamble that prepends to the latest user message. Each turn re-
 	 * reads the file so edits show up immediately. Returns empty string if no
-	 * files are pinned (or all pinned paths are missing).
+	 * files are pinned (or all pinned paths are missing). Each file is capped at
+	 * MAX_BYTES_PER_FILE with an explicit marker so the model knows there's more.
 	 */
 	async buildPreamble(): Promise<string> {
 		if (this.paths.length === 0) return '';
@@ -49,8 +68,17 @@ export class PinnedContext {
 		for (const path of this.paths) {
 			const file = this.app.vault.getFileByPath(path);
 			if (!(file instanceof TFile)) continue;
-			const content = await this.app.vault.cachedRead(file);
-			sections.push(`File: ${path}\n\n${content.trim()}`);
+			const full = await this.app.vault.cachedRead(file);
+			const trimmed = full.trim();
+			if (trimmed.length <= PinnedContext.MAX_BYTES_PER_FILE) {
+				sections.push(`File: ${path}\n\n${trimmed}`);
+			} else {
+				const head = trimmed.slice(0, PinnedContext.MAX_BYTES_PER_FILE);
+				const marker = `\n\n…(truncated — pinned files are capped to ~${Math.round(
+					PinnedContext.MAX_BYTES_PER_FILE / 1000,
+				)}KB; full file is ${full.length} bytes; use read_note for more)`;
+				sections.push(`File: ${path}\n\n${head}${marker}`);
+			}
 		}
 		if (sections.length === 0) return '';
 		return [

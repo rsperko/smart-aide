@@ -143,6 +143,13 @@ export default class SmartAidePlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	refreshDangerChips(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+			const view = leaf.view as ChatView;
+			view.refreshDangerChip?.();
+		}
+	}
+
 	async openNewChat(): Promise<void> {
 		const leaf = await this.ensureChatLeaf();
 		const view = leaf.view as ChatView;
