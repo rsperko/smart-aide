@@ -5,6 +5,7 @@ import {
 	estimateTokens,
 	extractToolCalls,
 	extractToolResults,
+	filterSkillsForSlash,
 	filterTools,
 	formatArgsInline,
 	formatArgValue,
@@ -14,6 +15,7 @@ import {
 	formatUsageTooltip,
 	groupChainIntoBursts,
 	lineDiff,
+	parseSlashContext,
 	parseSlashInvocation,
 	researchIcon,
 	safeParse,
@@ -592,6 +594,82 @@ describe('parseSlashInvocation', () => {
 
 	it('handles kebab-case skill names', () => {
 		expect(parseSlashInvocation('/weekly-review', valid)?.name).toBe('weekly-review');
+	});
+});
+
+describe('parseSlashContext', () => {
+	it('returns empty string for just a slash (popover should show everything)', () => {
+		expect(parseSlashContext('/')).toBe('');
+	});
+
+	it('returns the in-progress query', () => {
+		expect(parseSlashContext('/d')).toBe('d');
+		expect(parseSlashContext('/daily-note')).toBe('daily-note');
+	});
+
+	it('lowercases the returned query', () => {
+		expect(parseSlashContext('/Daily')).toBe('daily');
+	});
+
+	it('returns null once a space follows (slash has settled)', () => {
+		expect(parseSlashContext('/daily ')).toBeNull();
+		expect(parseSlashContext('/daily please go')).toBeNull();
+	});
+
+	it('returns null for empty / non-slash text', () => {
+		expect(parseSlashContext('')).toBeNull();
+		expect(parseSlashContext('hello')).toBeNull();
+		expect(parseSlashContext(' /foo')).toBeNull();
+	});
+
+	it('returns null for malformed slashes', () => {
+		expect(parseSlashContext('//foo')).toBeNull();
+		expect(parseSlashContext('/1abc')).toBeNull();
+	});
+});
+
+describe('filterSkillsForSlash', () => {
+	const skills = [
+		{ name: 'daily-note' },
+		{ name: 'meeting-notes' },
+		{ name: 'process-inbox' },
+		{ name: 'moc-builder' },
+		{ name: 'weekly-review' },
+	];
+
+	it('returns the first N skills when query is empty', () => {
+		expect(filterSkillsForSlash(skills, '', 3).map((s) => s.name)).toEqual([
+			'daily-note',
+			'meeting-notes',
+			'process-inbox',
+		]);
+	});
+
+	it('puts prefix matches before substring matches', () => {
+		// "note" is a prefix of nothing here; substring matches daily-note and meeting-notes.
+		const names = filterSkillsForSlash(skills, 'note', 5).map((s) => s.name);
+		expect(names).toEqual(['daily-note', 'meeting-notes']);
+	});
+
+	it('ranks prefix matches first when both kinds exist', () => {
+		const names = filterSkillsForSlash(
+			[{ name: 'daily-note' }, { name: 'meeting-notes' }, { name: 'meet-something' }],
+			'meet',
+			5,
+		).map((s) => s.name);
+		expect(names).toEqual(['meeting-notes', 'meet-something']);
+	});
+
+	it('caps results at max', () => {
+		expect(filterSkillsForSlash(skills, '', 2)).toHaveLength(2);
+	});
+
+	it('is case-insensitive on the query', () => {
+		expect(filterSkillsForSlash(skills, 'DAILY', 5).map((s) => s.name)).toEqual(['daily-note']);
+	});
+
+	it('returns [] when nothing matches', () => {
+		expect(filterSkillsForSlash(skills, 'zzz', 5)).toEqual([]);
 	});
 });
 

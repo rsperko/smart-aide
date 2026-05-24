@@ -378,6 +378,42 @@ export function filterTools<T extends { name: string }>(
 	return tools.filter((t) => set.has(t.name));
 }
 
+/**
+ * While the user is typing in the composer, return the in-progress slash query
+ * (possibly empty) when the whole text matches `/<name>` with no terminator,
+ * or null otherwise. Once the user types a space or any other character, the
+ * slash is "settled" and the popover dismisses (send-time `parseSlashInvocation`
+ * still handles the final invocation).
+ */
+export function parseSlashContext(text: string): string | null {
+	const match = text.match(/^\/([a-z][a-z0-9-]*)?$/i);
+	if (!match) return null;
+	return (match[1] ?? '').toLowerCase();
+}
+
+/**
+ * Filter user-invocable skills for the popover. Prefix matches first
+ * (ranked alphabetically), then substring matches. Skill counts here are
+ * small (typically <20), so a richer fuzzy is unnecessary; the substring
+ * fallback catches "/note" → "meeting-notes" / "daily-note".
+ */
+export function filterSkillsForSlash<T extends { name: string }>(
+	skills: T[],
+	query: string,
+	max: number,
+): T[] {
+	if (!query) return skills.slice(0, max);
+	const q = query.toLowerCase();
+	const prefix: T[] = [];
+	const contains: T[] = [];
+	for (const s of skills) {
+		const n = s.name.toLowerCase();
+		if (n.startsWith(q)) prefix.push(s);
+		else if (n.includes(q)) contains.push(s);
+	}
+	return [...prefix, ...contains].slice(0, max);
+}
+
 export function summarizeToolResult(content: string): string {
 	try {
 		const parsed = JSON.parse(content);

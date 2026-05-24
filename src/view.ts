@@ -6,7 +6,6 @@ import { ChatSession } from './storage';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
-import { SkillPickerModal } from './picker-skills';
 import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
@@ -15,6 +14,7 @@ import {
 	Burst,
 	TokenBreakdown,
 	estimateTokens,
+	filterSkillsForSlash,
 	filterTools,
 	formatCostUsd,
 	formatTokenChip,
@@ -22,6 +22,7 @@ import {
 	formatUsageTooltip,
 	groupChainIntoBursts,
 	messageText,
+	parseSlashContext,
 	parseSlashInvocation,
 	safeParse,
 	sumBreakdown,
@@ -67,6 +68,10 @@ export class ChatView extends ItemView {
 	private tokenChip!: HTMLButtonElement;
 	private tokenPopover: HTMLElement | null = null;
 	private tokenPopoverDismisser: ((ev: MouseEvent) => void) | null = null;
+	private slashPopover: HTMLElement | null = null;
+	private slashItems: Skill[] = [];
+	private slashActiveIdx = 0;
+	private slashDismisser: ((ev: MouseEvent) => void) | null = null;
 	private stopBtn!: HTMLButtonElement;
 	private streamEl!: HTMLDivElement;
 	private contextRowEl!: HTMLDivElement;
@@ -111,6 +116,7 @@ export class ChatView extends ItemView {
 	async onClose(): Promise<void> {
 		this.abort?.abort();
 		this.closeTokenPopover();
+		this.closeSlashPopover();
 	}
 
 	async newChat(): Promise<void> {
@@ -274,16 +280,12 @@ export class ChatView extends ItemView {
 		});
 		this.composerEl.rows = 3;
 		this.registerDomEvent(this.composerEl, 'keydown', (ev: KeyboardEvent) => {
+			// Slash popover, when open, takes precedence over Enter-to-send and
+			// over the textarea's default arrow/tab behavior.
+			if (this.slashPopover && this.handleSlashPopoverKey(ev)) return;
 			if (ev.key === '@' && !ev.isComposing) {
 				// Let the @ get typed; open the picker on next tick so cursor is past the @
 				window.setTimeout(() => this.openNoteMentionPicker(), 0);
-				return;
-			}
-			if (ev.key === '/' && !ev.isComposing && this.composerEl.value === '') {
-				// Slash at the start of an empty composer opens the user-invocable skill picker.
-				const skills = this.plugin.skills.userInvocableSkills();
-				if (skills.length === 0) return;
-				window.setTimeout(() => this.openSkillPicker(skills), 0);
 				return;
 			}
 			if (ev.key !== 'Enter') return;
@@ -295,6 +297,7 @@ export class ChatView extends ItemView {
 		this.registerDomEvent(this.composerEl, 'input', () => this.autosizeComposer());
 		this.registerDomEvent(this.composerEl, 'input', () => this.updateSendState());
 		this.registerDomEvent(this.composerEl, 'input', () => void this.refreshTokenChip());
+		this.registerDomEvent(this.composerEl, 'input', () => this.updateSlashPopover());
 
 		// Drag-drop: vault wikilink OR a file (image) from Finder/Explorer / vault attachment
 		this.registerDomEvent(this.composerEl, 'dragover', (ev: DragEvent) => {
@@ -484,15 +487,141 @@ export class ChatView extends ItemView {
 		void this.maybeShowMentionTip();
 	}
 
-	private openSkillPicker(skills: Skill[]): void {
-		new SkillPickerModal(this.app, skills, (skill) => {
-			this.composerEl.value = `/${skill.name} `;
-			const end = this.composerEl.value.length;
-			this.composerEl.setSelectionRange(end, end);
-			this.composerEl.focus();
-			this.autosizeComposer();
-			this.updateSendState();
-		}).open();
+	/**
+	 * Inline slash autocomplete. Driven by `input` events on the composer: any
+	 * time the text becomes `/<name>` (no space, no other chars) the popover
+	 * shows the matching user-invocable skills. Typing a space or selecting an
+	 * item dismisses the popover. Esc dismisses without committing; the typed
+	 * `/<text>` stays in the textarea so unknown slashes fall through and send.
+	 */
+	private updateSlashPopover(): void {
+		const query = parseSlashContext(this.composerEl.value);
+		if (query === null) {
+			this.closeSlashPopover();
+			return;
+		}
+		const all = this.plugin.skills.userInvocableSkills();
+		if (all.length === 0) {
+			this.closeSlashPopover();
+			return;
+		}
+		const max = Platform.isMobile ? 4 : 5;
+		const items = filterSkillsForSlash(all, query, max);
+		if (items.length === 0) {
+			this.closeSlashPopover();
+			return;
+		}
+		this.slashItems = items;
+		if (this.slashActiveIdx >= items.length) this.slashActiveIdx = 0;
+		if (!this.slashPopover) this.mountSlashPopover();
+		this.renderSlashPopover();
+	}
+
+	private mountSlashPopover(): void {
+		const composerWrap = this.composerEl.closest('.vk-composer') as HTMLElement | null;
+		if (!composerWrap) return;
+		this.slashPopover = composerWrap.createDiv({ cls: 'vk-slash-popover' });
+		this.slashActiveIdx = 0;
+
+		this.slashDismisser = (ev: MouseEvent) => {
+			const target = ev.target as Node | null;
+			if (!target) return;
+			if (this.slashPopover?.contains(target)) return;
+			if (this.composerEl.contains(target)) return;
+			this.closeSlashPopover();
+		};
+		// Defer attachment one tick so the click that may have caused this open
+		// doesn't immediately close it.
+		window.setTimeout(() => {
+			if (this.slashDismisser) document.addEventListener('click', this.slashDismisser);
+		}, 0);
+	}
+
+	private closeSlashPopover(): void {
+		if (this.slashDismisser) {
+			document.removeEventListener('click', this.slashDismisser);
+			this.slashDismisser = null;
+		}
+		this.slashPopover?.remove();
+		this.slashPopover = null;
+		this.slashItems = [];
+		this.slashActiveIdx = 0;
+	}
+
+	private renderSlashPopover(): void {
+		if (!this.slashPopover) return;
+		this.slashPopover.empty();
+		for (let i = 0; i < this.slashItems.length; i++) {
+			const skill = this.slashItems[i];
+			const item = this.slashPopover.createDiv({
+				cls: 'vk-slash-item' + (i === this.slashActiveIdx ? ' is-active' : ''),
+			});
+			item.createDiv({ cls: 'vk-slash-name', text: `/${skill.name}` });
+			item.createDiv({ cls: 'vk-slash-desc', text: skill.description });
+			const idx = i;
+			// mousedown (not click) so the textarea doesn't blur before we commit;
+			// preventDefault keeps focus + the on-screen keyboard from dismissing on iOS.
+			this.registerDomEvent(item, 'mousedown', (ev: MouseEvent) => {
+				ev.preventDefault();
+				this.commitSlashSelection(this.slashItems[idx]);
+			});
+			this.registerDomEvent(item, 'mouseenter', () => {
+				if (this.slashActiveIdx !== idx) {
+					this.slashActiveIdx = idx;
+					this.refreshSlashHighlight();
+				}
+			});
+		}
+	}
+
+	private refreshSlashHighlight(): void {
+		if (!this.slashPopover) return;
+		const els = this.slashPopover.querySelectorAll('.vk-slash-item');
+		els.forEach((el, i) => el.toggleClass('is-active', i === this.slashActiveIdx));
+		els[this.slashActiveIdx]?.scrollIntoView({ block: 'nearest' });
+	}
+
+	private setSlashActiveIdx(idx: number): void {
+		const len = this.slashItems.length;
+		if (len === 0) return;
+		this.slashActiveIdx = ((idx % len) + len) % len;
+		this.refreshSlashHighlight();
+	}
+
+	private commitSlashSelection(skill: Skill): void {
+		this.composerEl.value = `/${skill.name} `;
+		const end = this.composerEl.value.length;
+		this.composerEl.setSelectionRange(end, end);
+		this.composerEl.focus();
+		this.autosizeComposer();
+		this.updateSendState();
+		this.closeSlashPopover();
+	}
+
+	private handleSlashPopoverKey(ev: KeyboardEvent): boolean {
+		if (ev.isComposing) return false;
+		if (ev.key === 'ArrowDown') {
+			ev.preventDefault();
+			this.setSlashActiveIdx(this.slashActiveIdx + 1);
+			return true;
+		}
+		if (ev.key === 'ArrowUp') {
+			ev.preventDefault();
+			this.setSlashActiveIdx(this.slashActiveIdx - 1);
+			return true;
+		}
+		if (ev.key === 'Enter' || ev.key === 'Tab') {
+			if (this.slashItems.length === 0) return false;
+			ev.preventDefault();
+			this.commitSlashSelection(this.slashItems[this.slashActiveIdx]);
+			return true;
+		}
+		if (ev.key === 'Escape') {
+			ev.preventDefault();
+			this.closeSlashPopover();
+			return true;
+		}
+		return false;
 	}
 
 	/**
@@ -1228,6 +1357,7 @@ export class ChatView extends ItemView {
 		this.refreshAttachmentChips();
 		this.autosizeComposer();
 		this.updateSendState();
+		this.closeSlashPopover();
 
 		// Per-turn grants reset at the start of each user turn
 		this.approveAllInTurn = false;

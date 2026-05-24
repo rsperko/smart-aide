@@ -433,6 +433,7 @@ details[open] > .vk-tool-summary::before {
 /* ---------- Composer ---------- */
 
 .vk-composer {
+	position: relative;
 	flex-shrink: 0;
 	display: flex;
 	flex-direction: column;
@@ -440,6 +441,54 @@ details[open] > .vk-tool-summary::before {
 	padding: 8px 12px 10px;
 	border-top: 1px solid var(--background-modifier-border);
 	background: var(--background-primary);
+}
+
+/* ---------- Slash autocomplete popover ---------- */
+
+.vk-slash-popover {
+	position: absolute;
+	bottom: calc(100% - 4px);
+	left: 12px;
+	right: 12px;
+	max-height: 260px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+	z-index: 100;
+	padding: 4px;
+}
+
+.vk-slash-item {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	min-height: 44px;
+	box-sizing: border-box;
+	transition: background-color 0.08s ease;
+}
+
+.vk-slash-item.is-active {
+	background: var(--background-modifier-hover);
+}
+
+.vk-slash-name {
+	font-weight: 600;
+	font-size: 0.95em;
+	color: var(--text-normal);
+}
+
+.vk-slash-desc {
+	font-size: 0.82em;
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	line-height: 1.3;
 }
 
 /* ---------- Input card: holds pills, textarea, and toolbar in one bordered box ---------- */
