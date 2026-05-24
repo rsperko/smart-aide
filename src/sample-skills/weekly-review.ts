@@ -3,7 +3,7 @@ import type { SampleSkill } from './types';
 export const weeklyReview: SampleSkill = {
 	name: 'weekly-review',
 	shortDescription: 'Read the past week of daily notes and produce a themes + completed + open + dormant summary.',
-	recommendedModel: 'Sonnet 4.6 or Gemini 2.5 Pro',
+	recommendedModel: 'Sonnet 4.6 or Gemini 3.1 Pro',
 	body: `---
 name: weekly-review
 description: 'Summarize the past week from daily notes — themes, completed tasks, open items, dormant projects. Use when: (1) user says "weekly review", "review my week", or "what did I do this week", (2) user wants a retrospective of recent activity, (3) user mentions a weekly retro.'

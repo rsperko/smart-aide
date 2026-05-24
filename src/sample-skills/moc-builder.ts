@@ -3,7 +3,7 @@ import type { SampleSkill } from './types';
 export const mocBuilder: SampleSkill = {
 	name: 'moc-builder',
 	shortDescription: 'Build a new Map of Content (MOC) for a topic, or refresh an existing one.',
-	recommendedModel: 'Sonnet 4.6 (with caching) or Gemini 2.5 Pro',
+	recommendedModel: 'Sonnet 4.6 (with caching) or Gemini 3.1 Pro',
 	body: `---
 name: moc-builder
 description: 'Build or refresh a Map of Content (MOC) — a curated hub note linking to all related notes on a topic. Use when: (1) user says "create a MOC for X", "build a map of content", or "MOC for <topic>", (2) user wants to refresh an existing MOC, (3) user mentions Zettelkasten / MOC workflows.'

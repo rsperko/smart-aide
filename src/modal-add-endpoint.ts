@@ -1,5 +1,6 @@
 import { App, Modal } from 'obsidian';
-import type { EndpointProtocol } from './types';
+import { DEFAULT_MODEL_LIST } from './models';
+import type { Endpoint, EndpointProtocol } from './types';
 
 export interface EndpointTemplate {
 	name: string;
@@ -11,39 +12,46 @@ export interface EndpointTemplate {
 	protocol?: EndpointProtocol;
 }
 
+/** Provider-specific default model lists. Single source of truth for both
+ * the AddEndpointModal seeding and the "Reset to defaults" action in the
+ * endpoint editor. Keep lists tight — latest stable per tier, no legacy. */
+export const DEFAULT_MODELS_OPENAI = ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5-mini', 'o3', 'o3-mini'];
+export const DEFAULT_MODELS_ANTHROPIC = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'];
+export const DEFAULT_MODELS_GEMINI = ['gemini-3.5-flash', 'gemini-3.1-pro-preview'];
+
 export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
 	{
 		name: 'OpenRouter',
 		baseURL: 'https://openrouter.ai/api/v1',
 		hint: 'Multi-provider gateway',
-		// OpenRouter uses the project's DEFAULT_MODEL_LIST when models is undefined —
+		// OpenRouter uses DEFAULT_MODEL_LIST when models is undefined —
 		// see defaultOpenRouterEndpoint() in settings.ts.
 	},
 	{
 		name: 'OpenAI',
 		baseURL: 'https://api.openai.com/v1',
 		hint: 'GPT models, direct',
-		models: ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5-mini', 'o3', 'o3-mini'],
+		models: [...DEFAULT_MODELS_OPENAI],
 	},
 	{
 		name: 'Anthropic (native)',
 		baseURL: 'https://api.anthropic.com',
 		hint: 'Claude direct — supports prompt caching',
-		models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+		models: [...DEFAULT_MODELS_ANTHROPIC],
 		protocol: 'anthropic',
 	},
 	{
 		name: 'Gemini (native)',
 		baseURL: 'https://generativelanguage.googleapis.com/v1beta',
 		hint: 'Gemini direct — long context, implicit caching, native multimodal',
-		models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+		models: [...DEFAULT_MODELS_GEMINI],
 		protocol: 'gemini',
 	},
 	{
 		name: 'Anthropic (compat)',
 		baseURL: 'https://api.anthropic.com/v1',
 		hint: 'Claude via OpenAI-compatible endpoint',
-		models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+		models: [...DEFAULT_MODELS_ANTHROPIC],
 	},
 	{
 		name: 'Custom',
@@ -51,6 +59,23 @@ export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
 		hint: 'Any OpenAI-compatible endpoint — local server, gateway, anything else',
 	},
 ];
+
+/**
+ * Return the current curated default model list for the given endpoint, or
+ * null when there's no canonical default (e.g. user-defined custom endpoint).
+ * Drives the "Reset to defaults" action — when the bundled defaults change,
+ * the next reset picks up the new list with no migration code.
+ */
+export function defaultModelsFor(endpoint: Endpoint): string[] | null {
+	if (endpoint.protocol === 'anthropic') return [...DEFAULT_MODELS_ANTHROPIC];
+	if (endpoint.protocol === 'gemini') return [...DEFAULT_MODELS_GEMINI];
+
+	const url = (endpoint.baseURL || '').toLowerCase();
+	if (url.includes('openrouter.ai')) return [...DEFAULT_MODEL_LIST];
+	if (url.includes('api.openai.com')) return [...DEFAULT_MODELS_OPENAI];
+	if (url.includes('api.anthropic.com')) return [...DEFAULT_MODELS_ANTHROPIC];
+	return null;
+}
 
 export class AddEndpointModal extends Modal {
 	constructor(app: App, private onPick: (template: EndpointTemplate) => void) {

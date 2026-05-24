@@ -3,7 +3,7 @@ import type { SampleSkill } from './types';
 export const handwritingOcr: SampleSkill = {
 	name: 'handwriting-ocr',
 	shortDescription: 'Transcribe a photo of handwriting into plain text or a note.',
-	recommendedModel: 'Gemini 2.5 Flash (Sonnet on retry)',
+	recommendedModel: 'Gemini 3.5 Flash (Sonnet 4.6 on retry)',
 	body: `---
 name: handwriting-ocr
 description: 'Transcribe handwriting from an attached photo into plain text or a note. Use when: (1) user attaches an image with the word "handwriting", (2) user says "transcribe this", "OCR this", or "what does this say", (3) image contains handwritten notes, a journal page, or a whiteboard.'

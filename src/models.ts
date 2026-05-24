@@ -91,17 +91,19 @@ export function bumpRecent(recents: ModelRef[], picked: ModelRef, max = 5): Mode
 }
 
 /**
- * The default curated set shipped in v0.3.x. Captured here (not in settings.ts)
- * so the settings tab can offer a 'reset model list to default' button.
+ * The default curated set shipped for OpenRouter endpoints. Mirrored in
+ * defaultModelsFor() so "Reset to defaults" in the endpoint editor restores
+ * exactly this list. Tight by design — one or two per major lab; users add
+ * more via the manual model list field.
  */
 export const DEFAULT_MODEL_LIST: string[] = [
 	'anthropic/claude-haiku-4.5',
 	'anthropic/claude-sonnet-4.6',
 	'anthropic/claude-opus-4.7',
 	'openai/gpt-5.5',
+	'openai/gpt-5.5-pro',
 	'google/gemini-3.5-flash',
 	'google/gemini-3.1-pro-preview',
-	'qwen/qwen3.6-plus',
 	'deepseek/deepseek-v4-flash',
 ];
 

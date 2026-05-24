@@ -447,16 +447,17 @@ details[open] > .vk-tool-summary::before {
 .vk-input-wrap {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 4px;
 	padding: 6px 8px 4px;
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 12px;
-	background: var(--background-primary);
-	transition: border-color 0.12s ease;
+	border-radius: 14px;
+	background: var(--background-secondary);
+	transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .vk-input-wrap:focus-within {
 	border-color: var(--interactive-accent);
+	box-shadow: 0 0 0 1px var(--interactive-accent);
 }
 
 /* ---------- Pinned-context chips (top row inside the input card) ---------- */
@@ -551,7 +552,7 @@ details[open] > .vk-tool-summary::before {
 	padding: 1px 2px 1px 8px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 10px;
-	background: var(--background-secondary);
+	background: var(--background-primary);
 	color: var(--text-normal);
 	cursor: pointer;
 	font-family: inherit;
@@ -678,9 +679,12 @@ details[open] > .vk-tool-summary::before {
 
 .vk-input {
 	width: 100%;
-	min-height: 64px;
-	max-height: 200px;
-	padding: 4px 4px 0;
+	box-sizing: border-box;
+	/* explicit height so iOS WebKit doesn't compute a giant intrinsic size from the flex parent; JS autosizes on input */
+	height: 30px;
+	min-height: 30px;
+	max-height: 160px;
+	padding: 5px 6px;
 	border: none;
 	border-radius: 0;
 	background: transparent;
@@ -1981,4 +1985,10 @@ details[open] > .vk-research-summary::after {
 	border-top: 1px solid var(--background-modifier-border);
 	display: flex;
 	justify-content: flex-end;
+}
+
+.vk-endpoint-reset-row {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 8px;
 }

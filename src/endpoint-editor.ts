@@ -1,4 +1,5 @@
 import { App, Notice, Setting } from 'obsidian';
+import { defaultModelsFor } from './modal-add-endpoint';
 import { providerFor } from './providers';
 import { describeFreshness } from './settings';
 import { Endpoint } from './types';
@@ -245,6 +246,41 @@ export function renderEndpointEditor(
 		endpoint.models = list.length ? list : undefined;
 		void ctx.saveSettings();
 	});
+
+	// Reset to bundled defaults — only meaningful when we recognize the endpoint.
+	const defaults = defaultModelsFor(endpoint);
+	const resetRow = manualBody.createDiv({ cls: 'vk-endpoint-reset-row' });
+	const resetBtn = resetRow.createEl('button', { text: 'Reset to defaults' });
+	if (defaults && defaults.length > 0) {
+		resetBtn.title = `Replace the manual list with the ${defaults.length} bundled defaults for this provider.`;
+		let armed = false;
+		let armTimer: number | undefined;
+		const disarm = () => {
+			armed = false;
+			if (armTimer !== undefined) window.clearTimeout(armTimer);
+			armTimer = undefined;
+			resetBtn.setText('Reset to defaults');
+			resetBtn.removeClass('mod-warning');
+		};
+		resetBtn.addEventListener('click', () => {
+			if (!armed) {
+				armed = true;
+				resetBtn.setText('Confirm reset');
+				resetBtn.addClass('mod-warning');
+				armTimer = window.setTimeout(disarm, 3000);
+				return;
+			}
+			disarm();
+			endpoint.models = [...defaults];
+			manualTextarea.value = defaults.join('\n');
+			void ctx.saveSettings();
+			ctx.onChange();
+			new Notice(`Reset to ${defaults.length} bundled defaults.`);
+		});
+	} else {
+		resetBtn.setAttribute('disabled', 'true');
+		resetBtn.title = 'No bundled defaults for this endpoint — set models manually.';
+	}
 
 	// Advanced — collapsible (headers)
 	const advDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
