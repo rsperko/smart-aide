@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+	bm25TermScore,
+	countOccurrences,
 	dispatchTool,
 	emptyHint,
 	findContentMatches,
@@ -11,6 +13,8 @@ import {
 	normalizeTag,
 	pathGuard,
 	stripDuplicateTitleHeading,
+	stripEnclosingQuotes,
+	tokenize,
 	toolsToDescriptors,
 	TOOLS,
 } from '../src/tools';
@@ -664,6 +668,294 @@ describe('search_vault advanced paths', () => {
 		const parsed = JSON.parse(out);
 		const headingHit = parsed.results[0].hits.find((h: { in: string }) => h.in === 'heading');
 		expect(headingHit.endLine).toBe(12);
+	});
+});
+
+describe('stripEnclosingQuotes', () => {
+	it('strips matched double quotes', () => {
+		expect(stripEnclosingQuotes('"thou art"')).toBe('thou art');
+	});
+	it('strips matched single quotes', () => {
+		expect(stripEnclosingQuotes("'thou art'")).toBe('thou art');
+	});
+	it('leaves mismatched or interior quotes alone', () => {
+		expect(stripEnclosingQuotes('"unbalanced')).toBe('"unbalanced');
+		expect(stripEnclosingQuotes('he said "hi"')).toBe('he said "hi"');
+	});
+	it('leaves bare strings alone', () => {
+		expect(stripEnclosingQuotes('thou art')).toBe('thou art');
+	});
+});
+
+describe('search_vault — regression: noisy queries and quote echo', () => {
+	const filesFor = (paths: string[]) =>
+		paths.map((p) => {
+			const f = new TFile();
+			f.path = p;
+			f.basename = p.split('/').pop()!.replace(/\.md$/, '');
+			f.extension = 'md';
+			f.stat = { mtime: 0, ctime: 0, size: 0 };
+			return f;
+		});
+
+	// Models often echo the user's quoting ("the words 'thou art'" → query='"thou art"').
+	// Without quote stripping, the substring scan looks for literal `"thou art"` and misses
+	// the target file containing `"Thou art..."` (ellipsis breaks the closing-quote match).
+	it('quoted phrase query still finds files with the unquoted phrase in body', async () => {
+		const target = filesFor(['Areas/Improv/Mid Show.md'])[0];
+		(target as TFile & { __content: string }).__content =
+			'Some intro\n\n- "Thou art..." - it has become a god';
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [target];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content;
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: '"thou art"', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].path).toBe('Areas/Improv/Mid Show.md');
+		expect(parsed.results[0].hits[0].in).toBe('content');
+	});
+
+	// prepareFuzzySearch matched "The Four Agreements" against "thou art" because
+	// the characters t-h-o-u-a-r-t can be found scattered in order. prepareSimpleSearch
+	// is word-tokenized: every space-separated token must appear as a substring.
+	it('multi-word query does not match unrelated filenames via character scatter', async () => {
+		const noise = filesFor([
+			'Resources/The Four Agreements.md',
+			'Projects/Project Shopify.md',
+		]);
+		const target = filesFor(['Areas/Improv/Mid Show.md'])[0];
+		(target as TFile & { __content: string }).__content = '"Thou art..." line';
+
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [...noise, target];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content ?? '';
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'thou art', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		// Only the target should match — no accidental filename hits on noise files.
+		const paths = parsed.results.map((r: { path: string }) => r.path);
+		expect(paths).toEqual(['Areas/Improv/Mid Show.md']);
+	});
+
+	it('deepSearch raises the default maxResults so content hits aren\'t crowded out', async () => {
+		// 15 files whose basename contains the literal token "note", plus one content-only
+		// match. With DEFAULT_MAX_RESULTS=10 the content hit would be cut off; deepSearch
+		// bumps to 25 so it survives.
+		const namedNotes = filesFor(Array.from({ length: 15 }, (_, i) => `n-${i}-note.md`));
+		const contentOnly = filesFor(['other/special.md'])[0];
+		(contentOnly as TFile & { __content: string }).__content = 'mentions note in body';
+
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [...namedNotes, contentOnly];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content ?? '';
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'note', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(16);
+		expect(parsed.returned).toBe(16);
+		const paths = parsed.results.map((r: { path: string }) => r.path);
+		expect(paths).toContain('other/special.md');
+	});
+});
+
+describe('BM25 + RRF helpers', () => {
+	it('tokenize splits on whitespace and lowercases', () => {
+		expect(tokenize('Thou Art')).toEqual(['thou', 'art']);
+		expect(tokenize('  multiple   spaces  ')).toEqual(['multiple', 'spaces']);
+		expect(tokenize('')).toEqual([]);
+	});
+
+	it('countOccurrences counts non-overlapping substrings', () => {
+		expect(countOccurrences('foo bar foo baz foo', 'foo')).toBe(3);
+		expect(countOccurrences('abcabc', 'abc')).toBe(2);
+		expect(countOccurrences('nothing here', 'xyz')).toBe(0);
+	});
+
+	it('bm25TermScore returns 0 for zero term frequency', () => {
+		expect(bm25TermScore(0, 100, 100, 1)).toBe(0);
+	});
+
+	it('bm25TermScore rewards more matches with diminishing returns', () => {
+		const oneHit = bm25TermScore(1, 100, 100, 1);
+		const fiveHits = bm25TermScore(5, 100, 100, 1);
+		const fiftyHits = bm25TermScore(50, 100, 100, 1);
+		expect(fiveHits).toBeGreaterThan(oneHit);
+		expect(fiftyHits).toBeGreaterThan(fiveHits);
+		// Diminishing returns: 1→5 should be a bigger jump than 5→50.
+		expect(fiveHits - oneHit).toBeGreaterThan(fiftyHits - fiveHits);
+	});
+
+	it('bm25TermScore penalizes longer documents at the same term frequency', () => {
+		const short = bm25TermScore(3, 50, 200, 1);
+		const long = bm25TermScore(3, 800, 200, 1);
+		expect(short).toBeGreaterThan(long);
+	});
+});
+
+describe('search_vault — BM25 ranking on content hits', () => {
+	const fileWith = (path: string, content: string): TFile => {
+		const f = new TFile();
+		f.path = path;
+		f.basename = path.split('/').pop()!.replace(/\.md$/, '');
+		f.extension = 'md';
+		f.stat = { mtime: 0, ctime: 0, size: 0 };
+		(f as TFile & { __content: string }).__content = content;
+		return f;
+	};
+
+	it('ranks files with more on-topic mentions above files with one incidental mention', async () => {
+		// Two files both contain "kafka" but one is densely about it.
+		const dense = fileWith(
+			'dense.md',
+			'kafka consumer kafka producer kafka topic kafka partition kafka offset',
+		);
+		const sparse = fileWith(
+			'sparse.md',
+			'this is a very long note about many things including occasionally kafka and then a long tail of unrelated words that pads out the document length significantly to dilute the signal',
+		);
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [sparse, dense];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content;
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'kafka', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.results[0].path).toBe('dense.md');
+	});
+});
+
+describe('search_vault — RRF cross-surface ranking', () => {
+	const file = (path: string): TFile => {
+		const f = new TFile();
+		f.path = path;
+		f.basename = path.split('/').pop()!.replace(/\.md$/, '');
+		f.extension = 'md';
+		f.stat = { mtime: 0, ctime: 0, size: 0 };
+		return f;
+	};
+
+	it('a file matched across multiple surfaces beats a file matched on filename alone', async () => {
+		// Both files have the word "improv" in their basename. But the multi-surface
+		// file also has it in a heading and a tag. RRF should rank it first.
+		const filenameOnly = file('Improv Solo.md');
+		const multiSurface = file('Improv Games.md');
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [filenameOnly, multiSurface];
+		app.metadataCache.getFileCache = (f: TFile) => {
+			if (f === multiSurface) {
+				return {
+					headings: [{ heading: 'Improv warmup', level: 2, position: { start: { line: 0 } } }],
+					frontmatter: { tags: ['improv'] },
+					tags: [],
+				};
+			}
+			return null;
+		};
+
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'improv' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(2);
+		expect(parsed.results[0].path).toBe('Improv Games.md');
+		expect(parsed.results[1].path).toBe('Improv Solo.md');
+	});
+});
+
+describe('search_vault — fuzzy fallback', () => {
+	const filesFor = (paths: string[]) =>
+		paths.map((p) => {
+			const f = new TFile();
+			f.path = p;
+			f.basename = p.split('/').pop()!.replace(/\.md$/, '');
+			f.extension = 'md';
+			f.stat = { mtime: 0, ctime: 0, size: 0 };
+			return f;
+		});
+
+	it('catches typos (letter omission)', async () => {
+		const f = filesFor(['Improv Openings.md'])[0];
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => null;
+
+		// Simple search for "imrov" (missing p) fails — "imrov" is not a substring of "Improv Openings".
+		// Fuzzy fallback finds it via i,m,r,o,v in order.
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'imrov' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.fuzzyFallback).toBe(true);
+		expect(parsed.results[0].path).toBe('Improv Openings.md');
+	});
+
+	it('does not fire when simple search succeeds', async () => {
+		const f = filesFor(['Improv Openings.md'])[0];
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'improv' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.fuzzyFallback).toBeUndefined();
+	});
+
+	it('catches first-letter abbreviations (quick-switcher style)', async () => {
+		const f = filesFor(['Improv Openings Mid Show.md'])[0];
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'ioms' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.fuzzyFallback).toBe(true);
+	});
+
+	it('does not fire on a successful deepSearch content hit', async () => {
+		const f = filesFor(['note.md'])[0];
+		(f as TFile & { __content: string }).__content = 'the body contains thou art here';
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [f];
+		app.vault.cachedRead = async (file: TFile) => (file as TFile & { __content: string }).__content;
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'thou art', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.fuzzyFallback).toBeUndefined();
 	});
 });
 

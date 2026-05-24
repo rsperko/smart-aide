@@ -1,12 +1,23 @@
-import { App, TFile, getAllTags, normalizePath, prepareFuzzySearch } from 'obsidian';
+import { App, TFile, getAllTags, normalizePath, prepareFuzzySearch, prepareSimpleSearch } from 'obsidian';
 import type { ToolDescriptor } from './providers/types';
 import { ApprovalPreview, Tool, ToolContext } from './types';
 
 const DEFAULT_MAX_RESULTS = 10;
+const DEEP_MAX_RESULTS = 25;
 const HARD_MAX_RESULTS = 50;
 const MAX_HITS_PER_FILE = 3;
 const CONTENT_SNIPPET_PAD = 40;
 const MAX_CONTENT_MATCHES_PER_FILE = 2;
+
+// BM25 tuning constants. k1 controls term-frequency saturation (1.2–2.0 is
+// standard); b controls length normalization (0.75 is the textbook default).
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+
+// RRF constant. 60 is the value used by OpenSearch / Elasticsearch / Azure
+// Search; the algorithm is famously tuning-free, so changing it is unlikely
+// to help unless the surface count grows much larger.
+const RRF_K = 60;
 
 type HitWhere = 'filename' | 'heading' | 'tag' | 'content';
 const TIER_PRIORITY: Record<HitWhere, number> = { filename: 4, heading: 3, tag: 2, content: 1 };
@@ -23,8 +34,6 @@ interface Hit {
 interface FileBucket {
 	file: TFile;
 	hits: Hit[];
-	bestTier: number;
-	bestScore: number;
 }
 
 const searchVault: Tool = {
@@ -32,7 +41,9 @@ const searchVault: Tool = {
 	name: 'search_vault',
 	description: `Find notes. Set ≥1 of: query, tag, pathPrefix, sinceDays (AND'd).
 
-query fuzzy-matches filename + headings + tags (fast, in-memory). Set deepSearch=true to also scan note bodies — use when default returns 0 hits or user says "search inside notes". Case, word order, punctuation ignored.
+query word-matches filename + headings + tags (fast, in-memory) — all space-separated words must appear (case-insensitive substring). Set deepSearch=true to also scan note bodies (substring match for the exact phrase) — use when default returns 0 hits or user says "search inside notes".
+
+If nothing matches, a fuzzy character-order pass runs automatically (catches typos / abbreviations / partial recall). Response sets fuzzyFallback=true when this fired — treat those hits as approximate.
 
 Use the user's exact remembered phrase, not paraphrase.
 
@@ -78,12 +89,13 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 		},
 	},
 	async execute(args, ctx) {
-		const query = strArg(args.query);
+		const query = stripEnclosingQuotes(strArg(args.query));
 		const tag = normalizeTag(strArg(args.tag));
 		const pathPrefix = strArg(args.pathPrefix);
 		const sinceDays = intArg(args.sinceDays);
 		const deepSearch = !!args.deepSearch;
-		const maxResults = clamp(intArg(args.maxResults) ?? DEFAULT_MAX_RESULTS, 1, HARD_MAX_RESULTS);
+		const defaultMax = deepSearch ? DEEP_MAX_RESULTS : DEFAULT_MAX_RESULTS;
+		const maxResults = clamp(intArg(args.maxResults) ?? defaultMax, 1, HARD_MAX_RESULTS);
 
 		if (!query && !tag && !pathPrefix && sinceDays === undefined) {
 			return JSON.stringify({
@@ -109,27 +121,23 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 		}
 
 		const buckets = new Map<string, FileBucket>();
+		let fuzzyFallback = false;
 
 		const record = (file: TFile, hit: Hit) => {
 			let b = buckets.get(file.path);
 			if (!b) {
-				b = { file, hits: [], bestTier: 0, bestScore: -Infinity };
+				b = { file, hits: [] };
 				buckets.set(file.path, b);
 			}
 			b.hits.push(hit);
-			const tier = TIER_PRIORITY[hit.in];
-			if (tier > b.bestTier || (tier === b.bestTier && hit.score > b.bestScore)) {
-				b.bestTier = tier;
-				b.bestScore = hit.score;
-			}
 		};
 
 		if (query) {
-			const fuzzy = prepareFuzzySearch(query);
+			const search = prepareSimpleSearch(query);
 
 			// Pass 1: filenames
 			for (const file of files) {
-				const r = fuzzy(file.basename);
+				const r = search(file.basename);
 				if (r) record(file, { in: 'filename', text: file.basename, score: r.score });
 			}
 
@@ -141,7 +149,7 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 				const headings = cache.headings ?? [];
 				for (let i = 0; i < headings.length; i++) {
 					const h = headings[i];
-					const r = fuzzy(h.heading);
+					const r = search(h.heading);
 					if (!r) continue;
 					const startLine = h.position.start.line + 1;
 					const endLine = sectionEndLine(
@@ -164,27 +172,111 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 				if (Array.isArray(fm)) for (const t of fm) tagSet.add('#' + String(t));
 				else if (typeof fm === 'string') for (const t of fm.split(/[,\s]+/)) if (t) tagSet.add('#' + t);
 				for (const t of tagSet) {
-					const r = fuzzy(t);
+					const r = search(t);
 					if (r) record(file, { in: 'tag', text: t, score: r.score });
 				}
 			}
 
-			// Pass 4: content substring (opt-in)
+			// Pass 4: content substring (opt-in), scored with inline BM25 across
+			// query tokens. BM25 = TF saturation × inverse-document-frequency ×
+			// length normalization — the industry-standard keyword relevance
+			// formula. We compute it per-query on the candidate set, so no
+			// persistent index is needed (mobile-safe).
 			if (deepSearch) {
 				const lowerQuery = query.toLowerCase();
+				const queryTokens = tokenize(query);
+				interface ContentCandidate {
+					file: TFile;
+					dl: number;
+					tf: number[];
+					matches: { line: number; snippet: string }[];
+				}
+				const candidates: ContentCandidate[] = [];
 				for (const file of files) {
 					if (buckets.has(file.path)) continue;
 					const content = await ctx.app.vault.cachedRead(file);
-					const matches = findContentMatches(content, lowerQuery, MAX_CONTENT_MATCHES_PER_FILE);
-					for (const m of matches) {
-						record(file, {
-							in: 'content',
-							text: m.snippet,
-							line: m.line,
-							score: 0,
-						});
+					const lower = content.toLowerCase();
+					const tf = queryTokens.map((t) => countOccurrences(lower, t));
+					if (!tf.some((c) => c > 0)) continue;
+					let matches = findContentMatches(content, lowerQuery, MAX_CONTENT_MATCHES_PER_FILE);
+					if (matches.length === 0) {
+						// Phrase not adjacent — snippet around the first present token instead.
+						for (let i = 0; i < queryTokens.length; i++) {
+							if (tf[i] > 0) {
+								matches = findContentMatches(content, queryTokens[i], MAX_CONTENT_MATCHES_PER_FILE);
+								break;
+							}
+						}
+					}
+					const dl = Math.max(1, lower.split(/\s+/).length);
+					candidates.push({ file, dl, tf, matches });
+				}
+				if (candidates.length > 0) {
+					const N = candidates.length;
+					const avgdl = candidates.reduce((s, c) => s + c.dl, 0) / N;
+					const idf = queryTokens.map((_, ti) => {
+						const df = candidates.reduce((s, c) => s + (c.tf[ti] > 0 ? 1 : 0), 0);
+						return Math.log((N - df + 0.5) / (df + 0.5) + 1);
+					});
+					for (const c of candidates) {
+						let score = 0;
+						for (let ti = 0; ti < queryTokens.length; ti++) {
+							score += bm25TermScore(c.tf[ti], c.dl, avgdl, idf[ti]);
+						}
+						for (const m of c.matches) {
+							record(c.file, {
+								in: 'content',
+								text: m.snippet,
+								line: m.line,
+								score,
+							});
+						}
 					}
 				}
+			}
+
+			// Fuzzy fallback: only fires when nothing matched. Catches typos
+			// (imrov→improv), abbreviations (iom→Improv Openings Mid), and
+			// partial recall (weekrev→weekly review).
+			if (buckets.size === 0) {
+				const fuzzy = prepareFuzzySearch(query);
+				for (const file of files) {
+					const r = fuzzy(file.basename);
+					if (r) record(file, { in: 'filename', text: file.basename, score: r.score });
+				}
+				for (const file of files) {
+					const cache = ctx.app.metadataCache.getFileCache(file);
+					if (!cache) continue;
+					const headings = cache.headings ?? [];
+					for (let i = 0; i < headings.length; i++) {
+						const h = headings[i];
+						const r = fuzzy(h.heading);
+						if (!r) continue;
+						const startLine = h.position.start.line + 1;
+						const endLine = sectionEndLine(
+							headings,
+							i,
+							file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : h.position.start.line + 1,
+						);
+						record(file, {
+							in: 'heading',
+							text: h.heading,
+							score: r.score,
+							startLine,
+							endLine,
+						});
+					}
+					const tagSet = new Set<string>();
+					for (const t of cache.tags ?? []) tagSet.add(t.tag);
+					const fm = cache.frontmatter?.tags;
+					if (Array.isArray(fm)) for (const t of fm) tagSet.add('#' + String(t));
+					else if (typeof fm === 'string') for (const t of fm.split(/[,\s]+/)) if (t) tagSet.add('#' + t);
+					for (const t of tagSet) {
+						const r = fuzzy(t);
+						if (r) record(file, { in: 'tag', text: t, score: r.score });
+					}
+				}
+				if (buckets.size > 0) fuzzyFallback = true;
 			}
 		} else {
 			// No query - just filter-based listing
@@ -193,9 +285,15 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			}
 		}
 
+		// Reciprocal Rank Fusion across the four surfaces. Each surface produces
+		// a ranked list; files that appear strongly across multiple surfaces
+		// (filename + content, etc.) beat files that only appear in one.
+		// No score normalization needed — RRF is famously tuning-free.
+		const rrfScores = computeRrfScores(buckets);
 		const ranked = [...buckets.values()].sort((a, b) => {
-			if (b.bestTier !== a.bestTier) return b.bestTier - a.bestTier;
-			if (b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
+			const aScore = rrfScores.get(a.file.path) ?? 0;
+			const bScore = rrfScores.get(b.file.path) ?? 0;
+			if (bScore !== aScore) return bScore - aScore;
 			return b.file.stat.mtime - a.file.stat.mtime;
 		});
 
@@ -215,6 +313,7 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			deepSearch,
 			results,
 		};
+		if (fuzzyFallback) response.fuzzyFallback = true;
 		if (ranked.length === 0) {
 			response.hint = emptyHint({ query, tag, pathPrefix, sinceDays, deepSearch });
 		} else if (ranked.length > maxResults) {
@@ -591,11 +690,11 @@ export function findSectionIndex(
 	const targetLower = section.toLowerCase();
 	const exactIdx = headings.findIndex((h) => h.heading.toLowerCase() === targetLower);
 	if (exactIdx >= 0) return exactIdx;
-	const fuzzy = prepareFuzzySearch(section);
+	const search = prepareSimpleSearch(section);
 	let bestScore = -Infinity;
 	let bestIdx = -1;
 	for (let i = 0; i < headings.length; i++) {
-		const r = fuzzy(headings[i].heading);
+		const r = search(headings[i].heading);
 		if (r && r.score > bestScore) {
 			bestScore = r.score;
 			bestIdx = i;
@@ -623,6 +722,49 @@ function rangeResponse(
 		totalLines,
 		content: slice.join('\n'),
 	});
+}
+
+export function tokenize(s: string): string[] {
+	return s.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+export function countOccurrences(haystack: string, needle: string): number {
+	if (!needle) return 0;
+	let count = 0;
+	let idx = 0;
+	while (true) {
+		const found = haystack.indexOf(needle, idx);
+		if (found < 0) return count;
+		count++;
+		idx = found + needle.length;
+	}
+}
+
+export function bm25TermScore(tf: number, dl: number, avgdl: number, idf: number): number {
+	if (tf === 0 || avgdl === 0) return 0;
+	const numerator = tf * (BM25_K1 + 1);
+	const denominator = tf + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / avgdl);
+	return idf * (numerator / denominator);
+}
+
+export function computeRrfScores(buckets: Map<string, FileBucket>): Map<string, number> {
+	// One sorted list per surface; ranks are 1-indexed.
+	const surfaces: HitWhere[] = ['filename', 'heading', 'tag', 'content'];
+	const result = new Map<string, number>();
+	for (const surface of surfaces) {
+		const entries: { path: string; best: number }[] = [];
+		for (const b of buckets.values()) {
+			let best = -Infinity;
+			for (const h of b.hits) if (h.in === surface && h.score > best) best = h.score;
+			if (best > -Infinity) entries.push({ path: b.file.path, best });
+		}
+		entries.sort((a, b) => b.best - a.best);
+		entries.forEach((e, i) => {
+			const rank = i + 1;
+			result.set(e.path, (result.get(e.path) ?? 0) + 1 / (RRF_K + rank));
+		});
+	}
+	return result;
 }
 
 export function findContentMatches(
@@ -674,6 +816,16 @@ export function emptyHint(args: {
 function strArg(v: unknown): string {
 	if (typeof v === 'string') return v.trim();
 	return '';
+}
+
+export function stripEnclosingQuotes(s: string): string {
+	if (s.length < 2) return s;
+	const first = s[0];
+	const last = s[s.length - 1];
+	if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+		return s.slice(1, -1).trim();
+	}
+	return s;
 }
 
 function intArg(v: unknown): number | undefined {

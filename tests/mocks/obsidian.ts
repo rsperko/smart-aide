@@ -3,7 +3,7 @@
  * to this file so any src/* file can be imported in tests.
  *
  * We only implement what the source needs to evaluate. Behavior-bearing
- * helpers (normalizePath, prepareFuzzySearch, getAllTags) get real-ish
+ * helpers (normalizePath, prepareSimpleSearch, prepareFuzzySearch, getAllTags) get real-ish
  * implementations so unit tests can call into them. DOM/UI classes are inert
  * stubs — tests that touch them are out of scope for the 50% tier.
  */
@@ -22,18 +22,48 @@ export function normalizePath(input: string): string {
 }
 
 /**
- * Lightweight fuzzy-search stand-in. Returns a matcher that scores any text
- * containing the query (case-insensitive) — exact-position matches score 0,
- * later positions score negatively. Good enough to drive code paths that
- * branch on "did the query match".
+ * Mirror Obsidian's prepareSimpleSearch: tokenize the query on whitespace, then
+ * require every token to appear in the text as a case-insensitive substring.
+ * Score is the negated position of the earliest token match (earlier = higher).
+ */
+export function prepareSimpleSearch(query: string): (text: string) => { score: number; matches: number[][] } | null {
+	const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+	return (text: string) => {
+		if (tokens.length === 0) return null;
+		const lower = text.toLowerCase();
+		const matches: number[][] = [];
+		let firstIdx = Infinity;
+		for (const t of tokens) {
+			const idx = lower.indexOf(t);
+			if (idx < 0) return null;
+			matches.push([idx, idx + t.length]);
+			if (idx < firstIdx) firstIdx = idx;
+		}
+		return { score: -firstIdx, matches };
+	};
+}
+
+/**
+ * Mirror Obsidian's prepareFuzzySearch: character-order scatter match. Every
+ * non-whitespace char of the query must appear in the text in order, with any
+ * gaps allowed between them. Catches typos and abbreviations.
  */
 export function prepareFuzzySearch(query: string): (text: string) => { score: number; matches: number[][] } | null {
-	const q = query.toLowerCase();
+	const chars = query.toLowerCase().replace(/\s+/g, '');
 	return (text: string) => {
-		if (!q) return null;
-		const idx = text.toLowerCase().indexOf(q);
-		if (idx < 0) return null;
-		return { score: -idx, matches: [[idx, idx + q.length]] };
+		if (chars.length === 0) return null;
+		const lower = text.toLowerCase();
+		const positions: number[] = [];
+		let cursor = 0;
+		for (const c of chars) {
+			const idx = lower.indexOf(c, cursor);
+			if (idx < 0) return null;
+			positions.push(idx);
+			cursor = idx + 1;
+		}
+		// Score: higher when the matches are tighter and start earlier.
+		const span = positions[positions.length - 1] - positions[0];
+		return { score: -(positions[0] + span), matches: positions.map((p) => [p, p + 1]) };
 	};
 }
 
