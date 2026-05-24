@@ -317,6 +317,14 @@
 	margin: 0;
 }
 
+/* When any item in a blockquoted list has a sublist, the markdown renderer
+   wraps every top-level item's text in a <p> with default margins, opening
+   visible gaps between bullets even with no blank lines in the source. Zero
+   out the inner-paragraph margins to keep the quoted list visually tight. */
+.vk-text blockquote li > p {
+	margin: 0;
+}
+
 /* Inside a callout, dial headings down — they shouldn't pretend to be
    document-level. */
 .vk-text blockquote h1,

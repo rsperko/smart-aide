@@ -9,15 +9,24 @@ const MAX_HITS_PER_FILE = 3;
 const CONTENT_SNIPPET_PAD = 40;
 const MAX_CONTENT_MATCHES_PER_FILE = 2;
 
-// BM25 tuning constants. k1 controls term-frequency saturation (1.2–2.0 is
-// standard); b controls length normalization (0.75 is the textbook default).
-const BM25_K1 = 1.5;
+// BM25 tuning constants. k1 = 1.2 and b = 0.75 are the Lucene / Elasticsearch
+// defaults; 1.2–2.0 is the typical sane range for k1. The score formula keeps
+// the (k1+1) numerator factor that Elasticsearch / Tantivy use (Lucene dropped
+// it in LUCENE-8563); it's a constant scaling factor and doesn't affect rank.
+const BM25_K1 = 1.2;
 const BM25_B = 0.75;
 
 // RRF constant. 60 is the value used by OpenSearch / Elasticsearch / Azure
 // Search; the algorithm is famously tuning-free, so changing it is unlikely
 // to help unless the surface count grows much larger.
 const RRF_K = 60;
+
+// Phrase boost. Standard BM25 is "bag of words" — term order and proximity are
+// ignored ("New York" and "York New" score identically). We treat the adjacent
+// phrase as an extra BM25 term and weight it so files containing the literal
+// phrase rank above files where the words are merely scattered. 2x is a small
+// boost in the explicit-boost range (1.5x–5x is typical).
+const PHRASE_WEIGHT = 2;
 
 type HitWhere = 'filename' | 'heading' | 'tag' | 'content';
 const TIER_PRIORITY: Record<HitWhere, number> = { filename: 4, heading: 3, tag: 2, content: 1 };
@@ -177,39 +186,43 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 				}
 			}
 
-			// Pass 4: content substring (opt-in), scored with inline BM25 across
-			// query tokens. BM25 = TF saturation × inverse-document-frequency ×
-			// length normalization — the industry-standard keyword relevance
-			// formula. We compute it per-query on the candidate set, so no
-			// persistent index is needed (mobile-safe).
+			// Pass 4: content scan (opt-in), word-boundary matched and scored
+			// with inline BM25. The gate requires every query token to appear
+			// as a WHOLE WORD — substring matching ("thou" inside "thoughts")
+			// floods results with false positives on common short tokens.
+			// When the full phrase appears adjacent it's scored as an extra
+			// BM25 term so phrase matches outrank scattered-token matches.
 			if (deepSearch) {
-				const lowerQuery = query.toLowerCase();
 				const queryTokens = tokenize(query);
+				const isMultiToken = queryTokens.length > 1;
 				interface ContentCandidate {
 					file: TFile;
 					dl: number;
 					tf: number[];
+					phraseTf: number;
 					matches: { line: number; snippet: string }[];
 				}
 				const candidates: ContentCandidate[] = [];
 				for (const file of files) {
 					if (buckets.has(file.path)) continue;
 					const content = await ctx.app.vault.cachedRead(file);
-					const lower = content.toLowerCase();
-					const tf = queryTokens.map((t) => countOccurrences(lower, t));
-					if (!tf.some((c) => c > 0)) continue;
-					let matches = findContentMatches(content, lowerQuery, MAX_CONTENT_MATCHES_PER_FILE);
+					const tf = queryTokens.map((t) => countWordOccurrences(content, t));
+					// AND gate: every query token must appear as a whole word.
+					if (!tf.every((c) => c > 0)) continue;
+					const phraseTf = isMultiToken ? countWordOccurrences(content, query) : 0;
+					// Snippets prefer the adjacent phrase; fall back to the first
+					// matching token when the words are scattered.
+					let matches = isMultiToken
+						? findWordMatches(content, query, MAX_CONTENT_MATCHES_PER_FILE)
+						: [];
 					if (matches.length === 0) {
-						// Phrase not adjacent — snippet around the first present token instead.
 						for (let i = 0; i < queryTokens.length; i++) {
-							if (tf[i] > 0) {
-								matches = findContentMatches(content, queryTokens[i], MAX_CONTENT_MATCHES_PER_FILE);
-								break;
-							}
+							matches = findWordMatches(content, queryTokens[i], MAX_CONTENT_MATCHES_PER_FILE);
+							if (matches.length > 0) break;
 						}
 					}
-					const dl = Math.max(1, lower.split(/\s+/).length);
-					candidates.push({ file, dl, tf, matches });
+					const dl = Math.max(1, content.split(/\s+/).length);
+					candidates.push({ file, dl, tf, phraseTf, matches });
 				}
 				if (candidates.length > 0) {
 					const N = candidates.length;
@@ -218,10 +231,18 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 						const df = candidates.reduce((s, c) => s + (c.tf[ti] > 0 ? 1 : 0), 0);
 						return Math.log((N - df + 0.5) / (df + 0.5) + 1);
 					});
+					let phraseIdf = 0;
+					if (isMultiToken) {
+						const dfPhrase = candidates.reduce((s, c) => s + (c.phraseTf > 0 ? 1 : 0), 0);
+						phraseIdf = Math.log((N - dfPhrase + 0.5) / (dfPhrase + 0.5) + 1);
+					}
 					for (const c of candidates) {
 						let score = 0;
 						for (let ti = 0; ti < queryTokens.length; ti++) {
 							score += bm25TermScore(c.tf[ti], c.dl, avgdl, idf[ti]);
+						}
+						if (isMultiToken && c.phraseTf > 0) {
+							score += PHRASE_WEIGHT * bm25TermScore(c.phraseTf, c.dl, avgdl, phraseIdf);
 						}
 						for (const m of c.matches) {
 							record(c.file, {
@@ -738,6 +759,49 @@ export function countOccurrences(haystack: string, needle: string): number {
 		count++;
 		idx = found + needle.length;
 	}
+}
+
+function escapeRegex(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function makeWordRegex(s: string): RegExp {
+	return new RegExp(`\\b${escapeRegex(s)}\\b`, 'gi');
+}
+
+export function countWordOccurrences(content: string, word: string): number {
+	if (!word) return 0;
+	const matches = content.match(makeWordRegex(word));
+	return matches ? matches.length : 0;
+}
+
+export function findWordMatches(
+	content: string,
+	needle: string,
+	max: number,
+): { line: number; snippet: string }[] {
+	if (!needle) return [];
+	const re = makeWordRegex(needle);
+	const out: { line: number; snippet: string }[] = [];
+	let m: RegExpExecArray | null;
+	while (out.length < max && (m = re.exec(content)) !== null) {
+		const hit = m.index;
+		const lineStart = content.lastIndexOf('\n', hit) + 1;
+		const lineEnd = content.indexOf('\n', hit);
+		const lineFullEnd = lineEnd < 0 ? content.length : lineEnd;
+		const line = content.slice(lineStart, lineFullEnd).trim();
+		const lineNumber = content.slice(0, lineStart).split('\n').length;
+		const localHit = hit - lineStart;
+		const snippetStart = Math.max(0, localHit - CONTENT_SNIPPET_PAD);
+		const snippetEnd = Math.min(line.length, localHit + needle.length + CONTENT_SNIPPET_PAD);
+		const snippet = line.slice(snippetStart, snippetEnd);
+		out.push({
+			line: lineNumber,
+			snippet: snippetStart > 0 ? '…' + snippet : snippet,
+		});
+		if (re.lastIndex === hit) re.lastIndex++;
+	}
+	return out;
 }
 
 export function bm25TermScore(tf: number, dl: number, avgdl: number, idf: number): number {

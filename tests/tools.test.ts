@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
 	bm25TermScore,
 	countOccurrences,
+	countWordOccurrences,
 	dispatchTool,
 	emptyHint,
 	findContentMatches,
 	findSectionIndex,
+	findWordMatches,
 	LOAD_SKILL_NAME,
 	LOAD_SKILL_TOOL_DEF,
 	matchesPathPrefix,
@@ -777,6 +779,104 @@ describe('search_vault — regression: noisy queries and quote echo', () => {
 		expect(parsed.returned).toBe(16);
 		const paths = parsed.results.map((r: { path: string }) => r.path);
 		expect(paths).toContain('other/special.md');
+	});
+});
+
+describe('word-boundary content matching (regression: substring contamination)', () => {
+	it('countWordOccurrences ignores partial-word matches', () => {
+		// "thou" inside "thoughts" must NOT count — that was the v0.2.10 bug
+		// that ranked meditation notes above the literal "Thou art" target.
+		expect(countWordOccurrences('thoughts arising in mind', 'thou')).toBe(0);
+		expect(countWordOccurrences('without practice troops', 'thou')).toBe(0);
+		expect(countWordOccurrences('Thou art the one', 'thou')).toBe(1);
+		expect(countWordOccurrences('"Thou art..." is the phrase', 'thou')).toBe(1);
+		expect(countWordOccurrences('article starting smart', 'art')).toBe(0);
+		expect(countWordOccurrences('the art of war', 'art')).toBe(1);
+	});
+
+	it('countWordOccurrences is case-insensitive', () => {
+		expect(countWordOccurrences('THOU ART here', 'thou')).toBe(1);
+		expect(countWordOccurrences('Thou Art here', 'art')).toBe(1);
+	});
+
+	it('findWordMatches returns line numbers and snippets for whole-word matches only', () => {
+		const content = ['intro paragraph', 'thoughts about life', '"Thou art..." line'].join('\n');
+		const matches = findWordMatches(content, 'thou', 5);
+		expect(matches.length).toBe(1);
+		expect(matches[0].line).toBe(3);
+		expect(matches[0].snippet).toContain('Thou');
+	});
+
+	it('deepSearch content scan does not return files where the token only appears as substring', async () => {
+		const fileWith = (path: string, content: string): TFile => {
+			const f = new TFile();
+			f.path = path;
+			f.basename = path.split('/').pop()!.replace(/\.md$/, '');
+			f.extension = 'md';
+			f.stat = { mtime: 0, ctime: 0, size: 0 };
+			(f as TFile & { __content: string }).__content = content;
+			return f;
+		};
+
+		// The v0.2.10 bug: these meditation/journal-style notes flooded results
+		// for the query "thou art" because "thou" was a substring of "thoughts"
+		// and "art" was a substring of "started", "without", etc.
+		const noise = [
+			fileWith('Meditation.md', 'thoughts arise without grasping, thoughts return to breath'),
+			fileWith('Journal.md', 'without practice the start of the day is rough'),
+			fileWith('Article.md', 'this article describes the artistry of starting fresh'),
+		];
+		const target = fileWith('Improv.md', '"Thou art..." it has become a god');
+
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [...noise, target];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content;
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'thou art', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].path).toBe('Improv.md');
+	});
+
+	it('phrase boost: files with adjacent "thou art" rank above files with both words scattered', async () => {
+		const fileWith = (path: string, content: string): TFile => {
+			const f = new TFile();
+			f.path = path;
+			f.basename = path.split('/').pop()!.replace(/\.md$/, '');
+			f.extension = 'md';
+			f.stat = { mtime: 0, ctime: 0, size: 0 };
+			(f as TFile & { __content: string }).__content = content;
+			return f;
+		};
+
+		const phraseFile = fileWith('phrase.md', '"Thou art..." it has become a god');
+		// Many "thou" and "art" occurrences as words, but never adjacent.
+		const scatteredFile = fileWith(
+			'scattered.md',
+			'thou shalt not. and the art of war. thou again. art exhibition. thou. art.',
+		);
+
+		const app = new App();
+		app.vault.getMarkdownFiles = () => [scatteredFile, phraseFile];
+		app.vault.cachedRead = async (f: TFile) => (f as TFile & { __content: string }).__content;
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'thou art', deepSearch: true },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.results[0].path).toBe('phrase.md');
 	});
 });
 
