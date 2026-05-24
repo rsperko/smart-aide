@@ -1679,6 +1679,48 @@ details[open] > .vk-research-summary::after {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	flex: 1;
+	min-width: 0;
+}
+
+.vk-chat-suggestion-del {
+	background: transparent;
+	border: 1px solid transparent;
+	color: var(--text-faint);
+	font-size: 16px;
+	line-height: 1;
+	padding: 2px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	flex: 0 0 auto;
+}
+
+.vk-chat-suggestion-del:hover {
+	color: var(--text-error);
+	background: var(--background-modifier-error-hover);
+}
+
+.vk-chat-suggestion-del-confirm {
+	color: var(--text-on-accent);
+	background: var(--text-error);
+	border-color: var(--text-error);
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.vk-chat-suggestion-del-confirm:hover {
+	color: var(--text-on-accent);
+	background: var(--text-error);
+}
+
+@media (pointer: coarse) {
+	.vk-chat-suggestion-del {
+		min-width: 44px;
+		min-height: 32px;
+		font-size: 20px;
+	}
 }
 
 .vk-chat-suggestion-preview {

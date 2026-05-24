@@ -89,6 +89,11 @@ export class ChatStorage {
 		return { path, header, entries, leafId, title };
 	}
 
+	async deleteChat(path: string): Promise<void> {
+		const file = this.vault.getFileByPath(path);
+		if (file) await this.vault.delete(file);
+	}
+
 	async appendEntry(session: ChatSession, entry: Entry): Promise<void> {
 		const file = this.vault.getFileByPath(session.path);
 		if (!file) {

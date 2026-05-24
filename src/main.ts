@@ -160,12 +160,25 @@ export default class SmartAidePlugin extends Plugin {
 			new Notice('No saved chats yet.');
 			return;
 		}
-		new ChatPickerModal(this.app, chats, async (path) => {
-			const leaf = await this.ensureChatLeaf();
-			const view = leaf.view as ChatView;
-			await view.loadChat(path);
-			this.app.workspace.revealLeaf(leaf);
-		}).open();
+		new ChatPickerModal(
+			this.app,
+			chats,
+			async (path) => {
+				const leaf = await this.ensureChatLeaf();
+				const view = leaf.view as ChatView;
+				await view.loadChat(path);
+				this.app.workspace.revealLeaf(leaf);
+			},
+			async (path) => {
+				await this.storage.deleteChat(path);
+				for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+					const view = leaf.view;
+					if (view instanceof ChatView && view.currentChatPath() === path) {
+						await view.newChat();
+					}
+				}
+			},
+		).open();
 	}
 
 	private async ensureChatLeaf(): Promise<WorkspaceLeaf> {
@@ -189,6 +202,7 @@ class ChatPickerModal extends FuzzySuggestModal<ChatPickerItem> {
 		app: SmartAidePlugin['app'],
 		private chats: ChatPickerItem[],
 		private onPick: (path: string) => void,
+		private onDelete: (path: string) => Promise<void>,
 	) {
 		super(app);
 		this.setPlaceholder('Select a chat to resume…');
@@ -211,9 +225,51 @@ class ChatPickerModal extends FuzzySuggestModal<ChatPickerItem> {
 		const date = new Date(item.mtime).toISOString().slice(0, 16).replace('T', ' ');
 		top.createSpan({ cls: 'vk-chat-suggestion-date', text: date });
 		top.createSpan({ cls: 'vk-chat-suggestion-title', text: item.title });
+		const delBtn = top.createEl('button', {
+			cls: 'vk-chat-suggestion-del',
+			text: '×',
+			attr: { type: 'button', 'aria-label': 'Delete chat' },
+		});
+		delBtn.title = 'Delete chat';
+		this.wireDeleteButton(delBtn, item, el);
 		if (item.preview) {
 			el.createDiv({ cls: 'vk-chat-suggestion-preview', text: item.preview });
 		}
+	}
+
+	private wireDeleteButton(btn: HTMLButtonElement, item: ChatPickerItem, row: HTMLElement): void {
+		let confirming = false;
+		let resetTimer: number | undefined;
+		// FuzzySuggestModal commits the selection on pointerdown / mousedown, so
+		// the delete button has to swallow those before they bubble.
+		const swallow = (ev: Event) => {
+			ev.stopPropagation();
+			ev.preventDefault();
+		};
+		btn.addEventListener('pointerdown', swallow);
+		btn.addEventListener('mousedown', swallow);
+		btn.addEventListener('touchstart', swallow);
+		btn.addEventListener('click', async (ev) => {
+			ev.stopPropagation();
+			ev.preventDefault();
+			if (!confirming) {
+				confirming = true;
+				btn.addClass('vk-chat-suggestion-del-confirm');
+				btn.setText('delete?');
+				resetTimer = window.setTimeout(() => {
+					confirming = false;
+					btn.removeClass('vk-chat-suggestion-del-confirm');
+					btn.setText('×');
+				}, 3000);
+				return;
+			}
+			if (resetTimer) window.clearTimeout(resetTimer);
+			await this.onDelete(item.path);
+			const idx = this.chats.findIndex((c) => c.path === item.path);
+			if (idx >= 0) this.chats.splice(idx, 1);
+			row.remove();
+			if (this.chats.length === 0) this.close();
+		});
 	}
 
 	onChooseItem(item: ChatPickerItem): void {

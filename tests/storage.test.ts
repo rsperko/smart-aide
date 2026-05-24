@@ -316,6 +316,33 @@ describe('ChatStorage', () => {
 		void local;
 	});
 
+	it('deleteChat removes the JSONL file from the vault', async () => {
+		const session = await storage.createChat();
+		const user = storage.makeMessageEntry({ role: 'user', content: 'hi' }, null);
+		await storage.appendEntry(session, user);
+		expect(vault.files.has(session.path)).toBe(true);
+
+		await storage.deleteChat(session.path);
+		expect(vault.files.has(session.path)).toBe(false);
+	});
+
+	it('deleteChat is a no-op when the path does not exist', async () => {
+		await expect(storage.deleteChat('Meta/chats/never-existed.jsonl')).resolves.toBeUndefined();
+	});
+
+	it('deleteChat causes the file to drop out of listChats', async () => {
+		vault.folders.add('Meta/chats');
+		const a = await storage.createChat();
+		await storage.appendEntry(a, storage.makeMessageEntry({ role: 'user', content: 'a' }, null));
+		const b = await storage.createChat();
+		await storage.appendEntry(b, storage.makeMessageEntry({ role: 'user', content: 'b' }, null));
+
+		expect((await storage.listChats()).map((c) => c.path).sort()).toEqual([a.path, b.path].sort());
+
+		await storage.deleteChat(a.path);
+		expect((await storage.listChats()).map((c) => c.path)).toEqual([b.path]);
+	});
+
 	it('makeCustomEntry produces a well-shaped custom entry', () => {
 		const e = storage.makeCustomEntry('approval', { decision: 'approved' }, 'parent-id');
 		expect(e.type).toBe('custom');

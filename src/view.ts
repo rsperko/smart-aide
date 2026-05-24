@@ -140,6 +140,10 @@ export class ChatView extends ItemView {
 		this.updateTabTitle();
 	}
 
+	currentChatPath(): string | null {
+		return this.session?.path ?? null;
+	}
+
 	async loadChat(path: string): Promise<void> {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.loadChat(path);
