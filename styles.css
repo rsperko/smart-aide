@@ -548,17 +548,17 @@ details[open] > .vk-tool-summary::before {
 	display: inline-flex;
 	align-items: center;
 	gap: 2px;
-	font-size: 11px;
-	padding: 1px 2px 1px 8px;
+	font-size: 10px;
+	padding: 0 2px 0 6px;
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 10px;
+	border-radius: 6px;
 	background: var(--background-primary);
 	color: var(--text-normal);
 	cursor: pointer;
 	font-family: inherit;
 	transition: background-color 0.12s ease;
 	max-width: 100%;
-	line-height: 1.2;
+	line-height: 1.6;
 }
 
 .vk-context-chip:hover {
@@ -587,7 +587,7 @@ details[open] > .vk-tool-summary::before {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	max-width: 180px;
+	max-width: 140px;
 }
 
 .vk-context-chip-x {
@@ -595,12 +595,12 @@ details[open] > .vk-tool-summary::before {
 	align-items: center;
 	justify-content: center;
 	color: var(--text-faint);
-	width: 14px;
-	height: 14px;
+	width: 12px;
+	height: 12px;
 	border-radius: 50%;
-	font-size: 13px;
+	font-size: 11px;
 	line-height: 1;
-	margin-left: 2px;
+	margin-left: 1px;
 }
 
 .vk-context-chip-x:hover {
@@ -609,15 +609,15 @@ details[open] > .vk-tool-summary::before {
 }
 
 .vk-context-add {
-	font-size: 11px;
-	padding: 1px 8px;
+	font-size: 10px;
+	padding: 0 6px;
 	border: 1px dashed var(--background-modifier-border);
-	border-radius: 10px;
+	border-radius: 6px;
 	background: transparent;
 	color: var(--text-muted);
 	cursor: pointer;
 	font-family: inherit;
-	line-height: 1.4;
+	line-height: 1.6;
 }
 
 .vk-context-add:hover {
@@ -681,9 +681,9 @@ details[open] > .vk-tool-summary::before {
 	width: 100%;
 	box-sizing: border-box;
 	/* explicit height so iOS WebKit doesn't compute a giant intrinsic size from the flex parent; JS autosizes on input */
-	height: 30px;
-	min-height: 30px;
-	max-height: 160px;
+	height: 110px;
+	min-height: 110px;
+	max-height: 240px;
 	padding: 5px 6px;
 	border: none;
 	border-radius: 0;

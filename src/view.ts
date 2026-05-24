@@ -397,8 +397,8 @@ export class ChatView extends ItemView {
 
 	private autosizeComposer(): void {
 		this.composerEl.style.height = 'auto';
-		const min = 64;
-		const max = 200;
+		const min = 110;
+		const max = 240;
 		const next = Math.min(max, Math.max(min, this.composerEl.scrollHeight));
 		this.composerEl.style.height = next + 'px';
 	}
