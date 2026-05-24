@@ -1,6 +1,7 @@
 import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, parseLinktext, setIcon } from 'obsidian';
-import { LOAD_SKILL_NAME, LOAD_SKILL_TOOL_DEF, toolsToOpenAI, TOOLS } from './tools';
-import { runTurn } from './provider';
+import { LOAD_SKILL_NAME, LOAD_SKILL_TOOL_DEF, TOOLS, toolsToDescriptors } from './tools';
+import { providerFor } from './providers';
+import type { ToolCall } from './providers';
 import { ChatSession } from './storage';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
@@ -36,7 +37,6 @@ import {
 	ImageBlock,
 	MessageEntry,
 	ModelRef,
-	OpenAIToolCall,
 } from './types';
 import { attachImageToVault, isSupportedImageMime, mimeFromExtension } from './image-helpers';
 import type SmartAidePlugin from './main';
@@ -236,10 +236,15 @@ export class ChatView extends ItemView {
 		// Composer (sticky bottom, holds textarea + toolbar)
 		const composerWrap = root.createDiv({ cls: 'vk-composer' });
 
-		// Pinned-context chip row — sits above the textarea inside the composer wrap
-		// so it visually belongs with the input. Shows files pinned for this chat;
-		// content is injected into each user turn as a preamble.
-		this.contextRowEl = composerWrap.createDiv({ cls: 'vk-context-row' });
+		// Single bordered card that visually unifies pills, textarea, and toolbar —
+		// the pinned context appears *inside* the input box (Copilot/Smart Compose
+		// style), not floating above it.
+		const inputWrap = composerWrap.createDiv({ cls: 'vk-input-wrap' });
+
+		// Pinned-context chip row — sits at the top of the input card.
+		// Shows files pinned for this chat; content is injected into each user
+		// turn as a preamble.
+		this.contextRowEl = inputWrap.createDiv({ cls: 'vk-context-row' });
 		this.refreshContextChips();
 
 		// Drop a vault note onto the context strip → pin it (mirrors @-mention).
@@ -255,10 +260,10 @@ export class ChatView extends ItemView {
 		});
 
 		// Pending image attachments for the next send — chips with thumbnail + remove.
-		this.attachmentRowEl = composerWrap.createDiv({ cls: 'vk-attachment-row' });
+		this.attachmentRowEl = inputWrap.createDiv({ cls: 'vk-attachment-row' });
 		this.refreshAttachmentChips();
 
-		this.composerEl = composerWrap.createEl('textarea', {
+		this.composerEl = inputWrap.createEl('textarea', {
 			cls: 'vk-input',
 			placeholder: 'Ask anything about your vault…',
 		});
@@ -325,7 +330,7 @@ export class ChatView extends ItemView {
 		});
 
 		// Toolbar beneath the textarea: model picker | tokens | spacer | attach | camera | stop | send
-		const toolbar = composerWrap.createDiv({ cls: 'vk-toolbar' });
+		const toolbar = inputWrap.createDiv({ cls: 'vk-toolbar' });
 
 		this.modelChip = toolbar.createEl('button', { cls: 'vk-model-chip', attr: { type: 'button' } });
 		this.refreshModelChip();
@@ -1271,32 +1276,8 @@ export class ChatView extends ItemView {
 		let hitTurnCap = false;
 		try {
 			for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-				const messages = await this.plugin.storage.toOpenAIMessages(
-					this.session,
-					this.composeSystemPrompt(),
-				);
-
-				// Inject pinned-context preamble into the most recent user message so
-				// the model can reference open files without a read_note round-trip.
-				// Read on each iteration so file edits during the turn show up.
-				const preamble = await this.pinned.buildPreamble();
-				if (preamble) {
-					for (let i = messages.length - 1; i >= 0; i--) {
-						const m = messages[i];
-						if (m.role !== 'user') continue;
-						if (typeof m.content === 'string') {
-							m.content = `${preamble}\n\n---\n\n${m.content}`;
-							break;
-						}
-						if (Array.isArray(m.content)) {
-							m.content = [
-								{ type: 'text', text: `${preamble}\n\n---\n\n` },
-								...m.content,
-							];
-							break;
-						}
-					}
-				}
+				// Re-read pinned context each iteration so file edits during the turn show up.
+				const pinnedPreamble = (await this.pinned.buildPreamble()) || undefined;
 
 				// Live assistant message bubble that fills as text streams
 				const liveWrap = this.streamEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-streaming' });
@@ -1312,16 +1293,21 @@ export class ChatView extends ItemView {
 				};
 
 				const { endpoint, slug } = resolveModelRef(this.plugin.settings, this.modelRef);
+				const provider = providerFor(endpoint);
 				let assembled;
 				try {
-					assembled = await runTurn(
+					assembled = await provider.runTurn(
 						{
 							endpoint,
 							model: slug,
-							messages,
-							tools: [...toolsToOpenAI(TOOLS), LOAD_SKILL_TOOL_DEF],
+							chain: this.plugin.storage.contextChain(this.session),
+							systemPrompt: this.composeSystemPrompt(),
+							tools: [...toolsToDescriptors(TOOLS), LOAD_SKILL_TOOL_DEF],
+							pinnedPreamble,
+							enablePromptCaching: this.plugin.settings.anthropicPromptCaching,
 							signal: this.abort.signal,
 						},
+						(path) => this.plugin.storage.resolveImageBytes(path),
 						{
 							onText: (delta) => {
 								clearThinking();
@@ -1346,7 +1332,7 @@ export class ChatView extends ItemView {
 							onUsage: (u) => {
 								this.cumulativeTokens.prompt += u.promptTokens;
 								this.cumulativeTokens.completion += u.completionTokens;
-								this.cumulativeTokens.cached += u.cachedTokens ?? 0;
+								this.cumulativeTokens.cached += (u.cachedReadTokens ?? 0) + (u.cachedWriteTokens ?? 0);
 								void this.refreshTokenChip();
 							},
 						},
@@ -1371,8 +1357,8 @@ export class ChatView extends ItemView {
 					blocks.push({
 						type: 'toolCall',
 						id: tc.id,
-						name: tc.function.name,
-						arguments: safeParse(tc.function.arguments),
+						name: tc.name,
+						arguments: safeParse(tc.arguments),
 					});
 				}
 				const assistantEntry = this.plugin.storage.makeMessageEntry(
@@ -1383,13 +1369,15 @@ export class ChatView extends ItemView {
 
 				// Persist per-turn usage so it can be rendered alongside the assistant message
 				if (assembled.usage) {
+					const cached =
+						(assembled.usage.cachedReadTokens ?? 0) + (assembled.usage.cachedWriteTokens ?? 0);
 					const usageEntry = this.plugin.storage.makeCustomEntry(
 						'turn-usage',
 						{
 							targetEntryId: assistantEntry.id,
 							promptTokens: assembled.usage.promptTokens,
 							completionTokens: assembled.usage.completionTokens,
-							cachedTokens: assembled.usage.cachedTokens,
+							cachedTokens: cached || undefined,
 						},
 						this.session.leafId,
 					);
@@ -1412,10 +1400,9 @@ export class ChatView extends ItemView {
 				const { writeDecisions, deleteDecisions } = await this.collectApprovals(assembled.toolCalls);
 				const resultBlocks: ContentBlock[] = [];
 				for (const tc of assembled.toolCalls) {
-					const name = tc.function.name;
-					const args = safeParse(tc.function.arguments);
+					const args = safeParse(tc.arguments);
 					const decision = writeDecisions.get(tc.id) ?? deleteDecisions.get(tc.id);
-					const out = await this.runOneToolCall(name, args, decision);
+					const out = await this.runOneToolCall(tc.name, args, decision);
 					resultBlocks.push({ type: 'toolResult', toolCallId: tc.id, content: out });
 				}
 				const toolEntry = this.plugin.storage.makeMessageEntry(
@@ -1459,7 +1446,7 @@ export class ChatView extends ItemView {
 	 * pre-approved via auto-approve / approve-all-turn). Deletes confirm
 	 * individually — one wrong delete is worse than five wrong appends.
 	 */
-	private async collectApprovals(calls: OpenAIToolCall[]): Promise<{
+	private async collectApprovals(calls: ToolCall[]): Promise<{
 		writeDecisions: Map<string, ApprovalDecision>;
 		deleteDecisions: Map<string, ApprovalDecision>;
 	}> {
@@ -1470,19 +1457,18 @@ export class ChatView extends ItemView {
 		const writeItems: BatchApprovalItem[] = [];
 		const deleteItems: BatchApprovalItem[] = [];
 		for (const tc of calls) {
-			const name = tc.function.name;
-			if (name === LOAD_SKILL_NAME) continue;
-			const tool = TOOLS.find((t) => t.name === name);
+			if (tc.name === LOAD_SKILL_NAME) continue;
+			const tool = TOOLS.find((t) => t.name === tc.name);
 			if (!tool) continue;
 			if (tool.risk !== 'write' && tool.risk !== 'delete') continue;
-			const args = safeParse(tc.function.arguments);
+			const args = safeParse(tc.arguments);
 			let preview;
 			try {
 				preview = tool.preview
 					? await tool.preview(args, ctx)
-					: { summary: `${name}(${Object.keys(args).join(', ')})` };
+					: { summary: `${tc.name}(${Object.keys(args).join(', ')})` };
 			} catch (e) {
-				preview = { summary: `${name} — preview failed: ${(e as Error).message}` };
+				preview = { summary: `${tc.name} — preview failed: ${(e as Error).message}` };
 			}
 			const item: BatchApprovalItem = { callId: tc.id, tool, args, preview };
 			if (tool.risk === 'write') writeItems.push(item);

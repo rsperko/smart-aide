@@ -11,6 +11,8 @@ export interface SmartAideSettings {
 	metaDir: string;
 	/** One-time UI flag: has the user seen the "@ now pins notes as context" tip? */
 	hasSeenMentionTip: boolean;
+	/** Apply cache_control to system + tools when calling Anthropic-native endpoints. */
+	anthropicPromptCaching: boolean;
 }
 
 export const DEFAULT_META_DIR = 'Meta';
@@ -75,6 +77,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	autoApproveWrites: false,
 	metaDir: DEFAULT_META_DIR,
 	hasSeenMentionTip: false,
+	anthropicPromptCaching: true,
 };
 
 /**
@@ -94,6 +97,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
 			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
 			hasSeenMentionTip: typeof r.hasSeenMentionTip === 'boolean' ? r.hasSeenMentionTip : false,
+			anthropicPromptCaching: typeof r.anthropicPromptCaching === 'boolean' ? r.anthropicPromptCaching : true,
 		};
 	}
 
@@ -121,6 +125,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		autoApproveWrites: false,
 		metaDir: DEFAULT_META_DIR,
 		hasSeenMentionTip: false,
+		anthropicPromptCaching: true,
 	};
 }
 

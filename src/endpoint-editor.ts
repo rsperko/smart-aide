@@ -1,5 +1,5 @@
 import { App, Notice, Setting } from 'obsidian';
-import { discoverModels } from './provider';
+import { providerFor } from './providers';
 import { describeFreshness } from './settings';
 import { Endpoint } from './types';
 
@@ -31,7 +31,7 @@ export function renderEndpointEditor(
 			autoDiscoverTimer = undefined;
 			if (!endpoint.apiKey || !endpoint.baseURL) return;
 			try {
-				const models = await discoverModels(endpoint);
+				const models = await providerFor(endpoint).discoverModels(endpoint);
 				const now = new Date().toISOString();
 				endpoint.discoveredModels = models;
 				endpoint.discoveredAt = now.slice(0, 19);
@@ -60,8 +60,26 @@ export function renderEndpointEditor(
 	);
 
 	new Setting(container)
+		.setName('Protocol')
+		.setDesc(
+			'OpenAI-compatible: POSTs /chat/completions (default — works for OpenRouter, OpenAI, local servers, etc.). ' +
+				'Anthropic (native): uses /v1/messages — required for prompt caching.',
+		)
+		.addDropdown((dd) =>
+			dd
+				.addOption('openai-compat', 'OpenAI-compatible')
+				.addOption('anthropic', 'Anthropic (native)')
+				.setValue(endpoint.protocol ?? 'openai-compat')
+				.onChange((v) => {
+					endpoint.protocol = v === 'anthropic' ? 'anthropic' : 'openai-compat';
+					void ctx.saveSettings();
+					ctx.onChange();
+				}),
+		);
+
+	new Setting(container)
 		.setName('Base URL')
-		.setDesc('Include /v1 (or equivalent). No /chat/completions.')
+		.setDesc('OpenAI-compat: include /v1. Anthropic-native: no /v1 — the path is added.')
 		.addText((t) =>
 			t
 				.setPlaceholder('https://api.openai.com/v1')
@@ -137,7 +155,7 @@ export function renderEndpointEditor(
 			statusEl.setText('');
 			statusEl.removeClass('vk-test-ok', 'vk-test-bad');
 			try {
-				const models = await discoverModels(endpoint);
+				const models = await providerFor(endpoint).discoverModels(endpoint);
 				const msg = `${models.length} models`;
 				statusEl.setText(`✓ ${msg}`);
 				statusEl.addClass('vk-test-ok');
@@ -174,7 +192,7 @@ export function renderEndpointEditor(
 				.onClick(async () => {
 					btn.setDisabled(true);
 					try {
-						const models = await discoverModels(endpoint);
+						const models = await providerFor(endpoint).discoverModels(endpoint);
 						const now = new Date().toISOString();
 						endpoint.discoveredModels = models;
 						endpoint.discoveredAt = now.slice(0, 19);

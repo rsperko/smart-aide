@@ -145,6 +145,20 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					this.plugin.refreshDangerChips();
 				}),
 			);
+
+		new Setting(root)
+			.setName('Anthropic prompt caching')
+			.setDesc(
+				'When chatting against an Anthropic-native endpoint, mark the system prompt + tool definitions as ephemeral cache. ' +
+				'Cuts prompt cost by ~90% on cached reads after the first turn — wins almost always for multi-turn chats. ' +
+				'No effect on OpenAI-compatible endpoints.',
+			)
+			.addToggle((tg) =>
+				tg.setValue(this.plugin.settings.anthropicPromptCaching).onChange(async (v) => {
+					this.plugin.settings.anthropicPromptCaching = v;
+					await this.plugin.saveSettings();
+				}),
+			);
 	}
 
 	private renderEndpointsSection(root: HTMLElement): void {
@@ -228,6 +242,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 						baseURL: template.baseURL,
 						apiKey: '',
 						...(template.models ? { models: [...template.models] } : {}),
+						...(template.protocol ? { protocol: template.protocol } : {}),
 				  };
 			if (isOpenRouterTemplate) {
 				// defaultOpenRouterEndpoint hardcodes id 'openrouter'; rebind to a unique id

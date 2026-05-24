@@ -86,7 +86,10 @@ export interface CustomMessageEntry extends BaseEntry {
 
 export type Entry = MessageEntry | ModelChangeEntry | SessionInfoEntry | CustomEntry | CustomMessageEntry;
 
-// Multi-endpoint config. Every endpoint speaks OpenAI-compatible chat-completions over SSE.
+export type EndpointProtocol = 'openai-compat' | 'anthropic';
+
+// Multi-endpoint config. Default protocol is OpenAI-compatible chat-completions
+// over SSE; 'anthropic' uses Anthropic's native /v1/messages API.
 export interface Endpoint {
 	id: string;
 	name: string;
@@ -97,6 +100,7 @@ export interface Endpoint {
 	discoveredModels?: DiscoveredModel[];
 	discoveredAt?: string;
 	lastTest?: { ok: boolean; at: string; message?: string };
+	protocol?: EndpointProtocol;
 }
 
 export interface DiscoveredModel {
@@ -111,34 +115,6 @@ export interface DiscoveredModel {
 export interface ModelRef {
 	endpointId: string;
 	slug: string;
-}
-
-// OpenRouter / OpenAI-compatible API shapes
-export interface OpenAIToolDef {
-	type: 'function';
-	function: {
-		name: string;
-		description: string;
-		parameters: Record<string, unknown>;
-	};
-}
-
-export interface OpenAIToolCall {
-	id: string;
-	type: 'function';
-	function: { name: string; arguments: string };
-}
-
-export type OpenAIContentPart =
-	| { type: 'text'; text: string }
-	| { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
-
-export interface OpenAIMessage {
-	role: Role;
-	content?: string | OpenAIContentPart[] | null;
-	tool_calls?: OpenAIToolCall[];
-	tool_call_id?: string;
-	name?: string;
 }
 
 // Tool registry shape

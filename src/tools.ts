@@ -1,5 +1,6 @@
 import { App, TFile, getAllTags, normalizePath, prepareFuzzySearch } from 'obsidian';
-import { ApprovalPreview, OpenAIToolDef, Tool, ToolContext } from './types';
+import type { ToolDescriptor } from './providers/types';
+import { ApprovalPreview, Tool, ToolContext } from './types';
 
 const DEFAULT_MAX_RESULTS = 10;
 const HARD_MAX_RESULTS = 50;
@@ -528,29 +529,27 @@ export const LOAD_SKILL_NAME = 'load_skill';
 // load_skill is exposed to the model but executed by the view layer, which has
 // the SkillRegistry + active session needed to persist the loaded body as a
 // custom_message entry. Routed past dispatchTool entirely.
-export const LOAD_SKILL_TOOL_DEF: OpenAIToolDef = {
-	type: 'function',
-	function: {
-		name: LOAD_SKILL_NAME,
-		description: `Load a skill's full body. Skill names + descriptions are in your system prompt — call this when the user's request matches one.
+export const LOAD_SKILL_TOOL_DEF: ToolDescriptor = {
+	name: LOAD_SKILL_NAME,
+	description: `Load a skill's full body. Skill names + descriptions are in your system prompt — call this when the user's request matches one.
 
 Examples:
 - User wants daily log template, skill 'daily-log' exists → load_skill('daily-log')
 - User wants meeting recap, skill 'meeting-notes' exists → load_skill('meeting-notes')`,
-		parameters: {
-			type: 'object',
-			properties: {
-				name: { type: 'string', description: "Skill name from the manifest." },
-			},
-			required: ['name'],
+	parameters: {
+		type: 'object',
+		properties: {
+			name: { type: 'string', description: "Skill name from the manifest." },
 		},
+		required: ['name'],
 	},
 };
 
-export function toolsToOpenAI(tools: Tool[]): OpenAIToolDef[] {
+export function toolsToDescriptors(tools: Tool[]): ToolDescriptor[] {
 	return tools.map((t) => ({
-		type: 'function',
-		function: { name: t.name, description: t.description, parameters: t.parameters },
+		name: t.name,
+		description: t.description,
+		parameters: t.parameters,
 	}));
 }
 

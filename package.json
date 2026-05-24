@@ -1,6 +1,6 @@
 {
   "name": "smart-aide",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Chat with your Obsidian vault using any OpenAI-compatible model. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "main": "main.js",
   "scripts": {

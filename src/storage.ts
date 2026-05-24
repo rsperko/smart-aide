@@ -1,16 +1,12 @@
 import { TFile, TFolder, Vault, normalizePath } from 'obsidian';
-import { arrayBufferToBase64, dataUrlFor } from './image-helpers';
 import { messageText } from './view-helpers';
 import {
 	AgentMessage,
 	CustomEntry,
 	CustomMessageEntry,
 	Entry,
-	ImageBlock,
 	MessageEntry,
 	ModelChangeEntry,
-	OpenAIContentPart,
-	OpenAIMessage,
 	SessionHeader,
 	SessionInfoEntry,
 	ToolCallBlock,
@@ -240,85 +236,15 @@ export class ChatStorage {
 	}
 
 	/**
-	 * Build OpenAI-format messages for the API from the active context chain.
-	 * Async because image blocks resolve their bytes from the vault and base64-encode
-	 * them inline as `image_url` data URLs.
+	 * Resolve an image attachment's bytes from the vault. Used by the provider
+	 * layer to inline images into the wire format. Returns null when the file
+	 * has been removed — the provider then substitutes a text note so the model
+	 * sees that an image was referenced.
 	 */
-	async toOpenAIMessages(session: ChatSession, systemPrompt: string): Promise<OpenAIMessage[]> {
-		const messages: OpenAIMessage[] = [{ role: 'system', content: systemPrompt }];
-		for (const entry of this.contextChain(session)) {
-			if (entry.type === 'custom_message') {
-				let label: string;
-				if (entry.customType === 'skill') {
-					const skillName = entry.display?.replace(/^skill:\s*/i, '').trim() || 'skill';
-					label = `[Loaded skill: ${skillName}]\nFollow these instructions for this turn:`;
-				} else {
-					label = `[${entry.customType}]`;
-				}
-				messages.push({ role: 'user', content: `${label}\n\n${entry.content}` });
-				continue;
-			}
-			if (entry.type !== 'message') continue;
-			const m = entry.message;
-			if (typeof m.content === 'string') {
-				messages.push({ role: m.role, content: m.content });
-				continue;
-			}
-			if (m.role === 'assistant') {
-				const textParts: string[] = [];
-				const toolCalls: NonNullable<OpenAIMessage['tool_calls']> = [];
-				for (const block of m.content) {
-					if (block.type === 'text') textParts.push(block.text);
-					else if (block.type === 'toolCall')
-						toolCalls.push({
-							id: block.id,
-							type: 'function',
-							function: { name: block.name, arguments: JSON.stringify(block.arguments) },
-						});
-				}
-				messages.push({
-					role: 'assistant',
-					content: textParts.join('') || null,
-					...(toolCalls.length ? { tool_calls: toolCalls } : {}),
-				});
-			} else if (m.role === 'tool') {
-				for (const block of m.content) {
-					if (block.type === 'toolResult') {
-						messages.push({ role: 'tool', tool_call_id: block.toolCallId, content: block.content });
-					}
-				}
-			} else {
-				const hasImage = m.content.some((b) => b.type === 'image');
-				const parts: OpenAIContentPart[] = [];
-				for (const block of m.content) {
-					if (block.type === 'text') parts.push({ type: 'text', text: block.text });
-					else if (block.type === 'image') parts.push(await this.imageBlockToPart(block));
-				}
-				messages.push({
-					role: m.role,
-					content: hasImage
-						? parts
-						: parts.map((p) => (p as { type: 'text'; text: string }).text).join(''),
-				});
-			}
-		}
-		return messages;
-	}
-
-	/**
-	 * Resolve an image block to an OpenAI content part. Reads bytes from the
-	 * vault and inlines them as a base64 data URL. Falls back to a text-note part
-	 * if the file is missing — we never silently drop the image; the model needs
-	 * to know it referenced something that's no longer there.
-	 */
-	private async imageBlockToPart(block: ImageBlock): Promise<OpenAIContentPart> {
-		const file = this.vault.getFileByPath(block.path);
-		if (!file) {
-			return { type: 'text', text: `[image not found: ${block.path}]` };
-		}
-		const bytes = await this.vault.readBinary(file);
-		const base64 = arrayBufferToBase64(bytes);
-		return { type: 'image_url', image_url: { url: dataUrlFor(block.mime, base64) } };
+	async resolveImageBytes(path: string): Promise<ArrayBuffer | null> {
+		const file = this.vault.getFileByPath(path);
+		if (!file) return null;
+		return this.vault.readBinary(file);
 	}
 }
 

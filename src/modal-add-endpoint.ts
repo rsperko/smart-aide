@@ -1,4 +1,5 @@
 import { App, Modal } from 'obsidian';
+import type { EndpointProtocol } from './types';
 
 export interface EndpointTemplate {
 	name: string;
@@ -6,6 +7,8 @@ export interface EndpointTemplate {
 	hint?: string;
 	/** Curated starter model slugs in the format this endpoint expects. */
 	models?: string[];
+	/** Defaults to 'openai-compat' when omitted. */
+	protocol?: EndpointProtocol;
 }
 
 export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
@@ -21,6 +24,13 @@ export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
 		baseURL: 'https://api.openai.com/v1',
 		hint: 'GPT models, direct',
 		models: ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5-mini', 'o3', 'o3-mini'],
+	},
+	{
+		name: 'Anthropic (native)',
+		baseURL: 'https://api.anthropic.com',
+		hint: 'Claude direct — supports prompt caching',
+		models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+		protocol: 'anthropic',
 	},
 	{
 		name: 'Anthropic (compat)',

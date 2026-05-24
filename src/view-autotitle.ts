@@ -1,4 +1,4 @@
-import { streamChat } from './provider';
+import { providerFor } from './providers';
 import { resolveModelRef, SmartAideSettings } from './settings';
 import { ChatSession, ChatStorage } from './storage';
 import { MessageEntry } from './types';
@@ -38,22 +38,35 @@ export async function maybeAutoTitle(opts: {
 		const userText = messageText(firstUser.message, ' ');
 		const asstText = messageText(firstAsst.message, ' ');
 
+		const provider = providerFor(endpoint);
+		const systemPrompt = [
+			'Title this conversation in 4-8 words. Reply with ONLY the title — no quotes, no punctuation.',
+			'Style: topic-first, descriptive, not "Discussion about X".',
+			'Examples: "Finding the weekly review template", "Recipes with miso paste", "Daily note for May 22".',
+		].join('\n');
+		const recapEntry: MessageEntry = {
+			type: 'message',
+			id: 'autotitle',
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: 'user',
+				content: `User: ${userText.slice(0, 400)}\n\nAssistant: ${asstText.slice(0, 400)}`,
+			},
+		};
+
 		let title = '';
-		for await (const ev of streamChat({
-			endpoint,
-			model: slug,
-			messages: [
-				{
-					role: 'system',
-					content: [
-						'Title this conversation in 4-8 words. Reply with ONLY the title — no quotes, no punctuation.',
-						'Style: topic-first, descriptive, not "Discussion about X".',
-						'Examples: "Finding the weekly review template", "Recipes with miso paste", "Daily note for May 22".',
-					].join('\n'),
-				},
-				{ role: 'user', content: `User: ${userText.slice(0, 400)}\n\nAssistant: ${asstText.slice(0, 400)}` },
-			],
-		})) {
+		const resolveImage = async () => null;
+		for await (const ev of provider.streamTurn(
+			{
+				endpoint,
+				model: slug,
+				chain: [recapEntry],
+				systemPrompt,
+				tools: [],
+			},
+			resolveImage,
+		)) {
 			if (ev.type === 'text-delta' && ev.textDelta) title += ev.textDelta;
 			if (ev.type === 'error') return;
 		}

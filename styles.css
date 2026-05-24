@@ -442,27 +442,46 @@ details[open] > .vk-tool-summary::before {
 	background: var(--background-primary);
 }
 
-/* ---------- Pinned-context chips (above the composer textarea) ---------- */
+/* ---------- Input card: holds pills, textarea, and toolbar in one bordered box ---------- */
+
+.vk-input-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 8px 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	background: var(--background-primary);
+	transition: border-color 0.12s ease;
+}
+
+.vk-input-wrap:focus-within {
+	border-color: var(--interactive-accent);
+}
+
+/* ---------- Pinned-context chips (top row inside the input card) ---------- */
 
 .vk-context-row {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 4px;
 	align-items: center;
-	padding: 0 0 6px;
 }
 
 .vk-context-row:empty {
 	display: none;
 }
 
-/* ---------- Attached images (above the composer textarea, below pinned context) ---------- */
+/* ---------- Attached images (below pinned context, above the textarea) ---------- */
 
 .vk-attachment-row {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	padding: 0 0 6px;
+}
+
+.vk-attachment-row:empty {
+	display: none;
 }
 
 .vk-attachment-chip {
@@ -672,24 +691,22 @@ details[open] > .vk-tool-summary::before {
 
 .vk-input {
 	width: 100%;
-	min-height: 34px;
+	min-height: 28px;
 	max-height: 200px;
-	padding: 8px 12px;
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 10px;
-	background: var(--background-primary);
+	padding: 4px 4px 0;
+	border: none;
+	border-radius: 0;
+	background: transparent;
 	color: var(--text-normal);
 	font-family: inherit;
 	font-size: 14px;
 	line-height: 1.5;
 	resize: none;
 	overflow-y: auto;
-	transition: border-color 0.12s ease;
 }
 
 .vk-input:focus {
 	outline: none;
-	border-color: var(--interactive-accent);
 }
 
 .vk-input::placeholder {
