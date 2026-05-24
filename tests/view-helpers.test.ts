@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
 import {
 	buildResearchHeadline,
+	createLongPressGate,
 	displayToolName,
 	estimateTokens,
 	extractToolCalls,
@@ -14,6 +16,7 @@ import {
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
+	handleSkillLoadCall,
 	lineDiff,
 	parseSlashContext,
 	parseSlashInvocation,
@@ -25,6 +28,7 @@ import {
 	tryFormatJson,
 	tryParseJSON,
 } from '../src/view-helpers';
+import type { SkillRegistryLike } from '../src/view-helpers';
 import type { Entry, MessageEntry, ToolCallBlock, ToolResultBlock } from '../src/types';
 
 describe('lineDiff', () => {
@@ -697,5 +701,138 @@ describe('filterTools', () => {
 
 	it('silently ignores names not in the tool list', () => {
 		expect(filterTools(tools, ['read_note', 'made_up']).map((t) => t.name)).toEqual(['read_note']);
+	});
+});
+
+describe('handleSkillLoadCall', () => {
+	const registry: SkillRegistryLike = {
+		loadable: (name) => (name === 'note-capture' ? { name: 'note-capture', body: 'SKILL BODY' } : null),
+		visibleOnThisPlatform: () => [{ name: 'note-capture' }, { name: 'distill' }],
+	};
+
+	it('queues the skill body in the pending array (never writes to storage) and returns loaded status', () => {
+		// Regression guard for load_skill ordering: the helper must NOT persist
+		// the skill body immediately. The dispatch loop in view.ts appends a
+		// custom_message entry AFTER the tool-result entry so providers see
+		// [assistant tool_call → tool result → user skill context] — the order
+		// OpenAI / Anthropic / Gemini require for tool_call/tool_result adjacency.
+		const pending: { name: string; body: string }[] = [];
+		const out = handleSkillLoadCall({ name: 'note-capture' }, registry, pending);
+		expect(pending).toEqual([{ name: 'note-capture', body: 'SKILL BODY' }]);
+		expect(JSON.parse(out)).toEqual({ status: 'loaded', skill: 'note-capture' });
+	});
+
+	it('returns an error and does not enqueue when name is missing', () => {
+		const pending: { name: string; body: string }[] = [];
+		const out = handleSkillLoadCall({}, registry, pending);
+		expect(pending).toEqual([]);
+		expect(JSON.parse(out)).toEqual({ error: 'name is required' });
+	});
+
+	it('returns an error and does not enqueue when name is blank whitespace', () => {
+		const pending: { name: string; body: string }[] = [];
+		const out = handleSkillLoadCall({ name: '   ' }, registry, pending);
+		expect(pending).toEqual([]);
+		expect(JSON.parse(out)).toEqual({ error: 'name is required' });
+	});
+
+	it('returns the available-skills list when the requested skill is unknown', () => {
+		const pending: { name: string; body: string }[] = [];
+		const out = handleSkillLoadCall({ name: 'missing' }, registry, pending);
+		expect(pending).toEqual([]);
+		expect(JSON.parse(out)).toEqual({
+			error: "no skill named 'missing'",
+			available: ['note-capture', 'distill'],
+		});
+	});
+
+	it('appends successive loads in invocation order so the dispatch loop can drain them after the tool entry', () => {
+		const multi: SkillRegistryLike = {
+			loadable: (name) => ({ name, body: `body:${name}` }),
+			visibleOnThisPlatform: () => [],
+		};
+		const pending: { name: string; body: string }[] = [];
+		handleSkillLoadCall({ name: 'a' }, multi, pending);
+		handleSkillLoadCall({ name: 'b' }, multi, pending);
+		expect(pending.map((p) => p.name)).toEqual(['a', 'b']);
+	});
+});
+
+describe('createLongPressGate', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('fires onClick on a quick tap (pointerdown → pointerEnd → click) without firing onLongPress', () => {
+		const onClick = vi.fn();
+		const onLongPress = vi.fn();
+		const gate = createLongPressGate({ holdMs: 600, onClick, onLongPress });
+		gate.pointerDown();
+		vi.advanceTimersByTime(100);
+		gate.pointerEnd();
+		const consumed = gate.click();
+		expect(consumed).toBe(true);
+		expect(onClick).toHaveBeenCalledTimes(1);
+		expect(onLongPress).not.toHaveBeenCalled();
+	});
+
+	it('fires onLongPress after holdMs and suppresses the trailing click that pointerup synthesizes', () => {
+		// Regression guard: before the fix, the click event fired after a
+		// long-press still opened the chat picker on top of the rename modal.
+		const onClick = vi.fn();
+		const onLongPress = vi.fn();
+		const gate = createLongPressGate({ holdMs: 600, onClick, onLongPress });
+		gate.pointerDown();
+		vi.advanceTimersByTime(600);
+		expect(onLongPress).toHaveBeenCalledTimes(1);
+		gate.pointerEnd();
+		const consumed = gate.click();
+		expect(consumed).toBe(false);
+		expect(onClick).not.toHaveBeenCalled();
+	});
+
+	it('resets after a suppressed long-press click so the next quick tap fires onClick again', () => {
+		const onClick = vi.fn();
+		const onLongPress = vi.fn();
+		const gate = createLongPressGate({ holdMs: 600, onClick, onLongPress });
+		gate.pointerDown();
+		vi.advanceTimersByTime(600);
+		gate.pointerEnd();
+		gate.click();
+		gate.pointerDown();
+		vi.advanceTimersByTime(100);
+		gate.pointerEnd();
+		const consumed = gate.click();
+		expect(consumed).toBe(true);
+		expect(onClick).toHaveBeenCalledTimes(1);
+		expect(onLongPress).toHaveBeenCalledTimes(1);
+	});
+
+	it('cancels the long-press timer when pointerEnd fires before holdMs', () => {
+		const onClick = vi.fn();
+		const onLongPress = vi.fn();
+		const gate = createLongPressGate({ holdMs: 600, onClick, onLongPress });
+		gate.pointerDown();
+		vi.advanceTimersByTime(300);
+		gate.pointerEnd();
+		vi.advanceTimersByTime(500);
+		expect(onLongPress).not.toHaveBeenCalled();
+		gate.click();
+		expect(onClick).toHaveBeenCalledTimes(1);
+	});
+
+	it('a fresh pointerDown cancels the previous pending timer', () => {
+		const onLongPress = vi.fn();
+		const gate = createLongPressGate({ holdMs: 600, onClick: () => {}, onLongPress });
+		gate.pointerDown();
+		vi.advanceTimersByTime(400);
+		gate.pointerDown();
+		vi.advanceTimersByTime(400);
+		expect(onLongPress).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(200);
+		expect(onLongPress).toHaveBeenCalledTimes(1);
 	});
 });

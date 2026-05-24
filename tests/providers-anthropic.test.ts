@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { __testing } from '../src/providers/anthropic';
 import type { CustomMessageEntry, MessageEntry } from '../src/types';
 
-const { renderMessages, buildSystem, buildTools } = __testing;
+const { renderMessages, buildSystem, buildTools, buildHeaders } = __testing;
 
 function user(id: string, parentId: string | null, content: string | MessageEntry['message']['content']): MessageEntry {
 	return {
@@ -197,5 +197,28 @@ describe('anthropic buildTools', () => {
 
 	it('returns an empty array for no tools', () => {
 		expect(buildTools([], true)).toEqual([]);
+	});
+});
+
+describe('anthropic buildHeaders', () => {
+	const ep = (apiKey = '', headers?: Record<string, string>) => ({
+		id: 'e1',
+		name: 'Anthropic Local',
+		baseURL: 'http://localhost:8000',
+		apiKey,
+		headers,
+	});
+
+	it('omits x-api-key when apiKey is empty (local proxy / no-key endpoints)', () => {
+		const h = buildHeaders(ep(''));
+		expect(h['x-api-key']).toBeUndefined();
+		expect(h['Content-Type']).toBe('application/json');
+		expect(h['anthropic-version']).toBeTruthy();
+		expect(h['anthropic-dangerous-direct-browser-access']).toBe('true');
+	});
+
+	it('includes x-api-key when apiKey is set', () => {
+		const h = buildHeaders(ep('sk-ant-secret'));
+		expect(h['x-api-key']).toBe('sk-ant-secret');
 	});
 });

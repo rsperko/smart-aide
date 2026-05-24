@@ -414,6 +414,87 @@ export function filterSkillsForSlash<T extends { name: string }>(
 	return [...prefix, ...contains].slice(0, max);
 }
 
+export interface SkillRegistryLike {
+	loadable(name: string): { name: string; body: string } | null | undefined;
+	visibleOnThisPlatform(): { name: string }[];
+}
+
+/**
+ * Resolve a `load_skill` tool call. The skill body is pushed onto
+ * `pendingSkillLoads` instead of persisted directly — the dispatch loop in
+ * view.ts drains the queue AFTER the tool-result entry is appended so providers
+ * see [assistant tool_call → tool result → user skill context]. Interleaving a
+ * skill `custom_message` between the assistant tool_call and its tool result
+ * violates the adjacency that OpenAI / Anthropic / Gemini require.
+ */
+export function handleSkillLoadCall(
+	args: Record<string, unknown>,
+	skills: SkillRegistryLike,
+	pendingSkillLoads: { name: string; body: string }[],
+): string {
+	const skillName = String(args.name ?? '').trim();
+	if (!skillName) return JSON.stringify({ error: 'name is required' });
+	const skill = skills.loadable(skillName);
+	if (!skill) {
+		return JSON.stringify({
+			error: `no skill named '${skillName}'`,
+			available: skills.visibleOnThisPlatform().map((s) => s.name),
+		});
+	}
+	pendingSkillLoads.push({ name: skill.name, body: skill.body });
+	return JSON.stringify({ status: 'loaded', skill: skill.name });
+}
+
+export interface LongPressGate {
+	pointerDown(): void;
+	pointerEnd(): void;
+	/** Returns true if onClick fired, false if the click was swallowed by a prior long-press. */
+	click(): boolean;
+}
+
+/**
+ * State machine that distinguishes a tap from a long-press and swallows the
+ * synthesized click that follows a long-press on touch devices. Without this
+ * the long-press handler (e.g., open rename) fires AND the click handler
+ * (e.g., open picker) fires right after, stacking two actions on one gesture.
+ */
+export function createLongPressGate(opts: {
+	holdMs: number;
+	onClick: () => void;
+	onLongPress: () => void;
+}): LongPressGate {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let didLongPress = false;
+	const cancel = () => {
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			timer = undefined;
+		}
+	};
+	return {
+		pointerDown() {
+			cancel();
+			didLongPress = false;
+			timer = setTimeout(() => {
+				timer = undefined;
+				didLongPress = true;
+				opts.onLongPress();
+			}, opts.holdMs);
+		},
+		pointerEnd() {
+			cancel();
+		},
+		click() {
+			if (didLongPress) {
+				didLongPress = false;
+				return false;
+			}
+			opts.onClick();
+			return true;
+		},
+	};
+}
+
 export function summarizeToolResult(content: string): string {
 	try {
 		const parsed = JSON.parse(content);

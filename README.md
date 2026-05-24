@@ -9,6 +9,7 @@ AI chat for your Obsidian vault — desktop and iPhone. Tool-mediated search and
 - **Bring your own model, any provider.** Plug in any OpenAI-compatible endpoint — OpenRouter (default), OpenAI direct, Anthropic compat, local servers (LM Studio / Ollama / oMLX), or your own gateway. Pick the model per chat; the picker shows context window, cost ($/M tokens), and tool support inline.
 - **Writes with diff approval.** `write_note`, `append_to_note`, `delete_note` surface a diff card before they touch the vault. Approval state is persisted in the chat history. Optional **dangerous mode** in settings auto-approves writes (deletes always still confirm).
 - **Edit and fork.** Tap (or hover) the pencil on any of your past messages to edit it. Send forks the conversation from that point — the branch and everything downstream are hidden, the new turn becomes the leaf. The original branch stays in the JSONL file.
+- **Image attach.** Paperclip in the composer toolbar (file picker), camera button on mobile, clipboard paste, or drag-drop from Finder / vault attachments. Images are saved into Obsidian's configured attachment folder and inlined to the model as base64 multi-part content; the chat JSONL only stores the path, so history stays small. JPEG / PNG / GIF / WebP.
 - **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Skills can also be **user-invocable**: add `user-invocable: true` to the frontmatter and type `/<name>` in the composer to summon it directly. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
 - **Vault context via AGENTS.md.** Drop an `AGENTS.md` at `<vault>/Meta/AGENTS.md` to tell the agent about your vault — folder layout, tag conventions, projects, paths to leave alone. The body is appended to the system prompt. Standard cross-tool format ([agents.md](https://agents.md/)) so the same file works with other agent tools.
 - **Pi session format.** Chat history is JSONL in `<vault>/Meta/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
@@ -24,7 +25,7 @@ Updates flow through BRAT's "Check for updates."
 
 ## Quick start
 
-After install, open Smart Aide from the right sidebar (chat-bubble icon) or via the command palette (`Smart Aide: New chat`). Type a question about your vault and hit Enter. Click the chat title at the top to switch between conversations; long-press / right-click to rename.
+After install, open Smart Aide from the right sidebar (chat-bubble icon) or via the command palette (`Smart Aide: New chat`). Type a question about your vault and hit Enter. Click the chat title at the top to switch between conversations; long-press / right-click to rename. The picker shows a small × on each row for delete (two-click confirm to prevent oops).
 
 ## Skills
 

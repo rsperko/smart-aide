@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { __testing } from '../src/providers/gemini';
 import type { CustomMessageEntry, MessageEntry } from '../src/types';
 
-const { renderContents, buildTools, toolResultToResponse } = __testing;
+const { renderContents, buildTools, toolResultToResponse, buildHeaders } = __testing;
 
 function userText(id: string, text: string, parentId: string | null = null): MessageEntry {
 	return {
@@ -202,5 +202,26 @@ describe('gemini toolResultToResponse', () => {
 
 	it('wraps non-JSON strings under a result key', () => {
 		expect(toolResultToResponse('plain text')).toEqual({ result: 'plain text' });
+	});
+});
+
+describe('gemini buildHeaders', () => {
+	const ep = (apiKey = '', headers?: Record<string, string>) => ({
+		id: 'e1',
+		name: 'Gemini Local',
+		baseURL: 'http://localhost:8000',
+		apiKey,
+		headers,
+	});
+
+	it('omits x-goog-api-key when apiKey is empty', () => {
+		const h = buildHeaders(ep(''));
+		expect(h['x-goog-api-key']).toBeUndefined();
+		expect(h['Content-Type']).toBe('application/json');
+	});
+
+	it('includes x-goog-api-key when apiKey is set', () => {
+		const h = buildHeaders(ep('AIzaSecret'));
+		expect(h['x-goog-api-key']).toBe('AIzaSecret');
 	});
 });

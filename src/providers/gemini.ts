@@ -395,4 +395,5 @@ export const __testing = {
 	renderContents,
 	buildTools,
 	toolResultToResponse,
+	buildHeaders,
 };

@@ -440,4 +440,5 @@ export const __testing = {
 	renderMessages,
 	buildSystem,
 	buildTools,
+	buildHeaders,
 };

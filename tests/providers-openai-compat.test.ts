@@ -2,7 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { __testing } from '../src/providers/openai-compat';
 import type { Entry, MessageEntry, CustomMessageEntry } from '../src/types';
 
-const { renderMessages, toolsToOpenAI } = __testing;
+const { renderMessages, toolsToOpenAI, buildHeaders } = __testing;
+
+function endpoint(over: Partial<{
+	id: string;
+	name: string;
+	baseURL: string;
+	apiKey: string;
+	headers?: Record<string, string>;
+}> = {}) {
+	return {
+		id: 'e1',
+		name: 'Local',
+		baseURL: 'http://localhost:11434/v1',
+		apiKey: '',
+		...over,
+	};
+}
 
 function userText(id: string, text: string, parentId: string | null = null): MessageEntry {
 	return {
@@ -184,6 +200,25 @@ describe('openai-compat renderMessages', () => {
 		expect(parts[0]).toEqual({ type: 'text', text: '📌 pinned\n\n---\n\n' });
 		expect(parts[1]).toEqual({ type: 'text', text: 'see attached' });
 		expect(parts[2].type).toBe('image_url');
+	});
+});
+
+describe('openai-compat buildHeaders', () => {
+	it('omits Authorization when apiKey is empty so local endpoints (Ollama, LM Studio, oMLX) can send without a key', () => {
+		const h = buildHeaders(endpoint({ apiKey: '' }));
+		expect(h['Authorization']).toBeUndefined();
+		expect(h['Content-Type']).toBe('application/json');
+	});
+
+	it('includes Bearer authorization when apiKey is set', () => {
+		const h = buildHeaders(endpoint({ apiKey: 'sk-secret' }));
+		expect(h['Authorization']).toBe('Bearer sk-secret');
+	});
+
+	it('merges endpoint.headers over defaults', () => {
+		const h = buildHeaders(endpoint({ apiKey: '', headers: { 'X-Custom': 'v' } }));
+		expect(h['X-Custom']).toBe('v');
+		expect(h['Authorization']).toBeUndefined();
 	});
 });
 

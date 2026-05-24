@@ -13,6 +13,7 @@ import { findEndpoint, resolveModelRef } from './settings';
 import {
 	Burst,
 	TokenBreakdown,
+	createLongPressGate,
 	estimateTokens,
 	filterSkillsForSlash,
 	filterTools,
@@ -21,6 +22,7 @@ import {
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
+	handleSkillLoadCall,
 	messageText,
 	parseSlashContext,
 	parseSlashInvocation,
@@ -179,28 +181,25 @@ export class ChatView extends ItemView {
 		this.titleBtn.setAttribute('aria-label', 'Current chat — tap to switch, long-press to rename');
 		this.titleBtn.title = 'Switch chats · long-press to rename';
 		this.refreshTopbarTitle();
-		this.registerDomEvent(this.titleBtn, 'click', () => void this.plugin.openChatPicker());
+		const titleGate = createLongPressGate({
+			holdMs: 600,
+			onClick: () => void this.plugin.openChatPicker(),
+			onLongPress: () => this.openRenameModal(),
+		});
+		this.registerDomEvent(this.titleBtn, 'click', (ev: MouseEvent) => {
+			if (!titleGate.click()) {
+				ev.preventDefault();
+				ev.stopPropagation();
+			}
+		});
 		this.registerDomEvent(this.titleBtn, 'contextmenu', (ev: MouseEvent) => {
 			ev.preventDefault();
 			this.openRenameModal();
 		});
-		let longPressTimer: number | undefined;
-		const cancelLongPress = () => {
-			if (longPressTimer !== undefined) {
-				window.clearTimeout(longPressTimer);
-				longPressTimer = undefined;
-			}
-		};
-		this.registerDomEvent(this.titleBtn, 'pointerdown', () => {
-			cancelLongPress();
-			longPressTimer = window.setTimeout(() => {
-				longPressTimer = undefined;
-				this.openRenameModal();
-			}, 600);
-		});
-		this.registerDomEvent(this.titleBtn, 'pointerup', cancelLongPress);
-		this.registerDomEvent(this.titleBtn, 'pointerleave', cancelLongPress);
-		this.registerDomEvent(this.titleBtn, 'pointercancel', cancelLongPress);
+		this.registerDomEvent(this.titleBtn, 'pointerdown', () => titleGate.pointerDown());
+		this.registerDomEvent(this.titleBtn, 'pointerup', () => titleGate.pointerEnd());
+		this.registerDomEvent(this.titleBtn, 'pointerleave', () => titleGate.pointerEnd());
+		this.registerDomEvent(this.titleBtn, 'pointercancel', () => titleGate.pointerEnd());
 
 		topbar.createDiv({ cls: 'vk-spacer' });
 
@@ -1054,15 +1053,11 @@ export class ChatView extends ItemView {
 			text: 'I can search and read notes, follow backlinks, and propose edits (with your approval).',
 		});
 
-		// Meta lines that show "what does the model already see" before turn 1.
+		// Meta line that shows "what does the model already see" before turn 1.
+		// Pinned notes are intentionally NOT listed here — the context strip above
+		// the composer is the source of truth for pins; duplicating them risks
+		// going stale on unpin.
 		const meta = empty.createDiv({ cls: 'vk-empty-meta' });
-		const pinList = this.pinned.list();
-		if (pinList.length > 0) {
-			const names = pinList
-				.map((p) => p.replace(/\.md$/i, '').split('/').pop() ?? p)
-				.join(', ');
-			meta.createDiv({ cls: 'vk-empty-meta-row', text: `📌 Pinned: ${names}` });
-		}
 		const skillCount = this.plugin.skills.visibleOnThisPlatform().length;
 		const agentsLoaded = this.plugin.agents.text().length > 0;
 		const skillParts: string[] = [];
@@ -1318,10 +1313,6 @@ export class ChatView extends ItemView {
 	private async send(): Promise<void> {
 		if (!this.session) return;
 		const { endpoint } = resolveModelRef(this.plugin.settings, this.modelRef);
-		if (!endpoint.apiKey) {
-			new Notice(`Set the API key for "${endpoint.name}" in smart-aide settings.`);
-			return;
-		}
 		const rawText = this.composerEl.value.trim();
 		if (!rawText && this.pendingImages.length === 0) return;
 
@@ -1553,10 +1544,15 @@ export class ChatView extends ItemView {
 				// turn (with per-item checkboxes). Deletes still confirm individually.
 				const { writeDecisions, deleteDecisions } = await this.collectApprovals(assembled.toolCalls);
 				const resultBlocks: ContentBlock[] = [];
+				// Skill bodies queued by load_skill calls — appended AFTER the tool
+				// entry so providers see [assistant tool_call → tool result → skill
+				// custom_message] instead of an invalid interleave that breaks the
+				// tool_call/tool_result adjacency required by OpenAI / Anthropic / Gemini.
+				const pendingSkillLoads: { name: string; body: string }[] = [];
 				for (const tc of assembled.toolCalls) {
 					const args = safeParse(tc.arguments);
 					const decision = writeDecisions.get(tc.id) ?? deleteDecisions.get(tc.id);
-					const out = await this.runOneToolCall(tc.name, args, decision);
+					const out = await this.runOneToolCall(tc.name, args, decision, pendingSkillLoads);
 					resultBlocks.push({ type: 'toolResult', toolCallId: tc.id, content: out });
 				}
 				const toolEntry = this.plugin.storage.makeMessageEntry(
@@ -1564,6 +1560,15 @@ export class ChatView extends ItemView {
 					this.session.leafId,
 				);
 				await this.plugin.storage.appendEntry(this.session, toolEntry);
+				for (const skill of pendingSkillLoads) {
+					const skillEntry = this.plugin.storage.makeCustomMessageEntry(
+						'skill',
+						skill.body,
+						`skill: ${skill.name}`,
+						this.session.leafId,
+					);
+					await this.plugin.storage.appendEntry(this.session, skillEntry);
+				}
 				this.rerenderStream();
 
 				if (this.abort.signal.aborted) break;
@@ -1685,10 +1690,11 @@ export class ChatView extends ItemView {
 		name: string,
 		args: Record<string, unknown>,
 		preDecision: ApprovalDecision | undefined,
+		pendingSkillLoads: { name: string; body: string }[],
 	): Promise<string> {
 		if (!this.session) return JSON.stringify({ error: 'no session' });
 
-		if (name === LOAD_SKILL_NAME) return this.handleSkillLoad(args);
+		if (name === LOAD_SKILL_NAME) return this.handleSkillLoad(args, pendingSkillLoads);
 
 		const tool = TOOLS.find((t) => t.name === name);
 		if (!tool) return JSON.stringify({ error: `unknown tool: ${name}` });
@@ -1712,25 +1718,12 @@ export class ChatView extends ItemView {
 		}
 	}
 
-	private async handleSkillLoad(args: Record<string, unknown>): Promise<string> {
+	private async handleSkillLoad(
+		args: Record<string, unknown>,
+		pendingSkillLoads: { name: string; body: string }[],
+	): Promise<string> {
 		if (!this.session) return JSON.stringify({ error: 'no session' });
-		const skillName = String(args.name ?? '').trim();
-		if (!skillName) return JSON.stringify({ error: 'name is required' });
-		const skill = this.plugin.skills.loadable(skillName);
-		if (!skill) {
-			return JSON.stringify({
-				error: `no skill named '${skillName}'`,
-				available: this.plugin.skills.visibleOnThisPlatform().map((s) => s.name),
-			});
-		}
-		const entry = this.plugin.storage.makeCustomMessageEntry(
-			'skill',
-			skill.body,
-			`skill: ${skill.name}`,
-			this.session.leafId,
-		);
-		await this.plugin.storage.appendEntry(this.session, entry);
-		return JSON.stringify({ status: 'loaded', skill: skill.name });
+		return handleSkillLoadCall(args, this.plugin.skills, pendingSkillLoads);
 	}
 
 	private async persistApprovalAudit(

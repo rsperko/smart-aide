@@ -354,4 +354,5 @@ export const openAICompatProvider: Provider = {
 export const __testing = {
 	renderMessages,
 	toolsToOpenAI,
+	buildHeaders,
 };
