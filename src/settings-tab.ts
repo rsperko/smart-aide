@@ -4,6 +4,13 @@ import { ModelPickerModal } from './picker-models';
 import { renderEndpointEditor } from './endpoint-editor';
 import { AddEndpointModal, EndpointTemplate } from './modal-add-endpoint';
 import {
+	SAMPLE_SKILLS,
+	SampleInstallState,
+	SampleSkill,
+	installSample,
+	readSampleStatus,
+} from './sample-skills';
+import {
 	DEFAULT_META_DIR,
 	DEFAULT_SYSTEM_PROMPT,
 	chatsDirFor,
@@ -69,6 +76,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		this.renderModelDefaults(containerEl);
 		this.renderStorageSection(containerEl);
 		this.renderSkillsSection(containerEl);
+		this.renderSampleSkillsSection(containerEl);
 		this.renderApprovalSection(containerEl);
 		this.renderSystemPromptSection(containerEl);
 	}
@@ -128,6 +136,144 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			);
 	}
 
+	private renderSampleSkillsSection(root: HTMLElement): void {
+		new Setting(root).setName('Sample skills').setHeading();
+
+		root.createDiv({
+			cls: 'setting-item-description vk-section-blurb',
+			text:
+				'Drop in a starter skill to learn the format and customize for your vault. ' +
+				'Each install writes a markdown file to your skills folder that you can edit freely. ' +
+				'Re-installing a customized file makes a .bak backup of your version first.',
+		});
+
+		const skillsDir = skillsDirFor(this.plugin.settings.metaDir);
+
+		// Render rows synchronously with a placeholder action button; resolve
+		// the on-disk status per row in the background so the section paints
+		// immediately without a flash of empty layout.
+		const rowActionEls: HTMLElement[] = [];
+		for (let i = 0; i < SAMPLE_SKILLS.length; i++) {
+			const skill = SAMPLE_SKILLS[i];
+
+			const row = root.createDiv({ cls: 'vk-sample-skill-row' });
+			const head = row.createDiv({ cls: 'vk-sample-skill-head' });
+
+			const meta = head.createDiv({ cls: 'vk-sample-skill-meta' });
+			meta.createDiv({ cls: 'vk-sample-skill-name', text: skill.name });
+			meta.createDiv({ cls: 'vk-sample-skill-desc', text: skill.shortDescription });
+			meta.createDiv({
+				cls: 'vk-sample-skill-model',
+				text: `Recommended model: ${skill.recommendedModel}`,
+			});
+
+			const actions = head.createDiv({ cls: 'vk-sample-skill-actions' });
+			actions.createSpan({ cls: 'vk-sample-skill-checking', text: 'checking…' });
+			rowActionEls.push(actions);
+
+			const details = row.createEl('details', { cls: 'vk-sample-skill-preview' });
+			details.createEl('summary', { text: 'Preview' });
+			details.createEl('pre').createEl('code', { text: skill.body });
+		}
+
+		const footer = root.createDiv({ cls: 'vk-sample-skill-footer' });
+		const allBtn = footer.createEl('button', { cls: 'mod-cta', text: `Install all ${SAMPLE_SKILLS.length}` });
+		allBtn.addEventListener('click', async () => {
+			let created = 0;
+			let unchanged = 0;
+			let kept = 0;
+			for (const skill of SAMPLE_SKILLS) {
+				const result = await installSample(this.plugin.app.vault, skillsDir, skill);
+				if (result.status === 'created') created++;
+				else if (result.status === 'unchanged') unchanged++;
+				else kept++; // skipped-modified
+			}
+			const parts: string[] = [];
+			if (created) parts.push(`installed ${created}`);
+			if (unchanged) parts.push(`${unchanged} already current`);
+			if (kept) parts.push(`${kept} kept (customized — use Re-install to overwrite)`);
+			new Notice(parts.length ? parts.join(' · ') : 'Nothing to do.');
+			await this.plugin.skills.load();
+			this.display();
+		});
+
+		// Background status resolution per row.
+		void (async () => {
+			for (let i = 0; i < SAMPLE_SKILLS.length; i++) {
+				const skill = SAMPLE_SKILLS[i];
+				const actions = rowActionEls[i];
+				try {
+					const status = await readSampleStatus(this.plugin.app.vault, skillsDir, skill);
+					actions.empty();
+					this.renderSampleSkillAction(actions, skill, status, skillsDir);
+				} catch {
+					actions.empty();
+					actions.createSpan({ text: 'unavailable' });
+				}
+			}
+		})();
+	}
+
+	private renderSampleSkillAction(
+		actions: HTMLElement,
+		skill: SampleSkill,
+		status: { state: SampleInstallState; path: string },
+		skillsDir: string,
+	): void {
+		const install = async (overwrite: boolean): Promise<void> => {
+			try {
+				const result = await installSample(this.plugin.app.vault, skillsDir, skill, { overwrite });
+				if (result.status === 'created') {
+					new Notice(`Installed ${skill.name}.`);
+				} else if (result.status === 'overwritten') {
+					new Notice(`Re-installed ${skill.name}. Your version saved to ${result.backupPath}.`);
+				} else if (result.status === 'unchanged') {
+					new Notice(`${skill.name} is already up to date.`);
+				}
+				await this.plugin.skills.load();
+				this.display();
+			} catch (e) {
+				new Notice(`Failed to install ${skill.name}: ${(e as Error).message}`);
+			}
+		};
+
+		if (status.state === 'not-installed') {
+			const btn = actions.createEl('button', { cls: 'mod-cta', text: 'Install' });
+			btn.addEventListener('click', () => void install(false));
+			return;
+		}
+
+		// Installed (current or modified) — show a label + "Open" link to the file.
+		const label = actions.createSpan({
+			cls: 'vk-sample-skill-installed',
+			text: status.state === 'installed-current' ? 'Installed ✓' : 'Installed · customized',
+		});
+		if (status.state === 'installed-modified') {
+			label.addClass('vk-sample-skill-installed-modified');
+		}
+
+		const openLink = actions.createEl('a', {
+			cls: 'vk-sample-skill-open',
+			text: 'Open',
+			href: '#',
+		});
+		openLink.addEventListener('click', (ev) => {
+			ev.preventDefault();
+			void this.plugin.app.workspace.openLinkText(status.path, '', false);
+		});
+
+		if (status.state === 'installed-modified') {
+			const btn = actions.createEl('button', { cls: 'mod-warning', text: 'Re-install' });
+			btn.title = 'Overwrites your edits. Your current copy will be saved as <name>.md.bak.';
+			btn.addEventListener('click', () => {
+				const ok = window.confirm(
+					`Your ${skill.name}.md is customized. Re-installing will save your version as ${skill.name}.md.bak and replace the file with the bundled sample. Continue?`,
+				);
+				if (ok) void install(true);
+			});
+		}
+	}
+
 	private renderApprovalSection(root: HTMLElement): void {
 		new Setting(root).setName('Approvals').setHeading();
 
@@ -149,9 +295,9 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		new Setting(root)
 			.setName('Anthropic prompt caching')
 			.setDesc(
-				'When chatting against an Anthropic-native endpoint, mark the system prompt + tool definitions as ephemeral cache. ' +
-				'Cuts prompt cost by ~90% on cached reads after the first turn — wins almost always for multi-turn chats. ' +
-				'No effect on OpenAI-compatible endpoints.',
+				'On Anthropic-native endpoints only: marks the system prompt + tool definitions as ephemeral cache. ' +
+				'~90% off cached reads after the first turn — near-always wins for multi-turn chats. ' +
+				'(OpenAI-compat endpoints ignore this setting. Gemini-native uses implicit caching automatically.)',
 			)
 			.addToggle((tg) =>
 				tg.setValue(this.plugin.settings.anthropicPromptCaching).onChange(async (v) => {

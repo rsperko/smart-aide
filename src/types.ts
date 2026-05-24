@@ -86,7 +86,7 @@ export interface CustomMessageEntry extends BaseEntry {
 
 export type Entry = MessageEntry | ModelChangeEntry | SessionInfoEntry | CustomEntry | CustomMessageEntry;
 
-export type EndpointProtocol = 'openai-compat' | 'anthropic';
+export type EndpointProtocol = 'openai-compat' | 'anthropic' | 'gemini';
 
 // Multi-endpoint config. Default protocol is OpenAI-compatible chat-completions
 // over SSE; 'anthropic' uses Anthropic's native /v1/messages API.

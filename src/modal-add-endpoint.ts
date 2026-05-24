@@ -33,6 +33,13 @@ export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
 		protocol: 'anthropic',
 	},
 	{
+		name: 'Gemini (native)',
+		baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+		hint: 'Gemini direct — long context, implicit caching, native multimodal',
+		models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+		protocol: 'gemini',
+	},
+	{
 		name: 'Anthropic (compat)',
 		baseURL: 'https://api.anthropic.com/v1',
 		hint: 'Claude via OpenAI-compatible endpoint',

@@ -546,27 +546,22 @@ details[open] > .vk-tool-summary::before {
 .vk-context-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
+	gap: 2px;
 	font-size: 11px;
-	padding: 3px 4px 3px 8px;
+	padding: 1px 2px 1px 8px;
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 11px;
+	border-radius: 10px;
 	background: var(--background-secondary);
 	color: var(--text-normal);
 	cursor: pointer;
 	font-family: inherit;
 	transition: background-color 0.12s ease;
 	max-width: 100%;
+	line-height: 1.2;
 }
 
 .vk-context-chip:hover {
 	background: var(--background-modifier-hover);
-}
-
-.vk-context-chip-icon {
-	font-size: 10px;
-	opacity: 0.85;
-	flex-shrink: 0;
 }
 
 /* Skill chips and AGENTS badge — distinct tint so context-source is visible at a glance. */
@@ -579,14 +574,11 @@ details[open] > .vk-tool-summary::before {
 	border-color: var(--text-faint);
 	background: transparent;
 	color: var(--text-muted);
+	padding-right: 8px;
 }
 
 .vk-context-chip-truncated {
 	border-color: var(--text-warning, var(--interactive-accent));
-}
-
-.vk-context-chip-truncated .vk-context-chip-tokens {
-	color: var(--text-warning, var(--text-muted));
 }
 
 .vk-context-chip-name {
@@ -594,13 +586,7 @@ details[open] > .vk-tool-summary::before {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	max-width: 200px;
-}
-
-.vk-context-chip-tokens {
-	color: var(--text-faint);
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
+	max-width: 180px;
 }
 
 .vk-context-chip-x {
@@ -608,10 +594,10 @@ details[open] > .vk-tool-summary::before {
 	align-items: center;
 	justify-content: center;
 	color: var(--text-faint);
-	width: 16px;
-	height: 16px;
+	width: 14px;
+	height: 14px;
 	border-radius: 50%;
-	font-size: 14px;
+	font-size: 13px;
 	line-height: 1;
 	margin-left: 2px;
 }
@@ -623,13 +609,14 @@ details[open] > .vk-tool-summary::before {
 
 .vk-context-add {
 	font-size: 11px;
-	padding: 3px 10px;
+	padding: 1px 8px;
 	border: 1px dashed var(--background-modifier-border);
-	border-radius: 11px;
+	border-radius: 10px;
 	background: transparent;
 	color: var(--text-muted);
 	cursor: pointer;
 	font-family: inherit;
+	line-height: 1.4;
 }
 
 .vk-context-add:hover {
@@ -691,7 +678,7 @@ details[open] > .vk-tool-summary::before {
 
 .vk-input {
 	width: 100%;
-	min-height: 28px;
+	min-height: 64px;
 	max-height: 200px;
 	padding: 4px 4px 0;
 	border: none;
@@ -1894,4 +1881,104 @@ details[open] > .vk-research-summary::after {
 	font-size: 12px;
 	line-height: 1.5;
 	resize: vertical;
+}
+
+/* ---------- Sample skills section ---------- */
+
+.vk-sample-skill-row {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 10px 0;
+}
+
+.vk-sample-skill-head {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+}
+
+.vk-sample-skill-meta {
+	flex: 1;
+	min-width: 0;
+}
+
+.vk-sample-skill-name {
+	font-family: var(--font-monospace);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.vk-sample-skill-desc {
+	font-size: 12px;
+	color: var(--text-normal);
+	margin-top: 2px;
+}
+
+.vk-sample-skill-model {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 2px;
+}
+
+.vk-sample-skill-actions {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.vk-sample-skill-checking {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.vk-sample-skill-installed {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.vk-sample-skill-installed-modified {
+	color: var(--text-accent);
+}
+
+.vk-sample-skill-open {
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.vk-sample-skill-preview {
+	margin-top: 8px;
+	font-size: 11px;
+}
+
+.vk-sample-skill-preview summary {
+	cursor: pointer;
+	color: var(--text-muted);
+	user-select: none;
+}
+
+.vk-sample-skill-preview summary:hover {
+	color: var(--text-normal);
+}
+
+.vk-sample-skill-preview pre {
+	max-height: 360px;
+	overflow: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	padding: 8px;
+	margin-top: 6px;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+}
+
+.vk-sample-skill-footer {
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px solid var(--background-modifier-border);
+	display: flex;
+	justify-content: flex-end;
 }

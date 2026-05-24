@@ -63,26 +63,36 @@ export function renderEndpointEditor(
 		.setName('Protocol')
 		.setDesc(
 			'OpenAI-compatible: POSTs /chat/completions (default — works for OpenRouter, OpenAI, local servers, etc.). ' +
-				'Anthropic (native): uses /v1/messages — required for prompt caching.',
+				'Anthropic (native): uses /v1/messages — required for prompt caching. ' +
+				'Gemini (native): uses /v1beta/models/*:streamGenerateContent — long context + implicit caching.',
 		)
 		.addDropdown((dd) =>
 			dd
 				.addOption('openai-compat', 'OpenAI-compatible')
 				.addOption('anthropic', 'Anthropic (native)')
+				.addOption('gemini', 'Gemini (native)')
 				.setValue(endpoint.protocol ?? 'openai-compat')
 				.onChange((v) => {
-					endpoint.protocol = v === 'anthropic' ? 'anthropic' : 'openai-compat';
+					if (v === 'anthropic') endpoint.protocol = 'anthropic';
+					else if (v === 'gemini') endpoint.protocol = 'gemini';
+					else endpoint.protocol = 'openai-compat';
 					void ctx.saveSettings();
 					ctx.onChange();
 				}),
 		);
 
+	const baseUrlPlaceholder =
+		endpoint.protocol === 'anthropic'
+			? 'https://api.anthropic.com'
+			: endpoint.protocol === 'gemini'
+				? 'https://generativelanguage.googleapis.com/v1beta'
+				: 'https://api.openai.com/v1';
 	new Setting(container)
 		.setName('Base URL')
-		.setDesc('OpenAI-compat: include /v1. Anthropic-native: no /v1 — the path is added.')
+		.setDesc('OpenAI-compat: include /v1. Anthropic-native + Gemini-native: provider adds the rest of the path.')
 		.addText((t) =>
 			t
-				.setPlaceholder('https://api.openai.com/v1')
+				.setPlaceholder(baseUrlPlaceholder)
 				.setValue(endpoint.baseURL)
 				.onChange((v) => {
 					endpoint.baseURL = v.trim();
@@ -285,11 +295,14 @@ export function renderEndpointEditor(
 
 type KeyHelp = { url: string; linkText: string } | { noKey: true };
 
-function keyHelpFor(baseURL: string): KeyHelp | null {
+export function keyHelpFor(baseURL: string): KeyHelp | null {
 	const url = baseURL.toLowerCase();
 	if (url.includes('openrouter.ai')) return { url: 'https://openrouter.ai/keys', linkText: 'openrouter.ai/keys' };
 	if (url.includes('api.openai.com')) return { url: 'https://platform.openai.com/api-keys', linkText: 'platform.openai.com/api-keys' };
 	if (url.includes('api.anthropic.com')) return { url: 'https://console.anthropic.com/settings/keys', linkText: 'console.anthropic.com/settings/keys' };
+	if (url.includes('generativelanguage.googleapis.com') || url.includes('aistudio.google.com')) {
+		return { url: 'https://aistudio.google.com/apikey', linkText: 'aistudio.google.com/apikey' };
+	}
 	if (url.includes('localhost') || url.includes('127.0.0.1') || url.includes('0.0.0.0')) return { noKey: true };
 	return null;
 }

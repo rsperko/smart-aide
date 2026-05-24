@@ -5,13 +5,14 @@ import {
 	findContentMatches,
 	findSectionIndex,
 	LOAD_SKILL_NAME,
+	LOAD_SKILL_TOOL_DEF,
 	matchesPathPrefix,
 	normalizePathPrefix,
 	normalizeTag,
 	pathGuard,
 	stripDuplicateTitleHeading,
+	toolsToDescriptors,
 	TOOLS,
-	toolsToOpenAI,
 } from '../src/tools';
 import type { Tool } from '../src/types';
 import { App, TFile, TFolder } from 'obsidian';
@@ -748,19 +749,28 @@ describe('load_skill is not in TOOLS', () => {
 	});
 });
 
-describe('toolsToOpenAI', () => {
-	it('wraps each tool as an OpenAI function-type definition', () => {
-		const out = toolsToOpenAI(TOOLS);
+describe('toolsToDescriptors', () => {
+	it('produces a neutral {name, description, parameters} for each tool', () => {
+		const out = toolsToDescriptors(TOOLS);
 		expect(out.length).toBe(TOOLS.length);
 		for (const t of out) {
-			expect(t.type).toBe('function');
-			expect(typeof t.function.name).toBe('string');
-			expect(typeof t.function.description).toBe('string');
-			expect(t.function.parameters).toBeTruthy();
+			expect(typeof t.name).toBe('string');
+			expect(typeof t.description).toBe('string');
+			expect(t.parameters).toBeTruthy();
 		}
-		const names = out.map((t) => t.function.name);
+		const names = out.map((t) => t.name);
 		expect(names).toContain('search_vault');
 		expect(names).toContain('read_note');
+	});
+
+	it('LOAD_SKILL_TOOL_DEF is a neutral descriptor (not OpenAI-wrapped)', () => {
+		expect(LOAD_SKILL_TOOL_DEF.name).toBe(LOAD_SKILL_NAME);
+		expect(typeof LOAD_SKILL_TOOL_DEF.description).toBe('string');
+		expect(LOAD_SKILL_TOOL_DEF.parameters).toMatchObject({
+			type: 'object',
+			properties: { name: { type: 'string' } },
+			required: ['name'],
+		});
 	});
 });
 

@@ -8,6 +8,7 @@ import {
 	formatArgsInline,
 	formatArgValue,
 	formatCostUsd,
+	formatTokenChip,
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
@@ -138,6 +139,61 @@ describe('formatTokens', () => {
 	it('renders 10k+ with no decimals', () => {
 		expect(formatTokens(12345)).toBe('12k tok');
 		expect(formatTokens(123456)).toBe('123k tok');
+	});
+});
+
+describe('formatTokenChip', () => {
+	it('hides percentage under 70% and stays in normal severity', () => {
+		const d = formatTokenChip(4000, 100000);
+		expect(d.pct).toBeNull();
+		expect(d.abs).toBe('4.0k');
+		expect(d.severity).toBe('normal');
+	});
+
+	it('shows percentage and muted severity from 70% up to 90%', () => {
+		const d = formatTokenChip(70000, 100000);
+		expect(d.pct).toBe('70%');
+		expect(d.abs).toBe('70k');
+		expect(d.severity).toBe('muted');
+	});
+
+	it('shows warn severity at 90% and above', () => {
+		const d = formatTokenChip(90000, 100000);
+		expect(d.pct).toBe('90%');
+		expect(d.severity).toBe('warn');
+	});
+
+	it('caps percentage at 100% even when total exceeds the context window', () => {
+		const d = formatTokenChip(250000, 100000);
+		expect(d.pct).toBe('100%');
+		expect(d.severity).toBe('warn');
+	});
+
+	it('drops the tok suffix and uses one decimal under 10k', () => {
+		expect(formatTokenChip(900, 100000).abs).toBe('900');
+		expect(formatTokenChip(1500, 100000).abs).toBe('1.5k');
+		expect(formatTokenChip(9999, 100000).abs).toBe('10.0k');
+		expect(formatTokenChip(12345, 100000).abs).toBe('12k');
+	});
+
+	it('omits the chip entirely when there are no tokens', () => {
+		const d = formatTokenChip(0, 100000);
+		expect(d.pct).toBeNull();
+		expect(d.abs).toBeNull();
+		expect(d.severity).toBe('normal');
+	});
+
+	it('still shows absolute count when context length is unknown', () => {
+		const d = formatTokenChip(4000, undefined);
+		expect(d.pct).toBeNull();
+		expect(d.abs).toBe('4.0k');
+		expect(d.severity).toBe('normal');
+	});
+
+	it('treats a zero context length as unknown rather than dividing', () => {
+		const d = formatTokenChip(4000, 0);
+		expect(d.pct).toBeNull();
+		expect(d.abs).toBe('4.0k');
 	});
 });
 

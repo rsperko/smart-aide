@@ -431,3 +431,10 @@ export const anthropicProvider: Provider = {
 	runTurn,
 	discoverModels,
 };
+
+/** Exported for tests — wire-shape conversion helpers. */
+export const __testing = {
+	renderMessages,
+	buildSystem,
+	buildTools,
+};

@@ -346,3 +346,9 @@ export const openAICompatProvider: Provider = {
 	runTurn,
 	discoverModels,
 };
+
+/** Exported for tests — renders a Pi chain into OpenAI-shape messages. */
+export const __testing = {
+	renderMessages,
+	toolsToOpenAI,
+};

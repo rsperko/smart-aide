@@ -1,16 +1,15 @@
 import { App, FuzzyMatch, FuzzySuggestModal } from 'obsidian';
 import { friendlyModelName } from './models';
+import { type PickerItem, buildModelPickerItems } from './model-picker-filter';
 import { sameRef } from './settings';
-import { DiscoveredModel, Endpoint, ModelRef } from './types';
+import { Endpoint, ModelRef } from './types';
 
-interface PickerItem {
-	ref: ModelRef;
-	endpointName: string;
+interface DisplayItem {
+	item: PickerItem;
 	friendly: string;
-	discovered?: DiscoveredModel;
 }
 
-export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
+export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 	private readonly multiEndpoint: boolean;
 
 	constructor(
@@ -19,10 +18,11 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 		private current: ModelRef,
 		private recents: ModelRef[],
 		private onPick: (ref: ModelRef) => void,
+		private showAll: boolean = false,
 	) {
 		super(app);
 		this.multiEndpoint = endpoints.length > 1;
-		this.setPlaceholder('Select a model…');
+		this.setPlaceholder(showAll ? 'Select a model (all discovered)…' : 'Select a model…');
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
 			{ command: '↵', purpose: 'select' },
@@ -30,65 +30,38 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 		]);
 	}
 
-	getItems(): PickerItem[] {
-		const items: PickerItem[] = [];
-		const seen = new Set<string>();
-		const curatedKeys = new Set<string>();
-
-		for (const endpoint of this.endpoints) {
-			const discoveredById = new Map((endpoint.discoveredModels ?? []).map((m) => [m.id, m]));
-			const manualSlugs = endpoint.models ?? [];
-			for (const slug of manualSlugs) curatedKeys.add(`${endpoint.id}::${slug}`);
-			const slugs = new Set<string>([
-				...manualSlugs,
-				...(endpoint.discoveredModels ?? []).map((m) => m.id),
-			]);
-			for (const slug of slugs) {
-				const key = `${endpoint.id}::${slug}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				items.push({
-					ref: { endpointId: endpoint.id, slug },
-					endpointName: endpoint.name,
-					friendly: friendlyModelName(slug),
-					discovered: discoveredById.get(slug),
-				});
-			}
-		}
-
-		const recentKeys = this.recents.map((r) => `${r.endpointId}::${r.slug}`);
-		const rankRecent = (item: PickerItem) => {
-			const idx = recentKeys.indexOf(`${item.ref.endpointId}::${item.ref.slug}`);
-			return idx < 0 ? Infinity : idx;
-		};
-		const isCurated = (item: PickerItem) =>
-			curatedKeys.has(`${item.ref.endpointId}::${item.ref.slug}`);
-
-		// Sort priority: recents (preserve recents order) > curated (manual list) > discovered alphabetical.
-		items.sort((a, b) => {
-			const ra = rankRecent(a);
-			const rb = rankRecent(b);
-			if (ra !== rb) return ra - rb;
-			const ca = isCurated(a) ? 0 : 1;
-			const cb = isCurated(b) ? 0 : 1;
-			if (ca !== cb) return ca - cb;
-			return a.friendly.localeCompare(b.friendly);
+	getItems(): DisplayItem[] {
+		const { items } = buildModelPickerItems({
+			endpoints: this.endpoints,
+			current: this.current,
+			recents: this.recents,
+			showAll: this.showAll,
 		});
-
-		return items;
+		return items.map((item) =>
+			item.kind === 'model'
+				? { item, friendly: friendlyModelName(item.slug) }
+				: { item, friendly: item.label },
+		);
 	}
 
-	getItemText(item: PickerItem): string {
-		return `${item.friendly} ${item.ref.slug} ${item.endpointName}`;
+	getItemText(d: DisplayItem): string {
+		if (d.item.kind === 'toggle') return d.item.label;
+		return `${d.friendly} ${d.item.ref.slug} ${d.item.endpointName}`;
 	}
 
-	renderSuggestion(match: FuzzyMatch<PickerItem>, el: HTMLElement): void {
-		const item = match.item;
+	renderSuggestion(match: FuzzyMatch<DisplayItem>, el: HTMLElement): void {
+		const { item, friendly } = match.item;
 		el.empty();
 		el.addClass('vk-model-suggestion');
 
+		if (item.kind === 'toggle') {
+			el.addClass('vk-model-suggestion-toggle');
+			el.createDiv({ cls: 'vk-model-suggestion-name', text: item.label });
+			return;
+		}
+
 		const main = el.createDiv({ cls: 'vk-model-suggestion-main' });
-		main.createSpan({ cls: 'vk-model-suggestion-name', text: item.friendly });
+		main.createSpan({ cls: 'vk-model-suggestion-name', text: friendly });
 
 		if (sameRef(item.ref, this.current)) {
 			main.createSpan({ cls: 'vk-model-suggestion-current', text: '· current' });
@@ -121,7 +94,24 @@ export class ModelPickerModal extends FuzzySuggestModal<PickerItem> {
 		}
 	}
 
-	onChooseItem(item: PickerItem): void {
+	onChooseItem(d: DisplayItem): void {
+		const { item } = d;
+		if (item.kind === 'toggle') {
+			const nextShowAll = item.mode === 'expand';
+			// Re-open the picker with the new mode. setTimeout 0 lets the current
+			// modal finish closing before we open the next one (Obsidian quirks).
+			window.setTimeout(() => {
+				new ModelPickerModal(
+					this.app,
+					this.endpoints,
+					this.current,
+					this.recents,
+					this.onPick,
+					nextShowAll,
+				).open();
+			}, 0);
+			return;
+		}
 		this.onPick(item.ref);
 	}
 

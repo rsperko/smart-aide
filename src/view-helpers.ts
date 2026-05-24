@@ -80,6 +80,39 @@ export function formatTokens(n: number): string {
 	return `${Math.round(n / 1000)}k tok`;
 }
 
+export type TokenChipSeverity = 'normal' | 'muted' | 'warn';
+
+export interface TokenChipDisplay {
+	pct: string | null;
+	abs: string | null;
+	severity: TokenChipSeverity;
+}
+
+/**
+ * Visibility rules for the ambient token chip in the composer toolbar.
+ * Percentage is hidden under 70% so an idle chat reads just "4.0k" — the
+ * percent reappears (and the chip tints muted, then warn) as context fills.
+ * Absolute count drops the " tok" suffix to keep the chip compact; tooltips
+ * and popovers use formatTokens() for the longer form.
+ */
+export function formatTokenChip(total: number, contextLength: number | undefined | null): TokenChipDisplay {
+	const pctValue = contextLength && contextLength > 0
+		? Math.min(100, Math.round((total / contextLength) * 100))
+		: null;
+	const severity: TokenChipSeverity = pctValue === null
+		? 'normal'
+		: pctValue >= 90 ? 'warn' : pctValue >= 70 ? 'muted' : 'normal';
+	const pct = pctValue !== null && pctValue >= 70 ? `${pctValue}%` : null;
+	const abs = total > 0
+		? total < 1000
+			? `${total}`
+			: total < 10000
+				? `${(total / 1000).toFixed(1)}k`
+				: `${Math.round(total / 1000)}k`
+		: null;
+	return { pct, abs, severity };
+}
+
 /** Rough token estimate: chars / 4. Cheap and consistent across the UI. */
 export function estimateTokens(s: string): number {
 	if (!s) return 0;

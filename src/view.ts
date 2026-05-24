@@ -14,6 +14,7 @@ import {
 	TokenBreakdown,
 	estimateTokens,
 	formatCostUsd,
+	formatTokenChip,
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
@@ -267,7 +268,7 @@ export class ChatView extends ItemView {
 			cls: 'vk-input',
 			placeholder: 'Ask anything about your vault…',
 		});
-		this.composerEl.rows = 1;
+		this.composerEl.rows = 3;
 		this.registerDomEvent(this.composerEl, 'keydown', (ev: KeyboardEvent) => {
 			if (ev.key === '@' && !ev.isComposing) {
 				// Let the @ get typed; open the picker on next tick so cursor is past the @
@@ -396,8 +397,9 @@ export class ChatView extends ItemView {
 
 	private autosizeComposer(): void {
 		this.composerEl.style.height = 'auto';
+		const min = 64;
 		const max = 200;
-		const next = Math.min(max, this.composerEl.scrollHeight);
+		const next = Math.min(max, Math.max(min, this.composerEl.scrollHeight));
 		this.composerEl.style.height = next + 'px';
 	}
 
@@ -603,21 +605,17 @@ export class ChatView extends ItemView {
 		this.tokenChip.removeClass('vk-token-warn');
 		this.tokenChip.removeClass('vk-token-muted');
 
-		if (contextLength && contextLength > 0) {
-			const pct = Math.min(100, Math.round((total / contextLength) * 100));
-			this.tokenChip.createSpan({ cls: 'vk-token-pct', text: `${pct}%` });
-			if (pct >= 90) this.tokenChip.addClass('vk-token-warn');
-			else if (pct >= 70) this.tokenChip.addClass('vk-token-muted');
+		const display = formatTokenChip(total, contextLength);
+		if (display.severity === 'warn') this.tokenChip.addClass('vk-token-warn');
+		else if (display.severity === 'muted') this.tokenChip.addClass('vk-token-muted');
+		if (display.pct) {
+			this.tokenChip.createSpan({ cls: 'vk-token-pct', text: display.pct });
 		}
-		if (total > 1000) {
-			const sep = contextLength ? ' · ' : '';
+		if (display.abs) {
 			this.tokenChip.createSpan({
 				cls: 'vk-token-abs',
-				text: `${sep}${formatTokens(total)}`,
+				text: `${display.pct ? ' · ' : ''}${display.abs}`,
 			});
-		}
-		if (!contextLength && total <= 1000) {
-			this.tokenChip.createSpan({ cls: 'vk-token-abs', text: formatTokens(total) });
 		}
 
 		if (this.tokenPopover) this.renderTokenPopoverInto(this.tokenPopover);
@@ -1042,18 +1040,16 @@ export class ChatView extends ItemView {
 				cls: 'vk-context-chip',
 				attr: { type: 'button' },
 			});
-			chip.createSpan({ cls: 'vk-context-chip-icon', text: '📌' });
 			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
 			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
-			const tokSpan = chip.createSpan({ cls: 'vk-context-chip-tokens', text: '' });
+			chip.title = `Pinned: ${path}`;
 			void this.pinned.statusOf(path).then((status) => {
 				if (!status) return;
 				if (status.truncated) {
 					chip.addClass('vk-context-chip-truncated');
-					tokSpan.setText(` · ${formatTokens(status.tokens)} · truncated`);
-					chip.title = `Pinned content capped at ~${Math.round(status.sentBytes / 1000)}KB; full file is ${Math.round(status.totalBytes / 1000)}KB. Use read_note for the rest.`;
+					chip.title = `${basename} · ${formatTokens(status.tokens)} · truncated. Capped at ~${Math.round(status.sentBytes / 1000)}KB; full file is ${Math.round(status.totalBytes / 1000)}KB. Use read_note for the rest.`;
 				} else if (status.tokens > 0) {
-					tokSpan.setText(` · ${formatTokens(status.tokens)}`);
+					chip.title = `${basename} · ${formatTokens(status.tokens)}`;
 				}
 			});
 			const x = chip.createSpan({ cls: 'vk-context-chip-x', text: '×' });
@@ -1077,7 +1073,6 @@ export class ChatView extends ItemView {
 				cls: 'vk-context-chip vk-context-skill',
 				attr: { type: 'button' },
 			});
-			chip.createSpan({ cls: 'vk-context-chip-icon', text: '🧠' });
 			chip.createSpan({ cls: 'vk-context-chip-name', text: skillName });
 			if (skill) {
 				chip.title = skill.description;
@@ -1095,7 +1090,6 @@ export class ChatView extends ItemView {
 				cls: 'vk-context-chip vk-context-agents',
 				attr: { type: 'button' },
 			});
-			chip.createSpan({ cls: 'vk-context-chip-icon', text: '📚' });
 			chip.createSpan({ cls: 'vk-context-chip-name', text: 'AGENTS' });
 			chip.title = 'Vault context loaded from AGENTS.md — click to open';
 			this.registerDomEvent(chip, 'click', () =>
