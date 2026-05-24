@@ -29,87 +29,50 @@ interface FileBucket {
 const searchVault: Tool = {
 	risk: 'read',
 	name: 'search_vault',
-	description: `Find notes in the vault. Use whenever the user wants to locate notes by content, tag, folder, or recency.
+	description: `Find notes. Set ≥1 of: query, tag, pathPrefix, sinceDays (AND'd).
 
-Set AT LEAST ONE of: query, tag, pathPrefix, sinceDays. Combining them ANDs the criteria.
+query fuzzy-matches filename + headings + tags (fast, in-memory). Set deepSearch=true to also scan note bodies — use when default returns 0 hits or user says "search inside notes". Case, word order, punctuation ignored.
 
-WHAT query MATCHES:
-The query parameter fuzzy-matches against four surfaces in order of signal strength:
-  1. filename - best signal; user often remembers the topic in the title
-  2. heading  - finds specific sections inside longer notes (returns startLine + endLine for the section)
-  3. tag      - the concept may be a tag name like #book
-  4. content  - only if deepSearch=true; substring scan of note bodies (slower)
+Use the user's exact remembered phrase, not paraphrase.
 
-By default ONLY filename + heading + tag are scanned. This is fast on mobile (all in-memory). Set deepSearch=true to also scan note content for files that did NOT match by filename/heading/tag — use this when the cheap passes returned 0 results, or when you specifically want notes whose body contains a phrase but whose title/headings/tags do not.
+Examples:
+- "find weekly review notes" → query="weekly review"
+- "where I wrote 'eventual consistency'" → query="eventual consistency"
+- "tagged book" → tag="book"
+- "in my Daily folder" → pathPrefix="Daily"
+- "task notes about onboarding" → tag="task", query="onboarding"
+- "recent deadline notes" → query="deadline", sinceDays=30
+- "any mention of Postgres" → query="Postgres", deepSearch=true
 
-Note: deepSearch's content scan SKIPS files already matched by metadata, to keep results focused. If you need a content snippet from a file that matched on filename or heading, follow up with read_note using the section= or startLine= the metadata hit gave you.
+For vague concepts, fire parallel calls with synonyms — "find that piece on deep work" → 3 parallel calls (query="deep work", "deepwork", "flow"). Cheap.
 
-Word order, case, and punctuation are ignored: query "weekly review" matches a file named "Weekly Reviews" or a heading "Weekly-review template".
-
-EXAMPLES (map the user's intent to a call):
-- "find that piece on weekly reviews" -> query="weekly review"
-- "the note where I wrote 'eventual consistency'" -> query="eventual consistency"
-- "find notes tagged book" -> tag="book"
-- "what's in my Daily folder" -> pathPrefix="Daily"
-- "find task notes about onboarding" -> tag="task", query="onboarding"
-- "recent notes about deadlines" -> query="deadline", sinceDays=30
-- "any mention of Postgres anywhere" -> query="Postgres", deepSearch=true
-
-VAGUE CONCEPT QUERIES (user describes an idea, not a remembered phrase):
-Consider issuing MULTIPLE search_vault calls in parallel with related terms.
-E.g., "find that piece on deep work" -> three parallel calls:
-  search_vault({query: "deep work"})
-  search_vault({query: "deepwork"})
-  search_vault({query: "flow"})
-Then synthesize the merged results. Parallel calls are cheap (default mode is in-memory only).
-
-EXACT REMEMBERED PHRASES:
-Use the user's exact words, not paraphrase:
-- "the note where I wrote 'eventual consistency'" -> query="eventual consistency" (NOT "where I wrote eventual consistency")
-- "find that recipe with miso paste" -> query="miso paste" (NOT "recipe with miso paste")
-
-FOLLOWING UP ON RESULTS:
-Each result has a 'hits' array describing where the match landed. For heading hits,
-use read_note(path, startLine, endLine) to fetch just that section. For filename hits,
-use read_note(path) for the full file.
-
-If results come back empty, read the 'hint' field and adjust. Results sort by tier (filename > heading > tag > content) then by mtime within tier.`,
+Heading hits include startLine + endLine — pass to read_note for just that section. Read the hint field when matches=0.`,
 	parameters: {
 		type: 'object',
 		properties: {
 			query: {
 				type: 'string',
-				description:
-					"Phrase or concept to fuzzy-match. Word order, case, and punctuation ignored. " +
-					"Use the user's exact remembered words; don't add filler.",
+				description: "Fuzzy match phrase. User's exact words.",
 			},
 			tag: {
 				type: 'string',
-				description:
-					"Exact tag filter, with or without leading #. " +
-					"Matches inline #tags and frontmatter tags. NOT fuzzy - 'task' does NOT match 'tasks' or 'task/done'. " +
-					"For fuzzy tag-name matching, use query instead.",
+				description: "Exact tag (# optional). NOT fuzzy: 'task' ≠ 'tasks'. For fuzzy, use query.",
 			},
 			pathPrefix: {
 				type: 'string',
-				description: "Folder path to limit results, e.g. 'Daily' or 'Projects/Q4'.",
+				description: "Folder to limit to, e.g. 'Daily' or 'Projects/Q4'.",
 			},
 			sinceDays: {
 				type: 'integer',
-				description:
-					"Limit to notes modified within this many days. Use for 'recent' / 'last week' / 'this month'.",
+				description: "Modified within N days. Use for 'recent' / 'last week'.",
 			},
 			deepSearch: {
 				type: 'boolean',
-				description:
-					"When true, ALSO substring-scan the bodies of notes that did NOT match by filename/heading/tag (slower, reads files). " +
-					"Default false - only filename + heading + tag fuzzy match. " +
-					"Set true when default search returns 0 results or user says 'search inside notes'. " +
-					"For metadata-matched files, fetch snippets with read_note(section=...) using the heading hit.",
+				description: "Also scan note bodies (slower). Default false. Set true when default returns 0.",
 			},
 			maxResults: {
 				type: 'integer',
-				description: `Default ${DEFAULT_MAX_RESULTS}, hard cap ${HARD_MAX_RESULTS}.`,
+				description: `Default ${DEFAULT_MAX_RESULTS}, cap ${HARD_MAX_RESULTS}.`,
 			},
 		},
 	},
@@ -266,43 +229,24 @@ const TRUNCATED_RETURN_BYTES = 25_000;
 const readNote: Tool = {
 	risk: 'read',
 	name: 'read_note',
-	description: `Read note content. Three primary modes:
+	description: `Read note content. Three modes:
 
-1. Full file: read_note({path}).
-   For files larger than ${Math.round(AUTO_TRUNCATE_BYTES / 1000)}KB this auto-truncates to the first ~${Math.round(TRUNCATED_RETURN_BYTES / 1000)}KB plus an outline of headings. The response sets truncated=true and a hint tells you how to continue (use startLine= or section=).
+1. Full: {path}. Auto-truncates >${Math.round(AUTO_TRUNCATE_BYTES / 1000)}KB to first ~${Math.round(TRUNCATED_RETURN_BYTES / 1000)}KB + heading outline; response has truncated=true and a hint.
+2. Range: {path, startLine, endLine}. 1-indexed inclusive. Use startLine+endLine from a search_vault heading hit.
+3. Section: {path, section: "Setup"}. Case-insensitive heading match (exact then fuzzy). Returns until next same-or-higher heading. If no match, response lists available headings.
 
-2. Line range: read_note({path, startLine, endLine}).
-   1-indexed, inclusive. Use the startLine + endLine from a search_vault heading hit to read just that section. No auto-truncation when a range is given.
-
-3. Section by heading name: read_note({path, section: "Setup"}).
-   Case-insensitive match against headings; tries exact match first, then fuzzy. Returns the section under it until the next same-or-higher heading. If no heading matches, the response lists available headings so you can retry.
-
-EXAMPLES:
-- "show me the Setup section" -> read_note({path, section: "Setup"})
-- search_vault returned hit with startLine:23, endLine:41 -> read_note({path, startLine: 23, endLine: 41})
-- "summarize this note" -> read_note({path}) — auto-truncates if huge
-- "read more of [previously-truncated note]" -> read_note({path, startLine: <continueAt from prior response>})
-
-Response always includes path and mtime. Range/section modes also include startLine + endLine + totalLines. Truncated responses include outline (heading list with line numbers) + truncated: true + a hint.`,
+Examples:
+- "show Setup section" → {path, section: "Setup"}
+- hit had startLine:23, endLine:41 → {path, startLine:23, endLine:41}
+- "summarize this note" → {path}
+- continue a truncated read → {path, startLine: <continueAt>}`,
 	parameters: {
 		type: 'object',
 		properties: {
-			path: { type: 'string', description: 'Vault-relative path including .md extension.' },
-			startLine: {
-				type: 'integer',
-				description: '1-indexed first line to return (inclusive).',
-			},
-			endLine: {
-				type: 'integer',
-				description: '1-indexed last line to return (inclusive). Default: end of file.',
-			},
-			section: {
-				type: 'string',
-				description:
-					"Heading name to fetch. Exact match first (case-insensitive), then fuzzy fallback. " +
-					"Returns the section under that heading until the next same-or-higher heading. " +
-					"Ignored if startLine/endLine is given.",
-			},
+			path: { type: 'string', description: 'Vault-relative .md path.' },
+			startLine: { type: 'integer', description: '1-indexed first line (inclusive).' },
+			endLine: { type: 'integer', description: '1-indexed last line (inclusive). Default: EOF.' },
+			section: { type: 'string', description: 'Heading name. Ignored if startLine/endLine given.' },
 		},
 		required: ['path'],
 	},
@@ -401,39 +345,20 @@ Response always includes path and mtime. Range/section modes also include startL
 const writeNote: Tool = {
 	risk: 'write',
 	name: 'write_note',
-	description: `Create or overwrite a vault note. REQUIRES USER APPROVAL — a diff is shown before any change.
+	description: `Create or overwrite a note. REQUIRES APPROVAL — diff shown.
 
-Use for creating a new note OR replacing the full contents of an existing one. For appending to the end without touching existing content, prefer append_to_note (lower friction; smaller diff).
+For adding to the end without touching existing content, prefer append_to_note (smaller diff).
 
-OBSIDIAN CONVENTION — content format:
-Obsidian renders the filename as the page title (inline title). Do NOT start the note body with \`# <Filename>\` — it'll appear twice. Start with frontmatter (if any), then content using \`##\` for section headings. Smart Aide also strips a leading \`# <Filename>\` line automatically as a safety net.
+Use Obsidian markdown (see system prompt). Body MUST NOT start with \`# <Filename>\` — Obsidian renders filename as title.
 
-OBSIDIAN MARKDOWN — use Obsidian's native syntax, not GitHub-flavored equivalents:
-- Internal links: \`[[Note Name]]\` or \`[[Path/To/Note]]\` or \`[[Path/To/Note#Heading]]\` or \`[[Note|alias text]]\`. Use wikilinks, NOT \`[text](path.md)\` markdown links. Wikilinks resolve across folders and follow renames.
-- Embed another note inline: \`![[Other Note]]\` or \`![[Other Note#Section]]\`. Only when the user asks to embed/include another note's content.
-- Tags: inline \`#tag-name\` (kebab-case, no spaces, no punctuation) anywhere in the body. In frontmatter, use a YAML list: \`tags: [a, b]\` or a YAML block list. Don't quote tags or split them on spaces.
-- Callouts: \`> [!note]\`, \`> [!tip]\`, \`> [!warning]\`, \`> [!info]\`, \`> [!quote]\`, \`> [!example]\`. First line is \`> [!type] Optional Title\`; following lines start with \`> \`. Do NOT write \`> **Note:**\` — that's a plain blockquote, not a callout.
-- Highlight: \`==highlighted text==\`. Use sparingly, like a yellow highlighter in a book.
-- Private comments (won't render in preview): \`%%comment text%%\` — editor-only notes the user sees but a reader of an export won't.
-- Frontmatter: YAML between \`---\` fences at the very top, before any content. Common keys: \`tags\`, \`aliases\`, \`cssclass\`, \`date\`, plus any user-defined Dataview fields. Quote values that contain colons or hashes.
-- Task lists: \`- [ ]\` and \`- [x]\` (lowercase x). Tab-indent for nesting.
-
-OBSIDIAN MARKDOWN — worked examples:
-- "link to my ProjectX note" -> body contains \`[[ProjectX]]\` (NOT \`[ProjectX](ProjectX.md)\`)
-- "add a warning about pricing" -> \`> [!warning] Pricing\\n> The free tier is rate-limited.\`
-- "tag this #book and #review" -> body contains \`#book #review\`; in frontmatter \`tags: [book, review]\`
-- "summarize the Setup section of Onboarding.md and embed the original below" -> write_note with the summary followed by \`![[Onboarding#Setup]]\`
-
-EXAMPLES:
-- "create a note at Daily/2026-05-21.md with [...]" -> write_note(path, content)
-- "rewrite this section to be clearer" -> read_note first, modify, write_note with full new content
-
-Never writes outside the vault, never touches .obsidian/, never touches the active chat's own JSONL.`,
+Examples:
+- "create Daily/2026-05-21.md with X" → write_note(path, content)
+- "rewrite this section" → read_note first, then write_note with full new content`,
 	parameters: {
 		type: 'object',
 		properties: {
-			path: { type: 'string', description: 'Vault-relative path including .md extension.' },
-			content: { type: 'string', description: 'Full new content of the note.' },
+			path: { type: 'string', description: 'Vault-relative .md path.' },
+			content: { type: 'string', description: 'Full new note content.' },
 		},
 		required: ['path', 'content'],
 	},
@@ -450,7 +375,7 @@ Never writes outside the vault, never touches .obsidian/, never touches the acti
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path, ctx.metaDir);
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
 		if (guard) return JSON.stringify({ error: guard });
 		const content = stripDuplicateTitleHeading(path, strArg(args.content));
 		const existing = ctx.app.vault.getFileByPath(path);
@@ -471,20 +396,18 @@ Never writes outside the vault, never touches .obsidian/, never touches the acti
 const appendToNote: Tool = {
 	risk: 'write',
 	name: 'append_to_note',
-	description: `Append text to the end of an existing note. REQUIRES USER APPROVAL — the appended content is shown before any change.
+	description: `Append to an existing note. REQUIRES APPROVAL — content shown.
 
-Lower friction than write_note when only adding content. The note must exist; use write_note to create.
+Lower friction than write_note when only adding. Note must exist; use write_note to create. Use Obsidian markdown (see system prompt).
 
-OBSIDIAN MARKDOWN: same conventions as write_note — use \`[[wikilinks]]\` not \`[md](links)\`, callouts as \`> [!note]\` not \`> **Note:**\`, inline tags as \`#kebab-case\`. See write_note's description for the full list.
-
-EXAMPLES:
-- "add a TODO at the end of today's daily note" -> append_to_note(path, "\\n- [ ] follow up with [[Bob]]")
-- "log this insight in my journal" -> append_to_note(journal-path, content)`,
+Examples:
+- "add a TODO to today's daily note" → append_to_note(path, "\\n- [ ] follow up with [[Bob]]")
+- "log this insight in my journal" → append_to_note(path, content)`,
 	parameters: {
 		type: 'object',
 		properties: {
-			path: { type: 'string', description: 'Vault-relative path including .md extension.' },
-			content: { type: 'string', description: 'Text to append. Include leading newlines if you want a blank line before.' },
+			path: { type: 'string', description: 'Vault-relative .md path.' },
+			content: { type: 'string', description: 'Text to append. Lead with newlines for spacing.' },
 		},
 		required: ['path', 'content'],
 	},
@@ -500,7 +423,7 @@ EXAMPLES:
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path, ctx.metaDir);
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
 		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) return JSON.stringify({ error: `not found: ${path}` });
@@ -515,13 +438,11 @@ EXAMPLES:
 const deleteNote: Tool = {
 	risk: 'delete',
 	name: 'delete_note',
-	description: `Move a note to trash. REQUIRES USER CONFIRMATION — the path is shown before any change. Uses Obsidian's trash setting (system trash or local .trash).
-
-Only use when the user explicitly asks to delete. Don't use to "tidy up" or "clean" automatically.`,
+	description: `Move a note to trash. REQUIRES CONFIRMATION. Only when user explicitly asks to delete — never to "clean up" automatically.`,
 	parameters: {
 		type: 'object',
 		properties: {
-			path: { type: 'string', description: 'Vault-relative path including .md extension.' },
+			path: { type: 'string', description: 'Vault-relative .md path.' },
 		},
 		required: ['path'],
 	},
@@ -537,7 +458,7 @@ Only use when the user explicitly asks to delete. Don't use to "tidy up" or "cle
 	async execute(args, ctx) {
 		const path = normalizePath(strArg(args.path));
 		if (!path) return JSON.stringify({ error: 'path is required' });
-		const guard = pathGuard(path, ctx.metaDir);
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
 		if (guard) return JSON.stringify({ error: guard });
 		const file = ctx.app.vault.getFileByPath(path);
 		if (!file) return JSON.stringify({ error: `not found: ${path}` });
@@ -549,14 +470,12 @@ Only use when the user explicitly asks to delete. Don't use to "tidy up" or "cle
 const listRecent: Tool = {
 	risk: 'read',
 	name: 'list_recent',
-	description: `List the most-recently-modified notes in the vault or a folder. Use for "what did I write recently", "show today's daily notes", "recent journal entries".
-
-Returns path + mtime, sorted newest first.`,
+	description: `Most-recently-modified notes. Use for "what did I write recently", "today's daily notes", "recent journal entries". Returns path + mtime, newest first.`,
 	parameters: {
 		type: 'object',
 		properties: {
-			pathPrefix: { type: 'string', description: "Optional folder to limit to (e.g., 'Daily', 'Journal')." },
-			limit: { type: 'integer', description: 'Default 10, hard cap 50.' },
+			pathPrefix: { type: 'string', description: "Optional folder, e.g. 'Daily'." },
+			limit: { type: 'integer', description: 'Default 10, cap 50.' },
 		},
 	},
 	async execute(args, ctx) {
@@ -579,13 +498,11 @@ Returns path + mtime, sorted newest first.`,
 const getBacklinks: Tool = {
 	risk: 'read',
 	name: 'get_backlinks',
-	description: `List notes that link TO a given note. Use for "what links to this", "what references X", "where is this discussed".
-
-Uses MetadataCache resolvedLinks — fast, no file reads. Returns paths sorted by link count (notes that link most often first).`,
+	description: `Notes that link TO a given note. Use for "what links to this", "what references X", "where is this discussed". Returns paths sorted by link count.`,
 	parameters: {
 		type: 'object',
 		properties: {
-			path: { type: 'string', description: 'Vault-relative path of the target note.' },
+			path: { type: 'string', description: 'Vault-relative target path.' },
 		},
 		required: ['path'],
 	},
@@ -615,17 +532,15 @@ export const LOAD_SKILL_TOOL_DEF: OpenAIToolDef = {
 	type: 'function',
 	function: {
 		name: LOAD_SKILL_NAME,
-		description: `Load a skill's full body into context by name. Skill descriptions are visible to you at all times in the system prompt; call this to pull a specific skill's full content when you judge it relevant to the user's request.
+		description: `Load a skill's full body. Skill names + descriptions are in your system prompt — call this when the user's request matches one.
 
-EXAMPLES:
-- User asks for a daily log template and you see a skill named 'daily-log' -> load_skill('daily-log')
-- User asks to write a meeting recap and 'meeting-notes' skill is available -> load_skill('meeting-notes')
-
-The loaded body becomes part of the conversation and will guide subsequent responses.`,
+Examples:
+- User wants daily log template, skill 'daily-log' exists → load_skill('daily-log')
+- User wants meeting recap, skill 'meeting-notes' exists → load_skill('meeting-notes')`,
 		parameters: {
 			type: 'object',
 			properties: {
-				name: { type: 'string', description: "Skill name as listed in the system prompt's skill manifest." },
+				name: { type: 'string', description: "Skill name from the manifest." },
 			},
 			required: ['name'],
 		},
@@ -847,7 +762,7 @@ export function pathGuard(
 		}
 	}
 	if (opts.requireMarkdown && !/\.md$/i.test(path)) {
-		return 'only .md notes can be read';
+		return 'only .md files are supported';
 	}
 	return '';
 }
