@@ -8,6 +8,13 @@ export interface ApprovalDecision {
 	reason?: string;
 }
 
+export interface BatchApprovalItem {
+	callId: string;
+	tool: Tool;
+	args: Record<string, unknown>;
+	preview: ApprovalPreview;
+}
+
 interface ApprovalHost {
 	registerDomEvent<K extends keyof HTMLElementEventMap>(
 		el: HTMLElement,
@@ -91,6 +98,133 @@ export function requestApproval(
 		}
 
 		new Notice(`Approval needed: ${preview.summary}`, 4000);
+	});
+}
+
+/**
+ * One card, N write proposals, per-item checkboxes. The user can approve a
+ * subset (typical when the model gets one of several writes wrong), and a
+ * single "auto-approve future writes in this turn" toggle covers the whole rest
+ * of the turn. Delete operations are NOT batched — they keep their own
+ * single-item card with explicit confirmation per file.
+ */
+export function requestBatchedWriteApprovals(
+	host: ApprovalHost,
+	container: HTMLElement,
+	scrollAfter: () => void,
+	items: BatchApprovalItem[],
+	abortSignal?: AbortSignal,
+): Promise<Map<string, ApprovalDecision>> {
+	return new Promise((resolve) => {
+		const card = container.createDiv({ cls: 'vk-approval vk-approval-pending vk-approval-batch' });
+
+		const header = card.createDiv({ cls: 'vk-approval-header' });
+		header.createSpan({ cls: 'vk-approval-lock', text: '✎' });
+		header.createSpan({
+			cls: 'vk-approval-summary',
+			text: `${items.length} write${items.length === 1 ? '' : 's'} pending approval`,
+		});
+
+		const list = card.createDiv({ cls: 'vk-approval-batch-list' });
+		const itemControls: { id: string; checkbox: HTMLInputElement }[] = [];
+		for (const item of items) {
+			const row = list.createDiv({ cls: 'vk-approval-batch-row' });
+			const checkLabel = row.createEl('label', { cls: 'vk-approval-batch-check' });
+			const checkbox = checkLabel.createEl('input', { type: 'checkbox' });
+			checkbox.checked = true;
+			checkLabel.createSpan({
+				cls: 'vk-approval-batch-rowsummary',
+				text: item.preview.summary,
+			});
+			itemControls.push({ id: item.callId, checkbox });
+			if (item.preview.diff) {
+				const diffWrap = row.createDiv({ cls: 'vk-approval-batch-diff' });
+				renderDiff(diffWrap, item.preview.diff);
+			}
+		}
+
+		const actions = card.createDiv({ cls: 'vk-approval-actions' });
+		const rejectBtn = actions.createEl('button', {
+			cls: 'vk-approval-btn vk-approval-reject',
+			text: 'Reject all',
+		});
+		const approveBtn = actions.createEl('button', {
+			cls: 'vk-approval-btn vk-approval-approve',
+			text: 'Approve selected',
+		});
+		const allTurnLabel = actions.createEl('label', { cls: 'vk-approval-batch-allturn' });
+		const allTurnCb = allTurnLabel.createEl('input', { type: 'checkbox' });
+		allTurnLabel.createSpan({ text: 'auto-approve future writes in this turn' });
+
+		let settled = false;
+		let abortListener: (() => void) | null = null;
+		const finalize = (
+			decisions: Map<string, ApprovalDecision>,
+			label: string,
+			klass: string,
+		): void => {
+			if (settled) return;
+			settled = true;
+			if (abortListener && abortSignal) abortSignal.removeEventListener('abort', abortListener);
+			card.removeClass('vk-approval-pending');
+			card.addClass(klass);
+			actions.empty();
+			actions.createSpan({ cls: 'vk-approval-decision', text: label });
+			for (const { checkbox } of itemControls) checkbox.disabled = true;
+			allTurnCb.disabled = true;
+			resolve(decisions);
+			scrollAfter();
+		};
+
+		host.registerDomEvent(rejectBtn, 'click', () => {
+			const map = new Map<string, ApprovalDecision>();
+			for (const item of items) {
+				map.set(item.callId, { approved: false, reason: 'User clicked Reject all.' });
+			}
+			finalize(map, '✗ Rejected all', 'vk-approval-decided-rejected');
+		});
+
+		host.registerDomEvent(approveBtn, 'click', () => {
+			const map = new Map<string, ApprovalDecision>();
+			let approvedCount = 0;
+			for (const { id, checkbox } of itemControls) {
+				if (checkbox.checked) {
+					map.set(
+						id,
+						allTurnCb.checked ? { approved: true, scope: 'turn' } : { approved: true },
+					);
+					approvedCount++;
+				} else {
+					map.set(id, { approved: false, reason: 'Unchecked in batch.' });
+				}
+			}
+			const label =
+				approvedCount === items.length
+					? `✓ Approved all ${approvedCount}${allTurnCb.checked ? ' (and rest of turn)' : ''}`
+					: `✓ Approved ${approvedCount} of ${items.length}`;
+			finalize(map, label, 'vk-approval-decided-approved');
+		});
+
+		if (abortSignal) {
+			const cancelAll = (): void => {
+				const map = new Map<string, ApprovalDecision>();
+				for (const item of items) {
+					map.set(item.callId, { approved: false, reason: 'Stopped by user.' });
+				}
+				finalize(map, '⊘ Cancelled — stopped', 'vk-approval-decided-cancelled');
+			};
+			if (abortSignal.aborted) {
+				cancelAll();
+			} else {
+				abortListener = cancelAll;
+				abortSignal.addEventListener('abort', abortListener);
+			}
+		}
+
+		new Notice(
+			`Approval needed: ${items.length} write${items.length === 1 ? '' : 's'}`,
+			4000,
+		);
 	});
 }
 

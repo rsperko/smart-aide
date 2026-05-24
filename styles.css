@@ -130,19 +130,29 @@
 	scroll-behavior: smooth;
 }
 
+/* One user-turn cluster: user bubble + activity card + final answer. Tight
+   internal spacing makes the trio read as a unit; the larger .vk-stream gap
+   between bursts is the visual breath between turns. */
+.vk-burst {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
 .vk-empty {
 	flex: 1;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: 12px;
-	color: var(--text-faint);
+	gap: 8px;
+	color: var(--text-muted);
 	padding: 32px 16px;
 }
 
 .vk-empty-icon {
 	opacity: 0.4;
+	margin-bottom: 4px;
 }
 
 .vk-empty-icon svg {
@@ -151,8 +161,31 @@
 }
 
 .vk-empty-text {
-	font-size: 13px;
+	font-size: 14px;
 	text-align: center;
+	color: var(--text-normal);
+	font-weight: 500;
+}
+
+.vk-empty-sub {
+	font-size: 12px;
+	text-align: center;
+	color: var(--text-muted);
+	max-width: 280px;
+	line-height: 1.5;
+}
+
+.vk-empty-meta {
+	margin-top: 12px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+}
+
+.vk-empty-meta-row {
+	font-size: 11px;
+	color: var(--text-faint);
 }
 
 /* ---------- Messages ---------- */
@@ -162,14 +195,6 @@
 	flex-direction: column;
 	gap: 6px;
 	position: relative;
-}
-
-.vk-role {
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.6px;
-	color: var(--text-faint);
-	font-weight: 600;
 }
 
 .vk-body {
@@ -243,12 +268,12 @@
 
 .vk-text ul,
 .vk-text ol {
-	margin: 0.35em 0;
-	padding-left: 1.4em;
+	margin: 0.25em 0;
+	padding-left: 1.3em;
 }
 
 .vk-text li {
-	margin: 0.1em 0;
+	margin: 0.05em 0;
 }
 
 /* A list item that contains a paragraph (common when the model emits
@@ -259,17 +284,18 @@
 
 .vk-text li > ul,
 .vk-text li > ol {
-	margin: 0.15em 0;
+	margin: 0.1em 0;
 }
 
-/* Blockquotes render as a callout — distinct from the model's own voice so
-   the boundary between commentary and quoted-from-a-note content is obvious. */
+/* Blockquotes signal "quoted from a note" with a tight accent bar.
+   No background fill, minimal padding — the model uses blockquotes routinely
+   per the system prompt, so they must not visually dominate. */
 .vk-text blockquote {
-	margin: 0.6em 0;
-	padding: 8px 12px;
+	margin: 0.4em 0;
+	padding: 2px 10px;
 	border-left: 3px solid var(--interactive-accent);
-	background: var(--background-secondary);
-	border-radius: 0 6px 6px 0;
+	background: transparent;
+	border-radius: 0;
 	color: var(--text-normal);
 }
 
@@ -281,6 +307,16 @@
 	margin-bottom: 0;
 }
 
+.vk-text blockquote ul,
+.vk-text blockquote ol {
+	margin: 0.1em 0;
+	padding-left: 1.2em;
+}
+
+.vk-text blockquote li {
+	margin: 0;
+}
+
 /* Inside a callout, dial headings down — they shouldn't pretend to be
    document-level. */
 .vk-text blockquote h1,
@@ -289,14 +325,12 @@
 .vk-text blockquote h4 {
 	font-size: 1em;
 	font-weight: 600;
-	margin: 0.3em 0 0.2em;
+	margin: 0.2em 0 0.1em;
 	color: var(--text-muted);
-	text-transform: uppercase;
-	letter-spacing: 0.4px;
 }
 
 .vk-text hr {
-	margin: 0.6em 0;
+	margin: 0.5em 0;
 }
 
 /* Tool messages have no visible wrapper — the cards inside speak for themselves */
@@ -493,9 +527,9 @@ details[open] > .vk-tool-summary::before {
 .vk-context-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: 2px;
+	gap: 4px;
 	font-size: 11px;
-	padding: 3px 4px 3px 9px;
+	padding: 3px 4px 3px 8px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 11px;
 	background: var(--background-secondary);
@@ -508,6 +542,24 @@ details[open] > .vk-tool-summary::before {
 
 .vk-context-chip:hover {
 	background: var(--background-modifier-hover);
+}
+
+.vk-context-chip-icon {
+	font-size: 10px;
+	opacity: 0.85;
+	flex-shrink: 0;
+}
+
+/* Skill chips and AGENTS badge — distinct tint so context-source is visible at a glance. */
+.vk-context-skill {
+	border-color: var(--interactive-accent);
+	border-style: dashed;
+}
+
+.vk-context-agents {
+	border-color: var(--text-faint);
+	background: transparent;
+	color: var(--text-muted);
 }
 
 .vk-context-chip-truncated {
@@ -567,6 +619,21 @@ details[open] > .vk-tool-summary::before {
 	border-style: solid;
 }
 
+.vk-context-clear {
+	font-size: 11px;
+	padding: 3px 8px;
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
+	cursor: pointer;
+	font-family: inherit;
+	text-decoration: underline;
+}
+
+.vk-context-clear:hover {
+	color: var(--text-error, var(--text-normal));
+}
+
 /* ---------- Edit-and-fork banner above the composer ---------- */
 
 .vk-edit-banner {
@@ -605,9 +672,9 @@ details[open] > .vk-tool-summary::before {
 
 .vk-input {
 	width: 100%;
-	min-height: 60px;
+	min-height: 34px;
 	max-height: 200px;
-	padding: 10px 12px;
+	padding: 8px 12px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 10px;
 	background: var(--background-primary);
@@ -635,6 +702,7 @@ details[open] > .vk-tool-summary::before {
 	align-items: center;
 	gap: 8px;
 	min-height: 28px;
+	position: relative; /* anchors the token popover */
 }
 
 .vk-model-chip {
@@ -1089,11 +1157,118 @@ details[open] > .vk-tool-summary::before {
 	background: var(--background-primary);
 }
 
-.vk-tokens {
+/* Ambient token chip — context-window percentage in the bottom toolbar.
+   Faint until 70% used, muted between 70–90%, warning above 90%. Tap to expand
+   the breakdown popover. */
+.vk-token-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 	font-size: 11px;
+	padding: 3px 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
 	color: var(--text-faint);
+	font-family: inherit;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
+	cursor: pointer;
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.vk-token-chip:empty {
+	display: none;
+}
+
+.vk-token-chip:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+}
+
+.vk-token-chip.vk-token-muted {
+	color: var(--text-muted);
+}
+
+.vk-token-chip.vk-token-warn {
+	color: var(--text-warning, var(--text-error, var(--text-normal)));
+	font-weight: 600;
+}
+
+.vk-token-pct {
+	font-weight: 600;
+}
+
+.vk-token-abs {
+	color: inherit;
+	opacity: 0.85;
+}
+
+/* Popover anchored above the token chip with a small breakdown table.
+   Positioned absolutely so it overlays the message stream without resizing it. */
+.vk-token-popover {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 0;
+	z-index: 60;
+	min-width: 240px;
+	max-width: 340px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-primary);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+	font-size: 12px;
+	color: var(--text-normal);
+}
+
+.vk-token-popover-header {
+	font-weight: 600;
+	margin-bottom: 6px;
+	color: var(--text-normal);
+}
+
+.vk-token-popover-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-bottom: 8px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vk-token-popover-row {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	color: var(--text-muted);
+}
+
+.vk-token-popover-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-token-popover-val {
+	font-variant-numeric: tabular-nums;
+	color: var(--text-normal);
+}
+
+.vk-token-popover-footer {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 11px;
+}
+
+.vk-token-popover-projection {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-token-popover-cumulative {
+	color: var(--text-faint);
 }
 
 .vk-spacer {
@@ -1269,6 +1444,8 @@ details[open] > .vk-research-summary::after {
 	flex-direction: column;
 	gap: 4px;
 	background: var(--background-primary);
+	max-height: 240px;
+	overflow-y: auto;
 }
 
 .vk-research-row {
@@ -1621,6 +1798,74 @@ details[open] > .vk-research-summary::after {
 	font-size: 12px;
 	color: var(--text-muted);
 	font-style: italic;
+}
+
+/* ---------- Batched write approval ---------- */
+
+.vk-approval-batch-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.vk-approval-batch-row {
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 8px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.vk-approval-batch-row:first-child {
+	border-top: none;
+}
+
+.vk-approval-batch-check {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.vk-approval-batch-check input[type="checkbox"] {
+	flex-shrink: 0;
+	cursor: pointer;
+}
+
+.vk-approval-batch-rowsummary {
+	font-weight: 600;
+	color: var(--text-normal);
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-approval-batch-diff {
+	max-height: 200px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.4;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-primary);
+}
+
+.vk-approval-batch-allturn {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--text-muted);
+	cursor: pointer;
+	user-select: none;
+	margin-left: auto;
+}
+
+.vk-approval-batch-allturn input[type="checkbox"] {
+	cursor: pointer;
 }
 
 /* ---------- Settings tab tweaks ---------- */

@@ -1,4 +1,4 @@
-import type { AgentMessage, MessageEntry, ToolCallBlock, ToolResultBlock } from './types';
+import type { AgentMessage, Entry, MessageEntry, ToolCallBlock, ToolResultBlock } from './types';
 
 /**
  * Tiny LCS-based line diff. Returns ops in display order.
@@ -80,6 +80,50 @@ export function formatTokens(n: number): string {
 	return `${Math.round(n / 1000)}k tok`;
 }
 
+/** Rough token estimate: chars / 4. Cheap and consistent across the UI. */
+export function estimateTokens(s: string): number {
+	if (!s) return 0;
+	return Math.ceil(s.length / 4);
+}
+
+/**
+ * Pre-send token projection broken down by source so the user can see *what's
+ * costing them*: system + vault context + skills manifest are baseline overhead;
+ * pinned + loaded skills + history + composer are what they actively control.
+ */
+export interface TokenBreakdown {
+	base: number;
+	vault: number;
+	skillsManifest: number;
+	pinned: number;
+	skillsLoaded: number;
+	history: number;
+	composer: number;
+}
+
+export function sumBreakdown(b: TokenBreakdown): number {
+	return b.base + b.vault + b.skillsManifest + b.pinned + b.skillsLoaded + b.history + b.composer;
+}
+
+/**
+ * Project cost in USD given prompt + completion token estimates and a model's
+ * per-million pricing. Returns null when no pricing is known so the caller can
+ * fall back to token-only display. Sub-cent costs collapse to "<$0.01".
+ */
+export function formatCostUsd(
+	promptTokens: number,
+	completionTokens: number,
+	meta: { promptPrice?: number; completionPrice?: number } | undefined,
+): string | null {
+	if (!meta || (meta.promptPrice === undefined && meta.completionPrice === undefined)) return null;
+	const pp = meta.promptPrice ?? 0;
+	const cp = meta.completionPrice ?? 0;
+	const total = (pp * promptTokens + cp * completionTokens) / 1_000_000;
+	if (total === 0) return '$0';
+	if (total < 0.01) return '<$0.01';
+	return `$${total.toFixed(2)}`;
+}
+
 export function messageText(m: AgentMessage, sep = ''): string {
 	if (typeof m.content === 'string') return m.content;
 	return m.content
@@ -122,12 +166,17 @@ export function researchIcon(calls: ToolCallBlock[]): string {
 	return '🔍';
 }
 
-export function buildResearchHeadline(calls: ToolCallBlock[], results: ToolResultBlock[]): string {
+export function buildResearchHeadline(
+	calls: ToolCallBlock[],
+	results: ToolResultBlock[],
+	skillCount = 0,
+): string {
 	const counts = new Map<string, number>();
 	for (const c of calls) counts.set(c.name, (counts.get(c.name) || 0) + 1);
 
 	const parts: string[] = [];
 	for (const [name, count] of counts) parts.push(displayToolName(name, count));
+	if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? '' : 's'} loaded`);
 
 	let totalHits = 0;
 	let sawSearch = false;
@@ -171,6 +220,70 @@ export function formatUsageTooltip(usage: { promptTokens: number; completionToke
 		parts.push(`${formatTokens(usage.cachedTokens)} cached`);
 	}
 	return parts.join(' · ');
+}
+
+/**
+ * One activity "burst" = a user message + every tool/skill action and the final
+ * assistant answer that came in response. Used to collapse multi-turn tool runs
+ * (search → search → read → answer) into a single "Researched · X" chip plus
+ * the final text, so the chat reads at the cadence the user is thinking in.
+ */
+export interface BurstActivity {
+	toolCalls: ToolCallBlock[];
+	toolResults: ToolResultBlock[];
+	loadedSkills: string[];
+	/** Assistant message-entry IDs that contributed to the activity (for usage sum). */
+	entryIds: string[];
+}
+
+export interface Burst {
+	user: MessageEntry | null;
+	activity: BurstActivity;
+	final: MessageEntry | null;
+}
+
+export function groupChainIntoBursts(chain: Entry[]): Burst[] {
+	const bursts: Burst[] = [];
+	let current: Burst | null = null;
+
+	const fresh = (user: MessageEntry | null): Burst => ({
+		user,
+		activity: { toolCalls: [], toolResults: [], loadedSkills: [], entryIds: [] },
+		final: null,
+	});
+
+	for (const entry of chain) {
+		if (entry.type === 'message') {
+			const m = entry.message;
+			if (m.role === 'user') {
+				if (current) bursts.push(current);
+				current = fresh(entry);
+			} else if (m.role === 'assistant') {
+				if (!current) current = fresh(null);
+				current.activity.entryIds.push(entry.id);
+				const calls = extractToolCalls(entry);
+				if (calls.length > 0) {
+					current.activity.toolCalls.push(...calls);
+					// Intra-turn narration (text alongside tool calls) is intentionally dropped —
+					// the research chip carries the activity.
+				} else {
+					// Pure text — newest text-only message becomes the burst's final answer.
+					current.final = entry;
+				}
+			} else if (m.role === 'tool') {
+				if (!current) current = fresh(null);
+				const results = extractToolResults(entry);
+				current.activity.toolResults.push(...results);
+			}
+		} else if (entry.type === 'custom_message' && entry.customType === 'skill') {
+			if (!current) current = fresh(null);
+			const match = entry.display?.match(/skill:\s*(\S+)/);
+			if (match) current.activity.loadedSkills.push(match[1]);
+		}
+	}
+
+	if (current) bursts.push(current);
+	return bursts;
 }
 
 export function summarizeToolResult(content: string): string {

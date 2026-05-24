@@ -4,13 +4,13 @@ export class NotePickerModal extends FuzzySuggestModal<TFile> {
 	constructor(
 		app: App,
 		private onPick: (file: TFile) => void,
-		placeholder = 'Pick a note to mention…',
+		placeholder = 'Pin a note as context…',
 	) {
 		super(app);
 		this.setPlaceholder(placeholder);
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
-			{ command: '↵', purpose: 'insert as [[wikilink]]' },
+			{ command: '↵', purpose: 'pin as context' },
 			{ command: 'esc', purpose: 'dismiss' },
 		]);
 	}

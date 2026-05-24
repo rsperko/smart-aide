@@ -9,6 +9,8 @@ export interface SmartAideSettings {
 	systemPrompt: string;
 	autoApproveWrites: boolean;
 	metaDir: string;
+	/** One-time UI flag: has the user seen the "@ now pins notes as context" tip? */
+	hasSeenMentionTip: boolean;
 }
 
 export const DEFAULT_META_DIR = 'Meta';
@@ -72,6 +74,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
 	metaDir: DEFAULT_META_DIR,
+	hasSeenMentionTip: false,
 };
 
 /**
@@ -90,6 +93,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
 			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
+			hasSeenMentionTip: typeof r.hasSeenMentionTip === 'boolean' ? r.hasSeenMentionTip : false,
 		};
 	}
 
@@ -116,6 +120,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: false,
 		metaDir: DEFAULT_META_DIR,
+		hasSeenMentionTip: false,
 	};
 }
 

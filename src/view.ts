@@ -5,20 +5,22 @@ import { ChatSession } from './storage';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
-import { TabPickerModal } from './picker-tabs';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
 import { findEndpoint, resolveModelRef } from './settings';
 import {
-	extractToolCalls,
-	extractToolResults,
+	Burst,
+	TokenBreakdown,
+	estimateTokens,
+	formatCostUsd,
 	formatTokens,
 	formatUsageTooltip,
+	groupChainIntoBursts,
 	messageText,
 	safeParse,
-	shouldShowRoleLabel,
+	sumBreakdown,
 } from './view-helpers';
-import { ApprovalDecision, requestApproval } from './view-approval';
+import { ApprovalDecision, BatchApprovalItem, requestApproval, requestBatchedWriteApprovals } from './view-approval';
 import {
 	addCopyButtons,
 	renderCitationCard,
@@ -34,9 +36,7 @@ import {
 	ImageBlock,
 	MessageEntry,
 	ModelRef,
-	Tool,
-	ToolCallBlock,
-	ToolResultBlock,
+	OpenAIToolCall,
 } from './types';
 import { attachImageToVault, isSupportedImageMime, mimeFromExtension } from './image-helpers';
 import type SmartAidePlugin from './main';
@@ -59,7 +59,9 @@ export class ChatView extends ItemView {
 	// DOM refs
 	private titleBtn!: HTMLButtonElement;
 	private modelChip!: HTMLButtonElement;
-	private statusEl!: HTMLSpanElement;
+	private tokenChip!: HTMLButtonElement;
+	private tokenPopover: HTMLElement | null = null;
+	private tokenPopoverDismisser: ((ev: MouseEvent) => void) | null = null;
 	private stopBtn!: HTMLButtonElement;
 	private streamEl!: HTMLDivElement;
 	private contextRowEl!: HTMLDivElement;
@@ -69,6 +71,8 @@ export class ChatView extends ItemView {
 	private attachmentRowEl!: HTMLDivElement;
 	private pendingImages: ImageBlock[] = [];
 	private cumulativeTokens = { prompt: 0, completion: 0, cached: 0 };
+	/** Token breakdown cache invalidated when pins/skills/history/model change. */
+	private cachedBreakdown: TokenBreakdown | null = null;
 	// MarkdownRenderChild instances spawned by the current stream render. Unloaded
 	// before each rerender so long chats don't leak children/event handlers.
 	private streamRenderChildren: MarkdownRenderChild[] = [];
@@ -85,7 +89,7 @@ export class ChatView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return this.session?.title || 'Smart Aide';
+		return 'Smart Aide';
 	}
 
 	getIcon(): string {
@@ -101,6 +105,7 @@ export class ChatView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.abort?.abort();
+		this.closeTokenPopover();
 	}
 
 	async newChat(): Promise<void> {
@@ -119,7 +124,8 @@ export class ChatView extends ItemView {
 		this.session.entries.push(modelEntry);
 		this.session.leafId = modelEntry.id;
 		this.rerenderStream();
-		this.updateStatus();
+		this.invalidateBreakdownCache();
+		void this.refreshTokenChip();
 		this.updateTabTitle();
 	}
 
@@ -141,7 +147,8 @@ export class ChatView extends ItemView {
 		this.pinned.clear();
 		this.autoPinActive();
 		this.rerenderStream();
-		this.updateStatus();
+		this.invalidateBreakdownCache();
+		void this.refreshTokenChip();
 		this.updateTabTitle();
 	}
 
@@ -235,6 +242,18 @@ export class ChatView extends ItemView {
 		this.contextRowEl = composerWrap.createDiv({ cls: 'vk-context-row' });
 		this.refreshContextChips();
 
+		// Drop a vault note onto the context strip → pin it (mirrors @-mention).
+		this.registerDomEvent(this.contextRowEl, 'dragover', (ev: DragEvent) => {
+			if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+			ev.preventDefault();
+		});
+		this.registerDomEvent(this.contextRowEl, 'drop', (ev: DragEvent) => {
+			const data = ev.dataTransfer?.getData('text/plain') || '';
+			if (!data) return;
+			ev.preventDefault();
+			this.tryPinVaultPath(data);
+		});
+
 		// Pending image attachments for the next send — chips with thumbnail + remove.
 		this.attachmentRowEl = composerWrap.createDiv({ cls: 'vk-attachment-row' });
 		this.refreshAttachmentChips();
@@ -243,7 +262,7 @@ export class ChatView extends ItemView {
 			cls: 'vk-input',
 			placeholder: 'Ask anything about your vault…',
 		});
-		this.composerEl.rows = 2;
+		this.composerEl.rows = 1;
 		this.registerDomEvent(this.composerEl, 'keydown', (ev: KeyboardEvent) => {
 			if (ev.key === '@' && !ev.isComposing) {
 				// Let the @ get typed; open the picker on next tick so cursor is past the @
@@ -253,12 +272,12 @@ export class ChatView extends ItemView {
 			if (ev.key !== 'Enter') return;
 			if (ev.isComposing) return; // IME composition — never intercept
 			if (Platform.isMobile) return; // mobile keyboard Enter inserts newline; tap Send to send
-			if (ev.shiftKey) return; // Shift+Enter inserts newline on desktop
 			ev.preventDefault();
 			void this.send();
 		});
 		this.registerDomEvent(this.composerEl, 'input', () => this.autosizeComposer());
 		this.registerDomEvent(this.composerEl, 'input', () => this.updateSendState());
+		this.registerDomEvent(this.composerEl, 'input', () => void this.refreshTokenChip());
 
 		// Drag-drop: vault wikilink OR a file (image) from Finder/Explorer / vault attachment
 		this.registerDomEvent(this.composerEl, 'dragover', (ev: DragEvent) => {
@@ -266,7 +285,7 @@ export class ChatView extends ItemView {
 			ev.preventDefault();
 		});
 		this.registerDomEvent(this.composerEl, 'drop', (ev: DragEvent) => {
-			// File drop wins over wikilink drop — Finder/Explorer set dataTransfer.files.
+			// File drop wins over text drop — Finder/Explorer set dataTransfer.files.
 			const files = ev.dataTransfer?.files;
 			if (files && files.length > 0) {
 				ev.preventDefault();
@@ -276,18 +295,16 @@ export class ChatView extends ItemView {
 			const data = ev.dataTransfer?.getData('text/plain') || '';
 			if (!data) return;
 			ev.preventDefault();
-			// Vault attachment drag drops the path as text/plain. If it's an image
-			// path, attach it directly; otherwise treat as a wikilink/text drop.
+			// Vault attachment drag drops the path as text/plain. Image path →
+			// attach. Vault .md path → pin (matches @ semantics). Other text →
+			// insert as-is for free-form mentions.
 			const looksLikeImage = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i.test(data);
 			if (looksLikeImage) {
 				void this.attachVaultImage(data);
 				return;
 			}
-			let text = data;
-			if (!data.startsWith('[[') && (data.endsWith('.md') || this.app.vault.getFileByPath(data))) {
-				text = `[[${data.replace(/\.md$/, '')}]]`;
-			}
-			this.insertAtCursor(text);
+			if (this.tryPinVaultPath(data)) return;
+			this.insertAtCursor(data);
 		});
 
 		// Paste handler: any image on the clipboard becomes an attachment.
@@ -314,7 +331,12 @@ export class ChatView extends ItemView {
 		this.refreshModelChip();
 		this.registerDomEvent(this.modelChip, 'click', () => this.openModelPicker());
 
-		this.statusEl = toolbar.createSpan({ cls: 'vk-tokens' });
+		this.tokenChip = toolbar.createEl('button', {
+			cls: 'vk-token-chip',
+			attr: { type: 'button' },
+		});
+		this.tokenChip.setAttribute('aria-label', 'Context usage. Click for breakdown.');
+		this.registerDomEvent(this.tokenChip, 'click', () => this.toggleTokenPopover());
 
 		toolbar.createDiv({ cls: 'vk-spacer' });
 
@@ -397,6 +419,22 @@ export class ChatView extends ItemView {
 		this.updateSendState();
 	}
 
+	/**
+	 * If `data` looks like a vault note path, pin it as context and return true.
+	 * Returns false for anything that isn't a resolvable markdown file in the vault.
+	 */
+	private tryPinVaultPath(data: string): boolean {
+		if (data.startsWith('[[')) return false;
+		const looksLikeMd = data.endsWith('.md');
+		const file = this.app.vault.getFileByPath(data);
+		if (!looksLikeMd && !file) return false;
+		const path = file ? file.path : data;
+		if (!this.app.vault.getFileByPath(path)) return false;
+		this.pinned.add(path);
+		this.refreshContextChips();
+		return true;
+	}
+
 	private async attachVaultImage(path: string): Promise<void> {
 		const file = this.app.vault.getFileByPath(path);
 		if (!file) {
@@ -443,31 +481,39 @@ export class ChatView extends ItemView {
 	}
 
 	openNoteMentionPicker(): void {
-		new NotePickerModal(this.app, (file) => this.insertWikilinkFor(file)).open();
+		new NotePickerModal(this.app, (file) => this.pinViaMention(file)).open();
+		void this.maybeShowMentionTip();
 	}
 
-	private insertWikilinkFor(file: TFile): void {
+	/**
+	 * Pin the picked note as context (model sees its content prepended to the
+	 * next user turn). If the user typed `@<query>` to open the picker, strip
+	 * the trigger from the textarea so the message reads naturally.
+	 */
+	private pinViaMention(file: TFile): void {
 		const value = this.composerEl.value;
 		const cursor = this.composerEl.selectionStart ?? value.length;
-		const wikilink = `[[${file.path.replace(/\.md$/, '')}]]`;
-		// If the cursor is just past an `@` (within the last 40 chars without intervening
-		// whitespace), replace the `@<query>` with the wikilink.
 		const lookback = value.slice(Math.max(0, cursor - 40), cursor);
 		const atMatch = lookback.match(/@[^\s]*$/);
 		if (atMatch) {
 			const atStart = cursor - atMatch[0].length;
 			const before = value.slice(0, atStart);
 			const after = value.slice(cursor);
-			this.composerEl.value = before + wikilink + after;
-			const newCursor = (before + wikilink).length;
-			this.composerEl.setSelectionRange(newCursor, newCursor);
-		} else {
-			this.insertAtCursor(wikilink);
-			return;
+			this.composerEl.value = before + after;
+			this.composerEl.setSelectionRange(before.length, before.length);
 		}
+		this.pinned.add(file.path);
+		this.refreshContextChips();
 		this.composerEl.focus();
 		this.autosizeComposer();
 		this.updateSendState();
+	}
+
+	private async maybeShowMentionTip(): Promise<void> {
+		if (this.plugin.settings.hasSeenMentionTip) return;
+		this.plugin.settings.hasSeenMentionTip = true;
+		await this.plugin.saveSettings();
+		new Notice('@ now pins a note as context. Use [[ for an inline link.', 6000);
 	}
 
 	private insertAtCursor(text: string): void {
@@ -491,13 +537,14 @@ export class ChatView extends ItemView {
 	private refreshModelChip(): void {
 		const friendly = friendlyModelName(this.modelRef.slug);
 		const endpoint = findEndpoint(this.plugin.settings, this.modelRef.endpointId);
-		const multi = this.plugin.settings.endpoints.length > 1;
-		const label = multi && endpoint ? `${friendly} · ${endpoint.name}` : friendly;
 		this.modelChip.empty();
-		this.modelChip.createSpan({ cls: 'vk-model-chip-name', text: label });
+		// In-chip label is ALWAYS just the friendly name — endpoint context goes in
+		// the tooltip. Keeps "DeepSeek V4 Pro" intact in a narrow sidebar instead
+		// of truncating it to "Deep…".
+		this.modelChip.createSpan({ cls: 'vk-model-chip-name', text: friendly });
 		this.modelChip.createSpan({ cls: 'vk-model-chip-chevron', text: '▾' });
-		this.modelChip.title = `${this.modelRef.slug} (${endpoint?.name ?? this.modelRef.endpointId})`;
-		this.modelChip.setAttribute('aria-label', `Model: ${label}. Click to change.`);
+		this.modelChip.title = `${this.modelRef.slug} · ${endpoint?.name ?? this.modelRef.endpointId}`;
+		this.modelChip.setAttribute('aria-label', `Model: ${friendly}. Click to change.`);
 	}
 
 	openModelPicker(): void {
@@ -514,6 +561,8 @@ export class ChatView extends ItemView {
 		if (newRef.endpointId === this.modelRef.endpointId && newRef.slug === this.modelRef.slug) return;
 		this.modelRef = newRef;
 		this.refreshModelChip();
+		// Context window and pricing change with the model — refresh the chip.
+		void this.refreshTokenChip();
 
 		this.plugin.settings.modelRecents = bumpRecent(this.plugin.settings.modelRecents, newRef);
 		await this.plugin.saveSettings();
@@ -528,24 +577,180 @@ export class ChatView extends ItemView {
 		}
 	}
 
-	private updateStatus(): void {
-		const { prompt, completion, cached } = this.cumulativeTokens;
-		const total = prompt + completion;
-		const parts: string[] = [];
-		if (total > 0) {
-			parts.push(formatTokens(total));
-			if (cached > 0 && prompt > 0) {
-				parts.push(`${Math.round((cached / prompt) * 100)}% cached`);
+	/**
+	 * Two-layer token display: ambient percentage of the model's context window
+	 * (faint until 70%, muted at 70–90%, warning above 90%). Tap to expand a
+	 * popover with the breakdown and pre-send cost projection.
+	 */
+	private async refreshTokenChip(): Promise<void> {
+		if (!this.tokenChip) return;
+		if (!this.cachedBreakdown) {
+			this.cachedBreakdown = await this.computeContextProjection();
+		} else {
+			this.cachedBreakdown.composer = estimateTokens(this.composerEl?.value ?? '');
+		}
+		const total = sumBreakdown(this.cachedBreakdown);
+		const { endpoint, slug } = resolveModelRef(this.plugin.settings, this.modelRef);
+		const meta = endpoint.discoveredModels?.find((m) => m.id === slug);
+		const contextLength = meta?.contextLength;
+
+		this.tokenChip.empty();
+		this.tokenChip.removeClass('vk-token-warn');
+		this.tokenChip.removeClass('vk-token-muted');
+
+		if (contextLength && contextLength > 0) {
+			const pct = Math.min(100, Math.round((total / contextLength) * 100));
+			this.tokenChip.createSpan({ cls: 'vk-token-pct', text: `${pct}%` });
+			if (pct >= 90) this.tokenChip.addClass('vk-token-warn');
+			else if (pct >= 70) this.tokenChip.addClass('vk-token-muted');
+		}
+		if (total > 1000) {
+			const sep = contextLength ? ' · ' : '';
+			this.tokenChip.createSpan({
+				cls: 'vk-token-abs',
+				text: `${sep}${formatTokens(total)}`,
+			});
+		}
+		if (!contextLength && total <= 1000) {
+			this.tokenChip.createSpan({ cls: 'vk-token-abs', text: formatTokens(total) });
+		}
+
+		if (this.tokenPopover) this.renderTokenPopoverInto(this.tokenPopover);
+	}
+
+	private invalidateBreakdownCache(): void {
+		this.cachedBreakdown = null;
+	}
+
+	private async computeContextProjection(): Promise<TokenBreakdown> {
+		const base = estimateTokens(this.plugin.settings.systemPrompt);
+		const vault = estimateTokens(this.plugin.agents.text());
+		const skillsManifest = estimateTokens(this.plugin.skills.manifestText());
+
+		let pinned = 0;
+		for (const p of this.pinned.list()) {
+			const s = await this.pinned.statusOf(p);
+			if (s) pinned += s.tokens;
+		}
+
+		let skillsLoaded = 0;
+		for (const skillName of this.loadedSkills) {
+			const skill = this.plugin.skills.getByName(skillName);
+			if (skill) skillsLoaded += estimateTokens(skill.body);
+		}
+
+		let history = 0;
+		if (this.session) {
+			const chain = this.plugin.storage.contextChain(this.session);
+			for (const e of chain) {
+				if (e.type !== 'message') continue;
+				const m = e.message;
+				if (typeof m.content === 'string') {
+					history += estimateTokens(m.content);
+				} else {
+					for (const b of m.content) {
+						if (b.type === 'text') history += estimateTokens(b.text);
+						else if (b.type === 'toolCall')
+							history += estimateTokens(JSON.stringify(b.arguments)) + 6;
+						else if (b.type === 'toolResult') history += estimateTokens(b.content);
+					}
+				}
 			}
 		}
-		if (this.loadedSkills.length > 0) {
-			parts.push(
-				this.loadedSkills.length <= 2
-					? `skills: ${this.loadedSkills.join(', ')}`
-					: `${this.loadedSkills.length} skills loaded`,
-			);
+
+		const composer = estimateTokens(this.composerEl?.value ?? '');
+		return { base, vault, skillsManifest, pinned, skillsLoaded, history, composer };
+	}
+
+	private toggleTokenPopover(): void {
+		if (this.tokenPopover) {
+			this.closeTokenPopover();
+			return;
 		}
-		this.statusEl.setText(parts.join(' · '));
+		const parent = this.tokenChip.parentElement;
+		if (!parent) return;
+		this.tokenPopover = parent.createDiv({ cls: 'vk-token-popover' });
+		this.renderTokenPopoverInto(this.tokenPopover);
+		// Click-outside dismiss — registered on document so taps anywhere close it.
+		this.tokenPopoverDismisser = (ev: MouseEvent) => {
+			const target = ev.target as Node | null;
+			if (!target) return;
+			if (this.tokenPopover?.contains(target) || this.tokenChip.contains(target)) return;
+			this.closeTokenPopover();
+		};
+		// Wait a tick so the click that opened the popover doesn't immediately close it.
+		window.setTimeout(() => {
+			if (this.tokenPopoverDismisser) {
+				document.addEventListener('click', this.tokenPopoverDismisser);
+			}
+		}, 0);
+	}
+
+	private closeTokenPopover(): void {
+		if (this.tokenPopoverDismisser) {
+			document.removeEventListener('click', this.tokenPopoverDismisser);
+			this.tokenPopoverDismisser = null;
+		}
+		this.tokenPopover?.remove();
+		this.tokenPopover = null;
+	}
+
+	private renderTokenPopoverInto(popover: HTMLElement): void {
+		popover.empty();
+		const b = this.cachedBreakdown;
+		if (!b) {
+			popover.setText('Computing…');
+			return;
+		}
+		const total = sumBreakdown(b);
+		const { endpoint, slug } = resolveModelRef(this.plugin.settings, this.modelRef);
+		const meta = endpoint.discoveredModels?.find((m) => m.id === slug);
+
+		const header = popover.createDiv({ cls: 'vk-token-popover-header' });
+		if (meta?.contextLength) {
+			const pct = Math.round((total / meta.contextLength) * 100);
+			header.setText(
+				`Context window: ${formatTokens(total)} / ${formatTokens(meta.contextLength)} (${pct}%)`,
+			);
+		} else {
+			header.setText(`Projected next turn: ${formatTokens(total)}`);
+		}
+
+		const rows = popover.createDiv({ cls: 'vk-token-popover-rows' });
+		const addRow = (label: string, tokens: number): void => {
+			if (tokens === 0) return;
+			const row = rows.createDiv({ cls: 'vk-token-popover-row' });
+			row.createSpan({ cls: 'vk-token-popover-label', text: label });
+			row.createSpan({ cls: 'vk-token-popover-val', text: formatTokens(tokens) });
+		};
+		addRow('System prompt', b.base);
+		addRow('Vault context (AGENTS)', b.vault);
+		addRow('Skill catalog', b.skillsManifest);
+		addRow('Pinned notes', b.pinned);
+		addRow('Loaded skills', b.skillsLoaded);
+		addRow('Chat history', b.history);
+		addRow('Composer text', b.composer);
+
+		const footer = popover.createDiv({ cls: 'vk-token-popover-footer' });
+		const projection = footer.createDiv({ cls: 'vk-token-popover-projection' });
+		const COMPLETION_ESTIMATE = 500;
+		const costStr = formatCostUsd(total, COMPLETION_ESTIMATE, meta);
+		const tail = costStr ? ` · ${costStr}` : '';
+		projection.setText(`Next turn ≈ ${formatTokens(total)}${tail}`);
+
+		const cumulative = this.cumulativeTokens;
+		if (cumulative.prompt + cumulative.completion > 0) {
+			const cumStr = formatCostUsd(cumulative.prompt, cumulative.completion, meta);
+			const cumTail = cumStr ? ` · ${cumStr}` : '';
+			const cacheStr =
+				cumulative.cached > 0 && cumulative.prompt > 0
+					? ` · ${Math.round((cumulative.cached / cumulative.prompt) * 100)}% cached`
+					: '';
+			footer.createDiv({
+				cls: 'vk-token-popover-cumulative',
+				text: `Session so far: ${formatTokens(cumulative.prompt + cumulative.completion)}${cumTail}${cacheStr}`,
+			});
+		}
 	}
 
 	private updateTabTitle(): void {
@@ -596,14 +801,9 @@ export class ChatView extends ItemView {
 		if (!this.session) return;
 		const chain = this.plugin.storage.contextChain(this.session);
 
-		// Single pass: collect per-turn usage, loaded skills, and message entries.
 		this.turnUsageByEntry.clear();
-		const skills: string[] = [];
-		const messageEntries: MessageEntry[] = [];
 		for (const entry of chain) {
-			if (entry.type === 'message') {
-				messageEntries.push(entry);
-			} else if (entry.type === 'custom' && entry.customType === 'turn-usage' && entry.data) {
+			if (entry.type === 'custom' && entry.customType === 'turn-usage' && entry.data) {
 				const d = entry.data as Partial<TurnUsage & { targetEntryId: string }>;
 				if (d.targetEntryId && typeof d.promptTokens === 'number' && typeof d.completionTokens === 'number') {
 					this.turnUsageByEntry.set(d.targetEntryId, {
@@ -612,78 +812,94 @@ export class ChatView extends ItemView {
 						cachedTokens: d.cachedTokens,
 					});
 				}
-			} else if (entry.type === 'custom_message' && entry.customType === 'skill') {
-				// Display field carries the skill name (e.g. "skill: note-capture")
-				const match = entry.display?.match(/skill:\s*(\S+)/);
-				if (match) skills.push(match[1]);
 			}
 		}
-		this.loadedSkills = [...new Set(skills)];
-		this.updateStatus();
 
-		if (messageEntries.length === 0) {
+		let bursts = groupChainIntoBursts(chain);
+
+		const skillSet = new Set<string>();
+		for (const b of bursts) for (const s of b.activity.loadedSkills) skillSet.add(s);
+		this.loadedSkills = [...skillSet];
+		this.invalidateBreakdownCache();
+		void this.refreshTokenChip();
+		this.refreshContextChips();
+
+		const hasContent = bursts.some(
+			(b) => b.user || b.activity.toolCalls.length > 0 || b.activity.loadedSkills.length > 0 || b.final,
+		);
+		if (!hasContent) {
 			this.renderEmptyState();
 			return;
 		}
 
-		// When editing a previous user message, render only the chain UP TO (but not
-		// including) that message. The message being edited and everything that
-		// followed it will be replaced when Send forks; show the user what they're
-		// actually committing to.
-		let endIndex = messageEntries.length;
+		// When editing a previous user message, drop that burst and everything after —
+		// they'll be replaced when Send forks.
 		if (this.editingFromId) {
-			const cutIdx = messageEntries.findIndex((e) => e.id === this.editingFromId);
-			if (cutIdx >= 0) endIndex = cutIdx;
+			const cutIdx = bursts.findIndex((b) => b.user?.id === this.editingFromId);
+			if (cutIdx >= 0) bursts = bursts.slice(0, cutIdx);
 		}
 
-		for (let i = 0; i < endIndex; i++) {
-			const entry = messageEntries[i];
-			const role = entry.message.role;
-
-			// Tool messages are absorbed into the preceding assistant turn — skip standalone render.
-			if (role === 'tool') continue;
-
-			if (role === 'assistant') {
-				const calls = extractToolCalls(entry);
-				if (calls.length > 0) {
-					const next = messageEntries[i + 1];
-					const results = next && next.message.role === 'tool'
-						? extractToolResults(next)
-						: [];
-					this.renderAssistantToolTurn(entry, calls, results);
-					continue;
-				}
-			}
-
-			this.renderMessageEntry(entry);
-		}
+		for (const burst of bursts) this.renderBurst(burst);
 		this.scrollToBottom();
 	}
 
 	/**
-	 * Render an assistant message that issued tool calls as a compact research chip
-	 * followed by any citation cards extracted from the results. Intra-turn narration
-	 * ("let me check…") is suppressed — the chip carries the activity.
+	 * One user message produces one burst: their bubble, optionally an activity
+	 * card (research chip + citation cards) for everything the model did, and the
+	 * final text answer (if any). Collapses multi-turn tool runs into a single
+	 * legible unit instead of one row per tool turn.
 	 */
-	private renderAssistantToolTurn(
-		entry: MessageEntry,
-		calls: ToolCallBlock[],
-		results: ToolResultBlock[],
-	): void {
-		const wrap = this.streamEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-msg-tool-turn' });
-		const body = wrap.createDiv({ cls: 'vk-body' });
+	private renderBurst(burst: Burst): void {
+		const burstEl = this.streamEl.createDiv({ cls: 'vk-burst' });
 
-		renderResearchChip(body, calls, results);
-
-		for (const call of calls) {
-			const result = results.find((r) => r.toolCallId === call.id);
-			if (!result || result.isError) continue;
-			if (call.name === 'read_note') renderCitationCard(body, result);
+		if (burst.user) {
+			const userWrap = this.renderMessageEntry(burst.user);
+			burstEl.appendChild(userWrap);
 		}
 
-		// Per-turn token info lives in a title tooltip on the wrapper, not a footer.
-		const usage = this.turnUsageByEntry.get(entry.id);
-		if (usage) wrap.title = formatUsageTooltip(usage);
+		const hasActivity =
+			burst.activity.toolCalls.length > 0 || burst.activity.loadedSkills.length > 0;
+		if (hasActivity) {
+			const wrap = burstEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-burst-activity' });
+			const body = wrap.createDiv({ cls: 'vk-body' });
+			renderResearchChip(
+				body,
+				burst.activity.toolCalls,
+				burst.activity.toolResults,
+				burst.activity.loadedSkills,
+			);
+			for (const call of burst.activity.toolCalls) {
+				if (call.name !== 'read_note') continue;
+				const result = burst.activity.toolResults.find((r) => r.toolCallId === call.id);
+				if (!result || result.isError) continue;
+				renderCitationCard(body, result);
+			}
+
+			let p = 0;
+			let c = 0;
+			let cached = 0;
+			let any = false;
+			for (const id of burst.activity.entryIds) {
+				const u = this.turnUsageByEntry.get(id);
+				if (!u) continue;
+				p += u.promptTokens;
+				c += u.completionTokens;
+				cached += u.cachedTokens ?? 0;
+				any = true;
+			}
+			if (any) {
+				wrap.title = formatUsageTooltip({
+					promptTokens: p,
+					completionTokens: c,
+					cachedTokens: cached,
+				});
+			}
+		}
+
+		if (burst.final) {
+			const finalWrap = this.renderMessageEntry(burst.final);
+			burstEl.appendChild(finalWrap);
+		}
 	}
 
 	private renderEmptyState(): void {
@@ -691,16 +907,37 @@ export class ChatView extends ItemView {
 		const icon = empty.createDiv({ cls: 'vk-empty-icon' });
 		setIcon(icon, 'message-square');
 		empty.createDiv({ cls: 'vk-empty-text', text: 'Ask anything about your vault.' });
+		empty.createDiv({
+			cls: 'vk-empty-sub',
+			text: 'I can search and read notes, follow backlinks, and propose edits (with your approval).',
+		});
+
+		// Meta lines that show "what does the model already see" before turn 1.
+		const meta = empty.createDiv({ cls: 'vk-empty-meta' });
+		const pinList = this.pinned.list();
+		if (pinList.length > 0) {
+			const names = pinList
+				.map((p) => p.replace(/\.md$/i, '').split('/').pop() ?? p)
+				.join(', ');
+			meta.createDiv({ cls: 'vk-empty-meta-row', text: `📌 Pinned: ${names}` });
+		}
+		const skillCount = this.plugin.skills.visibleOnThisPlatform().length;
+		const agentsLoaded = this.plugin.agents.text().length > 0;
+		const skillParts: string[] = [];
+		if (skillCount > 0) {
+			skillParts.push(`${skillCount} skill${skillCount === 1 ? '' : 's'} available`);
+		}
+		if (agentsLoaded) {
+			skillParts.push('vault context loaded');
+		}
+		if (skillParts.length > 0) {
+			meta.createDiv({ cls: 'vk-empty-meta-row', text: `🧠 ${skillParts.join(' · ')}` });
+		}
 	}
 
 	private renderMessageEntry(entry: MessageEntry): HTMLElement {
 		const m = entry.message;
 		const wrap = this.streamEl.createDiv({ cls: `vk-msg vk-role-${m.role}` });
-
-		if (shouldShowRoleLabel(m)) {
-			const roleEl = wrap.createDiv({ cls: 'vk-role' });
-			roleEl.setText(m.role);
-		}
 
 		const body = wrap.createDiv({ cls: 'vk-body' });
 		const renderAsMarkdown = m.role === 'assistant' || m.role === 'user';
@@ -788,12 +1025,19 @@ export class ChatView extends ItemView {
 	private refreshContextChips(): void {
 		if (!this.contextRowEl) return;
 		this.contextRowEl.empty();
+		// Pins/skills/AGENTS all feed the token projection — keep the chip in sync
+		// from the same callsite that draws the strip.
+		this.invalidateBreakdownCache();
+		void this.refreshTokenChip();
 
-		for (const path of this.pinned.list()) {
+		const pinList = this.pinned.list();
+
+		for (const path of pinList) {
 			const chip = this.contextRowEl.createEl('button', {
 				cls: 'vk-context-chip',
 				attr: { type: 'button' },
 			});
+			chip.createSpan({ cls: 'vk-context-chip-icon', text: '📌' });
 			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
 			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
 			const tokSpan = chip.createSpan({ cls: 'vk-context-chip-tokens', text: '' });
@@ -820,33 +1064,74 @@ export class ChatView extends ItemView {
 			});
 		}
 
+		// Skill chips — surface which skills the model has loaded so the user
+		// can audit context (and click through to the skill body).
+		for (const skillName of this.loadedSkills) {
+			const skill = this.plugin.skills.getByName(skillName);
+			const chip = this.contextRowEl.createEl('button', {
+				cls: 'vk-context-chip vk-context-skill',
+				attr: { type: 'button' },
+			});
+			chip.createSpan({ cls: 'vk-context-chip-icon', text: '🧠' });
+			chip.createSpan({ cls: 'vk-context-chip-name', text: skillName });
+			if (skill) {
+				chip.title = skill.description;
+				this.registerDomEvent(chip, 'click', () =>
+					void this.openInternalLink(skill.path.replace(/\.md$/i, ''), false),
+				);
+			} else {
+				chip.title = `Skill "${skillName}" was loaded but is no longer on disk`;
+			}
+		}
+
+		// AGENTS.md badge — quiet signal that vault context is in the prompt.
+		if (this.plugin.agents.text().length > 0) {
+			const chip = this.contextRowEl.createEl('button', {
+				cls: 'vk-context-chip vk-context-agents',
+				attr: { type: 'button' },
+			});
+			chip.createSpan({ cls: 'vk-context-chip-icon', text: '📚' });
+			chip.createSpan({ cls: 'vk-context-chip-name', text: 'AGENTS' });
+			chip.title = 'Vault context loaded from AGENTS.md — click to open';
+			this.registerDomEvent(chip, 'click', () =>
+				void this.openInternalLink('AGENTS', false),
+			);
+		}
+
+		if (pinList.length >= 3) {
+			const clearBtn = this.contextRowEl.createEl('button', {
+				cls: 'vk-context-clear',
+				attr: { type: 'button' },
+				text: 'unpin all',
+			});
+			this.registerDomEvent(clearBtn, 'click', () => {
+				this.pinned.clear();
+				this.refreshContextChips();
+			});
+		}
+
 		const addBtn = this.contextRowEl.createEl('button', {
 			cls: 'vk-context-add',
 			attr: { type: 'button' },
-			text: '+ Add tab',
+			text: '+ note',
 		});
+		addBtn.title = 'Pin a note as context';
 		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
 	}
 
 	private openContextPicker(): void {
-		const tabs: TFile[] = [];
-		const seen = new Set<string>();
-		this.app.workspace.iterateRootLeaves((leaf) => {
-			const view = leaf.view as { file?: TFile };
-			if (view.file instanceof TFile && view.file.extension === 'md' && !seen.has(view.file.path)) {
-				tabs.push(view.file);
-				seen.add(view.file.path);
-			}
-		});
-		const available = tabs.filter((t) => !this.pinned.has(t.path));
-		if (available.length === 0) {
-			new Notice(tabs.length === 0 ? 'No open tabs to pin.' : 'All open tabs are already pinned.');
-			return;
-		}
-		new TabPickerModal(this.app, available, (file) => {
-			this.pinned.add(file.path);
-			this.refreshContextChips();
-		}).open();
+		new NotePickerModal(
+			this.app,
+			(file) => {
+				if (this.pinned.has(file.path)) {
+					new Notice(`"${file.path}" is already pinned.`);
+					return;
+				}
+				this.pinned.add(file.path);
+				this.refreshContextChips();
+			},
+			'Pin a note as context…',
+		).open();
 	}
 
 	private autoPinActive(): void {
@@ -1062,7 +1347,7 @@ export class ChatView extends ItemView {
 								this.cumulativeTokens.prompt += u.promptTokens;
 								this.cumulativeTokens.completion += u.completionTokens;
 								this.cumulativeTokens.cached += u.cachedTokens ?? 0;
-								this.updateStatus();
+								void this.refreshTokenChip();
 							},
 						},
 					);
@@ -1122,11 +1407,15 @@ export class ChatView extends ItemView {
 					break;
 				}
 
-				// Execute tool calls. Write/delete tools require user approval first.
+				// Execute tool calls. Writes go through ONE batched approval card per
+				// turn (with per-item checkboxes). Deletes still confirm individually.
+				const { writeDecisions, deleteDecisions } = await this.collectApprovals(assembled.toolCalls);
 				const resultBlocks: ContentBlock[] = [];
 				for (const tc of assembled.toolCalls) {
+					const name = tc.function.name;
 					const args = safeParse(tc.function.arguments);
-					const out = await this.dispatchWithApproval(tc.function.name, args);
+					const decision = writeDecisions.get(tc.id) ?? deleteDecisions.get(tc.id);
+					const out = await this.runOneToolCall(name, args, decision);
 					resultBlocks.push({ type: 'toolResult', toolCallId: tc.id, content: out });
 				}
 				const toolEntry = this.plugin.storage.makeMessageEntry(
@@ -1165,78 +1454,114 @@ export class ChatView extends ItemView {
 	}
 
 	/**
-	 * Dispatch a tool call. Write/delete tools route through the approval card UI;
-	 * load_skill is handled inline because it needs access to the skill registry and
-	 * persists the body as a custom_message entry.
+	 * Build approval previews for every write/delete in the model's tool-call
+	 * batch, then resolve decisions. Writes go through ONE batched card (or are
+	 * pre-approved via auto-approve / approve-all-turn). Deletes confirm
+	 * individually — one wrong delete is worse than five wrong appends.
 	 */
-	private async dispatchWithApproval(name: string, args: Record<string, unknown>): Promise<string> {
+	private async collectApprovals(calls: OpenAIToolCall[]): Promise<{
+		writeDecisions: Map<string, ApprovalDecision>;
+		deleteDecisions: Map<string, ApprovalDecision>;
+	}> {
+		const writeDecisions = new Map<string, ApprovalDecision>();
+		const deleteDecisions = new Map<string, ApprovalDecision>();
+		const ctx = { app: this.app, metaDir: this.plugin.settings.metaDir };
+
+		const writeItems: BatchApprovalItem[] = [];
+		const deleteItems: BatchApprovalItem[] = [];
+		for (const tc of calls) {
+			const name = tc.function.name;
+			if (name === LOAD_SKILL_NAME) continue;
+			const tool = TOOLS.find((t) => t.name === name);
+			if (!tool) continue;
+			if (tool.risk !== 'write' && tool.risk !== 'delete') continue;
+			const args = safeParse(tc.function.arguments);
+			let preview;
+			try {
+				preview = tool.preview
+					? await tool.preview(args, ctx)
+					: { summary: `${name}(${Object.keys(args).join(', ')})` };
+			} catch (e) {
+				preview = { summary: `${name} — preview failed: ${(e as Error).message}` };
+			}
+			const item: BatchApprovalItem = { callId: tc.id, tool, args, preview };
+			if (tool.risk === 'write') writeItems.push(item);
+			else deleteItems.push(item);
+		}
+
+		if (writeItems.length > 0) {
+			if (this.abort?.signal.aborted) {
+				for (const item of writeItems) {
+					writeDecisions.set(item.callId, { approved: false, reason: 'Stopped by user.' });
+				}
+			} else if (this.plugin.settings.autoApproveWrites) {
+				for (const item of writeItems) {
+					writeDecisions.set(item.callId, { approved: true, scope: 'inherited-turn' });
+				}
+			} else if (this.approveAllInTurn) {
+				for (const item of writeItems) {
+					writeDecisions.set(item.callId, { approved: true, scope: 'inherited-turn' });
+				}
+			} else {
+				const result = await requestBatchedWriteApprovals(
+					this,
+					this.streamEl,
+					() => this.scrollToBottom(),
+					writeItems,
+					this.abort?.signal,
+				);
+				for (const [id, d] of result) {
+					writeDecisions.set(id, d);
+					if (d.approved && d.scope === 'turn') this.approveAllInTurn = true;
+				}
+			}
+		}
+
+		for (const item of deleteItems) {
+			if (this.abort?.signal.aborted) {
+				deleteDecisions.set(item.callId, { approved: false, reason: 'Stopped by user.' });
+				continue;
+			}
+			const decision = await requestApproval(
+				this,
+				this.streamEl,
+				() => this.scrollToBottom(),
+				item.tool,
+				item.preview,
+				this.abort?.signal,
+			);
+			deleteDecisions.set(item.callId, decision);
+		}
+
+		return { writeDecisions, deleteDecisions };
+	}
+
+	/**
+	 * Run one tool call, given a pre-computed approval decision for write/delete
+	 * tools. Reads execute immediately; load_skill goes through skill-load
+	 * persistence. Approval audit is persisted regardless of outcome.
+	 */
+	private async runOneToolCall(
+		name: string,
+		args: Record<string, unknown>,
+		preDecision: ApprovalDecision | undefined,
+	): Promise<string> {
 		if (!this.session) return JSON.stringify({ error: 'no session' });
 
-		if (name === LOAD_SKILL_NAME) {
-			const skillName = String(args.name ?? '').trim();
-			if (!skillName) return JSON.stringify({ error: 'name is required' });
-			const skill = this.plugin.skills.loadable(skillName);
-			if (!skill) {
-				return JSON.stringify({
-					error: `no skill named '${skillName}'`,
-					available: this.plugin.skills.visibleOnThisPlatform().map((s) => s.name),
-				});
-			}
-			const entry = this.plugin.storage.makeCustomMessageEntry(
-				'skill',
-				skill.body,
-				`skill: ${skill.name}`,
-				this.session.leafId,
-			);
-			await this.plugin.storage.appendEntry(this.session, entry);
-			return JSON.stringify({ status: 'loaded', skill: skill.name });
-		}
+		if (name === LOAD_SKILL_NAME) return this.handleSkillLoad(args);
 
 		const tool = TOOLS.find((t) => t.name === name);
 		if (!tool) return JSON.stringify({ error: `unknown tool: ${name}` });
 
 		if (tool.risk === 'write' || tool.risk === 'delete') {
-			let preview;
-			try {
-				preview = tool.preview ? await tool.preview(args, { app: this.app, metaDir: this.plugin.settings.metaDir }) : { summary: `${name}(${Object.keys(args).join(', ')})` };
-			} catch (e) {
-				preview = { summary: `${name} — preview failed: ${(e as Error).message}` };
-			}
-
-			let decision: ApprovalDecision;
-			if (this.abort?.signal.aborted) {
-				// Stop was hit before we even got here in this dispatch batch.
-				decision = { approved: false, reason: 'Stopped by user.' };
-			} else if (this.plugin.settings.autoApproveWrites && tool.risk === 'write') {
-				// User opted into dangerous mode — writes bypass the approval card.
-				// Delete still requires explicit confirmation regardless.
-				decision = { approved: true, scope: 'inherited-turn' };
-			} else if (this.approveAllInTurn && tool.risk === 'write') {
-				// Honor turn-scoped grant for writes only — deletes always confirm
-				decision = { approved: true, scope: 'inherited-turn' };
-			} else {
-				decision = await requestApproval(
-					this,
-					this.streamEl,
-					() => this.scrollToBottom(),
-					tool,
-					preview,
-					this.abort?.signal,
-				);
-			}
-
-			// Persist the decision as a custom entry (audit trail)
-			const audit = this.plugin.storage.makeCustomEntry(
-				'approval',
-				{ tool: name, decision: decision.approved ? 'approved' : 'rejected', scope: decision.scope, args },
-				this.session.leafId,
-			);
-			await this.plugin.storage.appendEntry(this.session, audit);
-
+			const decision = preDecision ?? { approved: false, reason: 'No approval recorded.' };
+			await this.persistApprovalAudit(name, args, decision);
 			if (!decision.approved) {
-				return JSON.stringify({ status: 'denied', reason: decision.reason ?? 'User rejected the operation.' });
+				return JSON.stringify({
+					status: 'denied',
+					reason: decision.reason ?? 'User rejected the operation.',
+				});
 			}
-			if (decision.scope === 'turn') this.approveAllInTurn = true;
 		}
 
 		try {
@@ -1245,6 +1570,46 @@ export class ChatView extends ItemView {
 			const msg = e instanceof Error ? e.message : String(e);
 			return JSON.stringify({ error: `tool ${name} failed: ${msg}` });
 		}
+	}
+
+	private async handleSkillLoad(args: Record<string, unknown>): Promise<string> {
+		if (!this.session) return JSON.stringify({ error: 'no session' });
+		const skillName = String(args.name ?? '').trim();
+		if (!skillName) return JSON.stringify({ error: 'name is required' });
+		const skill = this.plugin.skills.loadable(skillName);
+		if (!skill) {
+			return JSON.stringify({
+				error: `no skill named '${skillName}'`,
+				available: this.plugin.skills.visibleOnThisPlatform().map((s) => s.name),
+			});
+		}
+		const entry = this.plugin.storage.makeCustomMessageEntry(
+			'skill',
+			skill.body,
+			`skill: ${skill.name}`,
+			this.session.leafId,
+		);
+		await this.plugin.storage.appendEntry(this.session, entry);
+		return JSON.stringify({ status: 'loaded', skill: skill.name });
+	}
+
+	private async persistApprovalAudit(
+		name: string,
+		args: Record<string, unknown>,
+		decision: ApprovalDecision,
+	): Promise<void> {
+		if (!this.session) return;
+		const audit = this.plugin.storage.makeCustomEntry(
+			'approval',
+			{
+				tool: name,
+				decision: decision.approved ? 'approved' : 'rejected',
+				scope: decision.scope,
+				args,
+			},
+			this.session.leafId,
+		);
+		await this.plugin.storage.appendEntry(this.session, audit);
 	}
 
 }

@@ -13,11 +13,15 @@ export function renderResearchChip(
 	parent: HTMLElement,
 	calls: ToolCallBlock[],
 	results: ToolResultBlock[],
+	loadedSkills: string[] = [],
 ): void {
 	const chip = parent.createEl('details', { cls: 'vk-research' });
 	const summary = chip.createEl('summary', { cls: 'vk-research-summary' });
 	summary.createSpan({ cls: 'vk-research-icon', text: researchIcon(calls) });
-	summary.createSpan({ cls: 'vk-research-headline', text: buildResearchHeadline(calls, results) });
+	summary.createSpan({
+		cls: 'vk-research-headline',
+		text: buildResearchHeadline(calls, results, loadedSkills.length),
+	});
 
 	const detail = chip.createDiv({ cls: 'vk-research-detail' });
 	for (const call of calls) {
@@ -31,6 +35,10 @@ export function renderResearchChip(
 			const cls = result.isError ? 'vk-research-result vk-research-error' : 'vk-research-result';
 			row.createSpan({ cls, text: `→ ${summarizeToolResult(result.content)}` });
 		}
+	}
+	for (const skill of loadedSkills) {
+		const row = detail.createDiv({ cls: 'vk-research-row' });
+		row.createSpan({ cls: 'vk-research-call', text: `🧠 loaded skill: ${skill}` });
 	}
 }
 

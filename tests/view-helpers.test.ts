@@ -2,21 +2,25 @@ import { describe, expect, it } from 'vitest';
 import {
 	buildResearchHeadline,
 	displayToolName,
+	estimateTokens,
 	extractToolCalls,
 	extractToolResults,
 	formatArgsInline,
 	formatArgValue,
+	formatCostUsd,
 	formatTokens,
 	formatUsageTooltip,
+	groupChainIntoBursts,
 	lineDiff,
 	researchIcon,
 	safeParse,
 	shouldShowRoleLabel,
 	summarizeToolResult,
+	sumBreakdown,
 	tryFormatJson,
 	tryParseJSON,
 } from '../src/view-helpers';
-import type { MessageEntry, ToolCallBlock, ToolResultBlock } from '../src/types';
+import type { Entry, MessageEntry, ToolCallBlock, ToolResultBlock } from '../src/types';
 
 describe('lineDiff', () => {
 	it('returns equal ops for identical input', () => {
@@ -212,6 +216,17 @@ describe('buildResearchHeadline', () => {
 		const calls: ToolCallBlock[] = [{ type: 'toolCall', id: '1', name: 'read_note', arguments: {} }];
 		expect(buildResearchHeadline(calls, [])).toBe('1 read');
 	});
+
+	it('includes loaded-skill count when > 0', () => {
+		const calls: ToolCallBlock[] = [{ type: 'toolCall', id: '1', name: 'search_vault', arguments: {} }];
+		expect(buildResearchHeadline(calls, [], 1)).toContain('1 skill loaded');
+		expect(buildResearchHeadline(calls, [], 3)).toContain('3 skills loaded');
+	});
+
+	it('omits skills segment when count is 0', () => {
+		const calls: ToolCallBlock[] = [{ type: 'toolCall', id: '1', name: 'read_note', arguments: {} }];
+		expect(buildResearchHeadline(calls, [], 0)).toBe('1 read');
+	});
 });
 
 describe('formatUsageTooltip', () => {
@@ -260,5 +275,184 @@ describe('summarizeToolResult', () => {
 
 	it('falls back to byte count for non-JSON', () => {
 		expect(summarizeToolResult('plain text')).toBe('10B');
+	});
+});
+
+describe('estimateTokens', () => {
+	it('returns 0 for empty', () => {
+		expect(estimateTokens('')).toBe(0);
+	});
+
+	it('rounds up chars / 4', () => {
+		expect(estimateTokens('a')).toBe(1);
+		expect(estimateTokens('abcd')).toBe(1);
+		expect(estimateTokens('abcde')).toBe(2);
+	});
+});
+
+describe('sumBreakdown', () => {
+	it('sums every component', () => {
+		const total = sumBreakdown({
+			base: 1,
+			vault: 2,
+			skillsManifest: 4,
+			pinned: 8,
+			skillsLoaded: 16,
+			history: 32,
+			composer: 64,
+		});
+		expect(total).toBe(127);
+	});
+});
+
+describe('formatCostUsd', () => {
+	it('returns null when no pricing is known', () => {
+		expect(formatCostUsd(1000, 500, undefined)).toBeNull();
+		expect(formatCostUsd(1000, 500, {})).toBeNull();
+	});
+
+	it('multiplies tokens × per-million pricing and rounds to 2 decimals', () => {
+		// 1M prompt at $3/M + 500k completion at $15/M = $3 + $7.50 = $10.50
+		expect(formatCostUsd(1_000_000, 500_000, { promptPrice: 3, completionPrice: 15 })).toBe('$10.50');
+	});
+
+	it('collapses sub-cent costs to "<$0.01"', () => {
+		expect(formatCostUsd(100, 50, { promptPrice: 1, completionPrice: 5 })).toBe('<$0.01');
+	});
+
+	it('formats exact zero as "$0"', () => {
+		expect(formatCostUsd(1000, 500, { promptPrice: 0, completionPrice: 0 })).toBe('$0');
+	});
+
+	it('handles partial pricing (only prompt or only completion)', () => {
+		// $5/M completion × 200k = $1.00; prompt cost ignored when promptPrice undefined.
+		expect(formatCostUsd(1000, 200_000, { completionPrice: 5 })).toBe('$1.00');
+	});
+});
+
+describe('groupChainIntoBursts', () => {
+	const userMsg = (id: string, text: string, parentId: string | null = null): Entry => ({
+		type: 'message',
+		id,
+		parentId,
+		timestamp: '',
+		message: { role: 'user', content: text },
+	});
+	const assistantText = (id: string, text: string, parentId: string): Entry => ({
+		type: 'message',
+		id,
+		parentId,
+		timestamp: '',
+		message: { role: 'assistant', content: text },
+	});
+	const assistantTools = (id: string, calls: ToolCallBlock[], parentId: string): Entry => ({
+		type: 'message',
+		id,
+		parentId,
+		timestamp: '',
+		message: { role: 'assistant', content: calls },
+	});
+	const toolResults = (id: string, results: ToolResultBlock[], parentId: string): Entry => ({
+		type: 'message',
+		id,
+		parentId,
+		timestamp: '',
+		message: { role: 'tool', content: results },
+	});
+	const skillLoad = (id: string, name: string, parentId: string): Entry => ({
+		type: 'custom_message',
+		id,
+		parentId,
+		timestamp: '',
+		customType: 'skill',
+		content: 'skill body',
+		display: `skill: ${name}`,
+	});
+
+	it('returns no bursts for an empty chain', () => {
+		expect(groupChainIntoBursts([])).toEqual([]);
+	});
+
+	it('produces a single burst with just a user message and no activity', () => {
+		const bursts = groupChainIntoBursts([userMsg('u1', 'hi')]);
+		expect(bursts).toHaveLength(1);
+		expect(bursts[0].user?.id).toBe('u1');
+		expect(bursts[0].activity.toolCalls).toHaveLength(0);
+		expect(bursts[0].final).toBeNull();
+	});
+
+	it('groups user + tool-calls + tool-results + final text into one burst', () => {
+		const calls: ToolCallBlock[] = [
+			{ type: 'toolCall', id: 'c1', name: 'search_vault', arguments: { query: 'x' } },
+		];
+		const results: ToolResultBlock[] = [
+			{ type: 'toolResult', toolCallId: 'c1', content: '{"matches":1}' },
+		];
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'ask'),
+			assistantTools('a1', calls, 'u1'),
+			toolResults('t1', results, 'a1'),
+			assistantText('a2', 'here is the answer', 't1'),
+		]);
+		expect(bursts).toHaveLength(1);
+		expect(bursts[0].activity.toolCalls).toHaveLength(1);
+		expect(bursts[0].activity.toolResults).toHaveLength(1);
+		expect(bursts[0].final?.id).toBe('a2');
+		expect(bursts[0].activity.entryIds).toEqual(['a1', 'a2']);
+	});
+
+	it('starts a new burst on each user message', () => {
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'q1'),
+			assistantText('a1', 'answer 1', 'u1'),
+			userMsg('u2', 'q2', 'a1'),
+			assistantText('a2', 'answer 2', 'u2'),
+		]);
+		expect(bursts).toHaveLength(2);
+		expect(bursts[0].final?.id).toBe('a1');
+		expect(bursts[1].final?.id).toBe('a2');
+	});
+
+	it('records skill loads in the active burst', () => {
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'ask'),
+			skillLoad('s1', 'note-capture', 'u1'),
+			assistantText('a1', 'used the skill', 's1'),
+		]);
+		expect(bursts[0].activity.loadedSkills).toEqual(['note-capture']);
+		expect(bursts[0].final?.id).toBe('a1');
+	});
+
+	it('treats assistant text alongside tool calls as intra-turn narration (dropped)', () => {
+		// Some models emit "let me check…" text in the same turn as tool_calls.
+		// That narration shouldn't become the final answer — only a tool-less
+		// later assistant message qualifies.
+		const calls: ToolCallBlock[] = [
+			{ type: 'toolCall', id: 'c1', name: 'read_note', arguments: { path: 'x.md' } },
+		];
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'ask'),
+			{
+				type: 'message',
+				id: 'a1',
+				parentId: 'u1',
+				timestamp: '',
+				message: {
+					role: 'assistant',
+					content: [{ type: 'text', text: 'let me check' }, ...calls],
+				},
+			} as Entry,
+		]);
+		expect(bursts[0].final).toBeNull();
+		expect(bursts[0].activity.toolCalls).toHaveLength(1);
+	});
+
+	it('keeps the LAST text-only assistant as the burst final (overwrites earlier)', () => {
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'ask'),
+			assistantText('a1', 'first draft', 'u1'),
+			assistantText('a2', 'revised', 'a1'),
+		]);
+		expect(bursts[0].final?.id).toBe('a2');
 	});
 });

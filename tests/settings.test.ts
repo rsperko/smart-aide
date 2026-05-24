@@ -91,6 +91,28 @@ describe('migrateSettings', () => {
 		expect(out.modelRecents).toHaveLength(2);
 		expect(out.modelRecents.map((r) => r.slug)).toEqual(['valid-slug', 'also-valid']);
 	});
+
+	it('defaults hasSeenMentionTip to false when missing', () => {
+		// Legacy path (no endpoints key) — should default to false so the user
+		// sees the tip on first @ use after upgrade.
+		expect(migrateSettings({ apiKey: 'k' }).hasSeenMentionTip).toBe(false);
+		// Multi-endpoint path with no hasSeenMentionTip field — same default.
+		expect(
+			migrateSettings({
+				endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
+				defaultModelRef: { endpointId: 'e1', slug: 'm' },
+			}).hasSeenMentionTip,
+		).toBe(false);
+	});
+
+	it('preserves hasSeenMentionTip=true through migration when set', () => {
+		const out = migrateSettings({
+			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+			hasSeenMentionTip: true,
+		});
+		expect(out.hasSeenMentionTip).toBe(true);
+	});
 });
 
 describe('describeFreshness', () => {
