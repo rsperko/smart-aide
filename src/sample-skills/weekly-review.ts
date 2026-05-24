@@ -7,6 +7,8 @@ export const weeklyReview: SampleSkill = {
 	body: `---
 name: weekly-review
 description: 'Summarize the past week from daily notes — themes, completed tasks, open items, dormant projects. Use when: (1) user says "weekly review", "review my week", or "what did I do this week", (2) user wants a retrospective of recent activity, (3) user mentions a weekly retro.'
+user-invocable: true
+allowed-tools: [read_note, list_recent, write_note]
 ---
 
 # Weekly review

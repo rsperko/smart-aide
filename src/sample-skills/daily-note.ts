@@ -7,6 +7,8 @@ export const dailyNote: SampleSkill = {
 	body: `---
 name: daily-note
 description: 'Create the daily note for today and carry forward unchecked tasks from yesterday. Use when: (1) user says start today, todays daily note, or daily note, (2) user wants to begin a daily journal or log entry, (3) user mentions starting their day.'
+user-invocable: true
+allowed-tools: [read_note, write_note]
 ---
 
 # Daily note

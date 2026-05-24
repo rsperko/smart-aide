@@ -9,7 +9,7 @@ AI chat for your Obsidian vault — desktop and iPhone. Tool-mediated search and
 - **Bring your own model, any provider.** Plug in any OpenAI-compatible endpoint — OpenRouter (default), OpenAI direct, Anthropic compat, local servers (LM Studio / Ollama / oMLX), or your own gateway. Pick the model per chat; the picker shows context window, cost ($/M tokens), and tool support inline.
 - **Writes with diff approval.** `write_note`, `append_to_note`, `delete_note` surface a diff card before they touch the vault. Approval state is persisted in the chat history. Optional **dangerous mode** in settings auto-approves writes (deletes always still confirm).
 - **Edit and fork.** Tap (or hover) the pencil on any of your past messages to edit it. Send forks the conversation from that point — the branch and everything downstream are hidden, the new turn becomes the leaf. The original branch stays in the JSONL file.
-- **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
+- **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Skills can also be **user-invocable**: add `user-invocable: true` to the frontmatter and type `/<name>` in the composer to summon it directly. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
 - **Vault context via AGENTS.md.** Drop an `AGENTS.md` at `<vault>/Meta/AGENTS.md` to tell the agent about your vault — folder layout, tag conventions, projects, paths to leave alone. The body is appended to the system prompt. Standard cross-tool format ([agents.md](https://agents.md/)) so the same file works with other agent tools.
 - **Pi session format.** Chat history is JSONL in `<vault>/Meta/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
 
@@ -80,8 +80,37 @@ Required frontmatter:
 
 Optional:
 - `mobile: false` — hide the skill on iPhone (skip it for skills that depend on desktop-only scripts or filesystem paths)
+- `user-invocable: true` — surfaces the skill as `/<name>` in the composer (see below)
+- `allowed-tools: [read_note, write_note]` — restricts which tools the model can call while this skill is active. Pairs with `user-invocable`; ignored when the skill is loaded via `load_skill`. Accepts flow `[a, b]` or block `\n  - a\n  - b` styles.
 
-The description is the **only triggering mechanism**, so write it well: include the user phrases that should activate it. The body is never seen by the model until `load_skill` fires.
+The description is the **only triggering mechanism** for model-invoked skills, so write it well: include the user phrases that should activate it. The body is never seen by the model until `load_skill` fires.
+
+### User-invocable skills (slash commands)
+
+Skills with `user-invocable: true` can be summoned directly from the composer by typing `/<name>`. In an empty composer, typing `/` opens a fuzzy picker over all user-invocable skills. Selecting one fills the composer with `/<name> `; type your prompt after and send. The skill body is injected as context for that turn; `allowed-tools` (when set) scopes the tool surface for the whole assistant loop that follows. The override applies only to the burst the slash triggered — the next regular user message reverts to the full tool set.
+
+Use `user-invocable` when:
+- You want the workflow available on demand without relying on the model recognizing a trigger phrase
+- You want a narrower tool surface than the global default (e.g. an editor skill that can't `delete_note`)
+- You want to teach the trust frame — `/weekly` signals intent the way `/help` does in chat tools
+
+Skip it when the skill is naturally triggered by phrasing (the model's matcher catches it via the description) and you don't need tool scoping.
+
+Example:
+
+```markdown
+---
+name: daily-note
+description: Create today's daily note and carry forward unchecked tasks. Use when…
+user-invocable: true
+allowed-tools: [read_note, write_note]
+---
+
+# Daily note
+…
+```
+
+Now `/daily` (or `/daily-note`) in the composer runs the workflow with only `read_note` + `write_note` available.
 
 ### Reload
 

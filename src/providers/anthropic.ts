@@ -113,6 +113,9 @@ async function renderMessages(
 			if (entry.customType === 'skill') {
 				const skillName = entry.display?.replace(/^skill:\s*/i, '').trim() || 'skill';
 				label = `[Loaded skill: ${skillName}]\nFollow these instructions for this turn:`;
+			} else if (entry.customType === 'skill-invocation') {
+				const skillName = entry.display?.trim() || 'skill';
+				label = `[Invoked skill: ${skillName}]\nFollow these instructions for this turn:`;
 			} else {
 				label = `[${entry.customType}]`;
 			}

@@ -186,7 +186,8 @@ export function tryParseJSON(s: string): Record<string, unknown> | null {
 	}
 }
 
-export function researchIcon(calls: ToolCallBlock[]): string {
+export function researchIcon(calls: ToolCallBlock[], invokedSkill: string | null = null): string {
+	if (invokedSkill && calls.length === 0) return '🪄';
 	const names = new Set(calls.map((c) => c.name));
 	if (names.size === 1) {
 		if (names.has('read_note')) return '📖';
@@ -203,11 +204,13 @@ export function buildResearchHeadline(
 	calls: ToolCallBlock[],
 	results: ToolResultBlock[],
 	skillCount = 0,
+	invokedSkill: string | null = null,
 ): string {
 	const counts = new Map<string, number>();
 	for (const c of calls) counts.set(c.name, (counts.get(c.name) || 0) + 1);
 
 	const parts: string[] = [];
+	if (invokedSkill) parts.push(`/${invokedSkill}`);
 	for (const [name, count] of counts) parts.push(displayToolName(name, count));
 	if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? '' : 's'} loaded`);
 
@@ -265,6 +268,8 @@ export interface BurstActivity {
 	toolCalls: ToolCallBlock[];
 	toolResults: ToolResultBlock[];
 	loadedSkills: string[];
+	/** Set when the user opened this burst with `/<name>` — one per burst by construction. */
+	invokedSkill: string | null;
 	/** Assistant message-entry IDs that contributed to the activity (for usage sum). */
 	entryIds: string[];
 }
@@ -278,10 +283,14 @@ export interface Burst {
 export function groupChainIntoBursts(chain: Entry[]): Burst[] {
 	const bursts: Burst[] = [];
 	let current: Burst | null = null;
+	// Invocation markers persist BEFORE the user message in the chain (so the
+	// model sees the skill body as context for that user turn). Buffer the name
+	// here and attach it to the next user message's burst.
+	let pendingInvocation: string | null = null;
 
 	const fresh = (user: MessageEntry | null): Burst => ({
 		user,
-		activity: { toolCalls: [], toolResults: [], loadedSkills: [], entryIds: [] },
+		activity: { toolCalls: [], toolResults: [], loadedSkills: [], invokedSkill: null, entryIds: [] },
 		final: null,
 	});
 
@@ -291,6 +300,10 @@ export function groupChainIntoBursts(chain: Entry[]): Burst[] {
 			if (m.role === 'user') {
 				if (current) bursts.push(current);
 				current = fresh(entry);
+				if (pendingInvocation) {
+					current.activity.invokedSkill = pendingInvocation;
+					pendingInvocation = null;
+				}
 			} else if (m.role === 'assistant') {
 				if (!current) current = fresh(null);
 				current.activity.entryIds.push(entry.id);
@@ -312,11 +325,57 @@ export function groupChainIntoBursts(chain: Entry[]): Burst[] {
 			if (!current) current = fresh(null);
 			const match = entry.display?.match(/skill:\s*(\S+)/);
 			if (match) current.activity.loadedSkills.push(match[1]);
+		} else if (entry.type === 'custom_message' && entry.customType === 'skill-invocation') {
+			const name = entry.display?.trim();
+			if (name) pendingInvocation = name;
 		}
 	}
 
 	if (current) bursts.push(current);
 	return bursts;
+}
+
+export interface SlashInvocation {
+	name: string;
+	rest: string;
+}
+
+/**
+ * Parse a leading `/<name>` slash invocation from composer text.
+ *
+ * Returns null when:
+ *   - the text doesn't start with `/<name>`
+ *   - the name is not in the caller-provided allowlist (the user typed an
+ *     unrelated slash, like a markdown path — we send the message verbatim).
+ *
+ * The name match is case-insensitive; the returned `name` is the lowercased
+ * skill name. `rest` is the trimmed remainder after the name and one
+ * whitespace separator.
+ */
+export function parseSlashInvocation(
+	text: string,
+	validSkillNames: string[],
+): SlashInvocation | null {
+	const match = text.match(/^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/i);
+	if (!match) return null;
+	const name = match[1].toLowerCase();
+	const allowed = new Set(validSkillNames.map((n) => n.toLowerCase()));
+	if (!allowed.has(name)) return null;
+	return { name, rest: (match[2] ?? '').trim() };
+}
+
+/**
+ * Filter a tool list by an allowlist. Returns the input unchanged when
+ * `allowed` is null (no restriction). An empty allowlist returns an empty
+ * tool list — the model gets no tools for the turn.
+ */
+export function filterTools<T extends { name: string }>(
+	tools: T[],
+	allowed: string[] | null,
+): T[] {
+	if (allowed === null) return tools;
+	const set = new Set(allowed);
+	return tools.filter((t) => set.has(t.name));
 }
 
 export function summarizeToolResult(content: string): string {

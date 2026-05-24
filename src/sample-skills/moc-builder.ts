@@ -7,6 +7,8 @@ export const mocBuilder: SampleSkill = {
 	body: `---
 name: moc-builder
 description: 'Build or refresh a Map of Content (MOC) — a curated hub note linking to all related notes on a topic. Use when: (1) user says "create a MOC for X", "build a map of content", or "MOC for <topic>", (2) user wants to refresh an existing MOC, (3) user mentions Zettelkasten / MOC workflows.'
+user-invocable: true
+allowed-tools: [search_vault, get_backlinks, read_note, write_note]
 ---
 
 # MOC builder

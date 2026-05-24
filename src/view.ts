@@ -6,6 +6,8 @@ import { ChatSession } from './storage';
 import { bumpRecent, friendlyModelName } from './models';
 import { ModelPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
+import { SkillPickerModal } from './picker-skills';
+import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
 import { findEndpoint, resolveModelRef } from './settings';
@@ -13,12 +15,14 @@ import {
 	Burst,
 	TokenBreakdown,
 	estimateTokens,
+	filterTools,
 	formatCostUsd,
 	formatTokenChip,
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
 	messageText,
+	parseSlashInvocation,
 	safeParse,
 	sumBreakdown,
 } from './view-helpers';
@@ -275,6 +279,13 @@ export class ChatView extends ItemView {
 				window.setTimeout(() => this.openNoteMentionPicker(), 0);
 				return;
 			}
+			if (ev.key === '/' && !ev.isComposing && this.composerEl.value === '') {
+				// Slash at the start of an empty composer opens the user-invocable skill picker.
+				const skills = this.plugin.skills.userInvocableSkills();
+				if (skills.length === 0) return;
+				window.setTimeout(() => this.openSkillPicker(skills), 0);
+				return;
+			}
 			if (ev.key !== 'Enter') return;
 			if (ev.isComposing) return; // IME composition — never intercept
 			if (Platform.isMobile) return; // mobile keyboard Enter inserts newline; tap Send to send
@@ -362,25 +373,6 @@ export class ChatView extends ItemView {
 			}
 			filePicker.value = '';
 		});
-
-		// Camera button — mobile only. Uses the OS camera via capture=environment.
-		if (Platform.isMobile) {
-			const cameraBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-camera', attr: { type: 'button' } });
-			setIcon(cameraBtn, 'camera');
-			cameraBtn.setAttribute('aria-label', 'Take photo');
-			const cameraInput = composerWrap.createEl('input', {
-				cls: 'vk-hidden',
-				type: 'file',
-				attr: { accept: 'image/*', capture: 'environment' },
-			});
-			this.registerDomEvent(cameraBtn, 'click', () => cameraInput.click());
-			this.registerDomEvent(cameraInput, 'change', () => {
-				if (cameraInput.files && cameraInput.files.length > 0) {
-					void this.handleDroppedFiles(cameraInput.files);
-				}
-				cameraInput.value = '';
-			});
-		}
 
 		this.stopBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-stop' });
 		setIcon(this.stopBtn, 'square');
@@ -490,6 +482,17 @@ export class ChatView extends ItemView {
 	openNoteMentionPicker(): void {
 		new NotePickerModal(this.app, (file) => this.pinViaMention(file)).open();
 		void this.maybeShowMentionTip();
+	}
+
+	private openSkillPicker(skills: Skill[]): void {
+		new SkillPickerModal(this.app, skills, (skill) => {
+			this.composerEl.value = `/${skill.name} `;
+			const end = this.composerEl.value.length;
+			this.composerEl.setSelectionRange(end, end);
+			this.composerEl.focus();
+			this.autosizeComposer();
+			this.updateSendState();
+		}).open();
 	}
 
 	/**
@@ -861,7 +864,9 @@ export class ChatView extends ItemView {
 		}
 
 		const hasActivity =
-			burst.activity.toolCalls.length > 0 || burst.activity.loadedSkills.length > 0;
+			burst.activity.toolCalls.length > 0 ||
+			burst.activity.loadedSkills.length > 0 ||
+			burst.activity.invokedSkill !== null;
 		if (hasActivity) {
 			const wrap = burstEl.createDiv({ cls: 'vk-msg vk-role-assistant vk-burst-activity' });
 			const body = wrap.createDiv({ cls: 'vk-body' });
@@ -870,6 +875,7 @@ export class ChatView extends ItemView {
 				burst.activity.toolCalls,
 				burst.activity.toolResults,
 				burst.activity.loadedSkills,
+				burst.activity.invokedSkill,
 			);
 			for (const call of burst.activity.toolCalls) {
 				if (call.name !== 'read_note') continue;
@@ -1084,19 +1090,6 @@ export class ChatView extends ItemView {
 			}
 		}
 
-		// AGENTS.md badge — quiet signal that vault context is in the prompt.
-		if (this.plugin.agents.text().length > 0) {
-			const chip = this.contextRowEl.createEl('button', {
-				cls: 'vk-context-chip vk-context-agents',
-				attr: { type: 'button' },
-			});
-			chip.createSpan({ cls: 'vk-context-chip-name', text: 'AGENTS' });
-			chip.title = 'Vault context loaded from AGENTS.md — click to open';
-			this.registerDomEvent(chip, 'click', () =>
-				void this.openInternalLink('AGENTS', false),
-			);
-		}
-
 		if (pinList.length >= 3) {
 			const clearBtn = this.contextRowEl.createEl('button', {
 				cls: 'vk-context-clear',
@@ -1196,8 +1189,25 @@ export class ChatView extends ItemView {
 			new Notice(`Set the API key for "${endpoint.name}" in smart-aide settings.`);
 			return;
 		}
-		const text = this.composerEl.value.trim();
-		if (!text && this.pendingImages.length === 0) return;
+		const rawText = this.composerEl.value.trim();
+		if (!rawText && this.pendingImages.length === 0) return;
+
+		// Slash invocation: `/<name> <body>` summons a user-invocable skill for this
+		// turn. The skill body is prepended as a custom_message entry, and any
+		// allowed-tools allowlist scopes the tool registry for the whole assistant
+		// loop. Unknown slash names fall through and send verbatim.
+		const userInvocableSkills = this.plugin.skills.userInvocableSkills();
+		const invocation = parseSlashInvocation(
+			rawText,
+			userInvocableSkills.map((s) => s.name),
+		);
+		let invokedSkill: Skill | null = null;
+		let text = rawText;
+		if (invocation) {
+			invokedSkill = this.plugin.skills.getByName(invocation.name);
+			text = invocation.rest;
+			if (!text && this.pendingImages.length === 0) return;
+		}
 
 		// Resolve parent: branch if editing, else current leaf
 		let parentId: string | null;
@@ -1222,6 +1232,19 @@ export class ChatView extends ItemView {
 		// Per-turn grants reset at the start of each user turn
 		this.approveAllInTurn = false;
 
+		// Persist the invocation marker BEFORE the user message so the model sees
+		// the skill body in the same turn the user typed `/`.
+		if (invokedSkill) {
+			const invEntry = this.plugin.storage.makeCustomMessageEntry(
+				'skill-invocation',
+				invokedSkill.body,
+				invokedSkill.name,
+				parentId,
+			);
+			await this.plugin.storage.appendEntry(this.session, invEntry);
+			parentId = invEntry.id;
+		}
+
 		let content: AgentMessage['content'];
 		if (images.length === 0) {
 			content = text;
@@ -1236,7 +1259,7 @@ export class ChatView extends ItemView {
 		await this.plugin.storage.appendEntry(this.session, userEntry);
 		this.rerenderStream();
 
-		await this.runAssistantLoop();
+		await this.runAssistantLoop(invokedSkill?.allowedTools ?? null);
 		if (this.session) {
 			void maybeAutoTitle({
 				session: this.session,
@@ -1259,7 +1282,7 @@ export class ChatView extends ItemView {
 		return sections.join('\n\n');
 	}
 
-	private async runAssistantLoop(): Promise<void> {
+	private async runAssistantLoop(allowedTools: string[] | null = null): Promise<void> {
 		if (!this.session) return;
 
 		this.abort = new AbortController();
@@ -1296,7 +1319,10 @@ export class ChatView extends ItemView {
 							model: slug,
 							chain: this.plugin.storage.contextChain(this.session),
 							systemPrompt: this.composeSystemPrompt(),
-							tools: [...toolsToDescriptors(TOOLS), LOAD_SKILL_TOOL_DEF],
+							tools: filterTools(
+								[...toolsToDescriptors(TOOLS), LOAD_SKILL_TOOL_DEF],
+								allowedTools,
+							),
 							pinnedPreamble,
 							enablePromptCaching: this.plugin.settings.anthropicPromptCaching,
 							signal: this.abort.signal,

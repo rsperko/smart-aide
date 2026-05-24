@@ -5,6 +5,7 @@ import {
 	estimateTokens,
 	extractToolCalls,
 	extractToolResults,
+	filterTools,
 	formatArgsInline,
 	formatArgValue,
 	formatCostUsd,
@@ -13,6 +14,7 @@ import {
 	formatUsageTooltip,
 	groupChainIntoBursts,
 	lineDiff,
+	parseSlashInvocation,
 	researchIcon,
 	safeParse,
 	shouldShowRoleLabel,
@@ -238,6 +240,10 @@ describe('researchIcon', () => {
 			]),
 		).toBe('🔍');
 	});
+
+	it('uses 🪄 for an invocation with no tool calls', () => {
+		expect(researchIcon([], 'editor')).toBe('🪄');
+	});
 });
 
 describe('displayToolName', () => {
@@ -282,6 +288,12 @@ describe('buildResearchHeadline', () => {
 	it('omits skills segment when count is 0', () => {
 		const calls: ToolCallBlock[] = [{ type: 'toolCall', id: '1', name: 'read_note', arguments: {} }];
 		expect(buildResearchHeadline(calls, [], 0)).toBe('1 read');
+	});
+
+	it('prepends /<name> when a skill was invoked', () => {
+		expect(buildResearchHeadline([], [], 0, 'editor')).toBe('/editor');
+		const calls: ToolCallBlock[] = [{ type: 'toolCall', id: '1', name: 'read_note', arguments: {} }];
+		expect(buildResearchHeadline(calls, [], 0, 'editor')).toBe('/editor · 1 read');
 	});
 });
 
@@ -510,5 +522,102 @@ describe('groupChainIntoBursts', () => {
 			assistantText('a2', 'revised', 'a1'),
 		]);
 		expect(bursts[0].final?.id).toBe('a2');
+	});
+
+	it('attaches a skill-invocation custom_message to the NEXT user burst (not the previous)', () => {
+		// The view persists the invocation entry BEFORE the user message so the
+		// model sees the skill body as context for that user turn. The grouper
+		// must buffer it and attach to the upcoming burst, not the prior one.
+		const invocation = (id: string, name: string, parentId: string): Entry => ({
+			type: 'custom_message',
+			id,
+			parentId,
+			timestamp: '',
+			customType: 'skill-invocation',
+			content: 'skill body',
+			display: name,
+		});
+		const bursts = groupChainIntoBursts([
+			userMsg('u1', 'first turn'),
+			assistantText('a1', 'sure thing', 'u1'),
+			invocation('inv1', 'editor', 'a1'),
+			userMsg('u2', 'tighten this up', 'inv1'),
+			assistantText('a2', 'done', 'u2'),
+		]);
+		expect(bursts).toHaveLength(2);
+		expect(bursts[0].activity.invokedSkill).toBeNull();
+		expect(bursts[1].activity.invokedSkill).toBe('editor');
+		expect(bursts[1].user?.id).toBe('u2');
+	});
+});
+
+describe('parseSlashInvocation', () => {
+	const valid = ['editor', 'weekly-review', 'daily-note'];
+
+	it('parses /<name> with no body', () => {
+		expect(parseSlashInvocation('/editor', valid)).toEqual({ name: 'editor', rest: '' });
+	});
+
+	it('parses /<name> <body>', () => {
+		expect(parseSlashInvocation('/editor please tighten this up', valid)).toEqual({
+			name: 'editor',
+			rest: 'please tighten this up',
+		});
+	});
+
+	it('parses across a newline', () => {
+		expect(parseSlashInvocation('/editor\ntighten this', valid)).toEqual({
+			name: 'editor',
+			rest: 'tighten this',
+		});
+	});
+
+	it('is case-insensitive on the name', () => {
+		expect(parseSlashInvocation('/Editor go', valid)?.name).toBe('editor');
+	});
+
+	it('returns null for an unknown skill name', () => {
+		expect(parseSlashInvocation('/unknown please help', valid)).toBeNull();
+	});
+
+	it('returns null when text does not start with a slash', () => {
+		expect(parseSlashInvocation('hello /editor', valid)).toBeNull();
+		expect(parseSlashInvocation(' /editor', valid)).toBeNull();
+	});
+
+	it('returns null for a malformed slash (no name)', () => {
+		expect(parseSlashInvocation('/', valid)).toBeNull();
+		expect(parseSlashInvocation('//foo', valid)).toBeNull();
+	});
+
+	it('handles kebab-case skill names', () => {
+		expect(parseSlashInvocation('/weekly-review', valid)?.name).toBe('weekly-review');
+	});
+});
+
+describe('filterTools', () => {
+	const tools = [
+		{ name: 'read_note', description: 'r' },
+		{ name: 'write_note', description: 'w' },
+		{ name: 'delete_note', description: 'd' },
+	];
+
+	it('returns the input unchanged when allowed is null', () => {
+		expect(filterTools(tools, null)).toEqual(tools);
+	});
+
+	it('returns only allowlisted tools', () => {
+		expect(filterTools(tools, ['read_note', 'write_note']).map((t) => t.name)).toEqual([
+			'read_note',
+			'write_note',
+		]);
+	});
+
+	it('returns an empty list when allowlist is empty', () => {
+		expect(filterTools(tools, [])).toEqual([]);
+	});
+
+	it('silently ignores names not in the tool list', () => {
+		expect(filterTools(tools, ['read_note', 'made_up']).map((t) => t.name)).toEqual(['read_note']);
 	});
 });

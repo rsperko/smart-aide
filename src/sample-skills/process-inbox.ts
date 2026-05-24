@@ -7,6 +7,8 @@ export const processInbox: SampleSkill = {
 	body: `---
 name: process-inbox
 description: 'Walk an inbox folder and triage each note into Projects / Areas / Resources / Archive (PARA). Use when: (1) user says "process my inbox", "sort my inbox", or "clean up inbox", (2) user mentions PARA processing, (3) user wants to clear captured notes.'
+user-invocable: true
+allowed-tools: [list_recent, read_note, write_note, delete_note]
 ---
 
 # Process inbox

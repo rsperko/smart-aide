@@ -14,16 +14,21 @@ export function renderResearchChip(
 	calls: ToolCallBlock[],
 	results: ToolResultBlock[],
 	loadedSkills: string[] = [],
+	invokedSkill: string | null = null,
 ): void {
 	const chip = parent.createEl('details', { cls: 'vk-research' });
 	const summary = chip.createEl('summary', { cls: 'vk-research-summary' });
-	summary.createSpan({ cls: 'vk-research-icon', text: researchIcon(calls) });
+	summary.createSpan({ cls: 'vk-research-icon', text: researchIcon(calls, invokedSkill) });
 	summary.createSpan({
 		cls: 'vk-research-headline',
-		text: buildResearchHeadline(calls, results, loadedSkills.length),
+		text: buildResearchHeadline(calls, results, loadedSkills.length, invokedSkill),
 	});
 
 	const detail = chip.createDiv({ cls: 'vk-research-detail' });
+	if (invokedSkill) {
+		const row = detail.createDiv({ cls: 'vk-research-row' });
+		row.createSpan({ cls: 'vk-research-call', text: `🪄 invoked /${invokedSkill}` });
+	}
 	for (const call of calls) {
 		const row = detail.createDiv({ cls: 'vk-research-row' });
 		row.createSpan({

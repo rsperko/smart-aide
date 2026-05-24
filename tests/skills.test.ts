@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { App, Platform, TFile, TFolder, Vault } from 'obsidian';
-import { parseSkillContent, scalarField, SkillRegistry } from '../src/skills';
+import { listField, parseSkillContent, scalarField, SkillRegistry } from '../src/skills';
 
 describe('scalarField', () => {
 	it('reads a bare value', () => {
@@ -45,6 +45,49 @@ describe('parseSkillContent', () => {
 		const md = '---\nname: desk\ndescription: d\nmobile: false\n---\nbody';
 		const skill = parseSkillContent(md, 'a.md');
 		expect(skill!.mobile).toBe(false);
+	});
+
+	it('defaults user-invocable to false and allowed-tools to null when absent', () => {
+		const md = '---\nname: x\ndescription: d\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.userInvocable).toBe(false);
+		expect(skill!.allowedTools).toBeNull();
+	});
+
+	it('reads user-invocable: true (case-insensitive)', () => {
+		const md = '---\nname: x\ndescription: d\nuser-invocable: True\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.userInvocable).toBe(true);
+	});
+
+	it('reads flow-style allowed-tools', () => {
+		const md =
+			'---\nname: x\ndescription: d\nuser-invocable: true\nallowed-tools: [read_note, write_note]\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.allowedTools).toEqual(['read_note', 'write_note']);
+	});
+
+	it('reads block-style allowed-tools', () => {
+		const md =
+			'---\nname: x\ndescription: d\nallowed-tools:\n  - read_note\n  - write_note\n  - search_vault\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.allowedTools).toEqual(['read_note', 'write_note', 'search_vault']);
+	});
+
+	it('strips quotes around list items', () => {
+		const md = `---\nname: x\ndescription: d\nallowed-tools: ["read_note", 'write_note']\n---\nbody`;
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.allowedTools).toEqual(['read_note', 'write_note']);
+	});
+});
+
+describe('listField', () => {
+	it('returns null when the key is missing', () => {
+		expect(listField('name: x\n', 'allowed-tools')).toBeNull();
+	});
+
+	it('returns [] for an empty flow list', () => {
+		expect(listField('allowed-tools: []\n', 'allowed-tools')).toEqual([]);
 	});
 });
 
@@ -204,6 +247,24 @@ describe('SkillRegistry', () => {
 		const registry = new SkillRegistry(app, 'Missing/dir');
 		await registry.load();
 		expect(registry.all()).toEqual([]);
+	});
+
+	it('userInvocableSkills returns only skills with user-invocable: true', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const slashable = vault.addFile(
+			'Meta/skills/editor.md',
+			'---\nname: editor\ndescription: d\nuser-invocable: true\n---\nbody',
+		);
+		const auto = vault.addFile(
+			'Meta/skills/auto.md',
+			'---\nname: auto\ndescription: d\n---\nbody',
+		);
+		attachToFolder(folder, slashable);
+		attachToFolder(folder, auto);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+		expect(registry.userInvocableSkills().map((s) => s.name)).toEqual(['editor']);
 	});
 
 	it('setDir falls back to the default when given an empty string', async () => {

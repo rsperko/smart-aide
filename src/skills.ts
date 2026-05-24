@@ -6,6 +6,10 @@ export interface Skill {
 	body: string;
 	path: string;
 	mobile: boolean;
+	/** When true, the user can summon this skill with `/<name>` in the composer. */
+	userInvocable: boolean;
+	/** When set, the model only sees these tools while the skill is active. null = all tools. */
+	allowedTools: string[] | null;
 }
 
 /**
@@ -68,6 +72,11 @@ export class SkillRegistry {
 		return this.skills.filter((s) => s.mobile);
 	}
 
+	/** Skills the user can summon directly with `/<name>` in the composer. */
+	userInvocableSkills(): Skill[] {
+		return this.visibleOnThisPlatform().filter((s) => s.userInvocable);
+	}
+
 	getByName(name: string): Skill | null {
 		const lower = name.toLowerCase();
 		return this.skills.find((s) => s.name.toLowerCase() === lower) ?? null;
@@ -95,7 +104,13 @@ export class SkillRegistry {
 	}
 }
 
-/** Minimal frontmatter parser — `name`, `description`, and the optional `mobile` flag. */
+/**
+ * Minimal frontmatter parser. Supports:
+ *   name, description, mobile (scalar)
+ *   user-invocable (scalar boolean — surfaces as /name in the composer)
+ *   allowed-tools (list — restricts the tool surface while the skill is active)
+ *     accepts flow `[a, b, c]` or block `- a\n- b\n` style
+ */
 export function parseSkillContent(content: string, path: string): Skill | null {
 	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 	if (!fmMatch) return null;
@@ -105,7 +120,9 @@ export function parseSkillContent(content: string, path: string): Skill | null {
 	const description = scalarField(fmText, 'description');
 	if (!name || !description) return null;
 	const mobile = scalarField(fmText, 'mobile') !== 'false';
-	return { name, description, body, path, mobile };
+	const userInvocable = scalarField(fmText, 'user-invocable').toLowerCase() === 'true';
+	const allowedTools = listField(fmText, 'allowed-tools');
+	return { name, description, body, path, mobile, userInvocable, allowedTools };
 }
 
 export function scalarField(yaml: string, key: string): string {
@@ -118,4 +135,46 @@ export function scalarField(yaml: string, key: string): string {
 		value = value.slice(1, -1);
 	}
 	return value;
+}
+
+/**
+ * Parse a YAML list field. Returns null when the key is absent (so callers can
+ * distinguish "no restriction" from "explicit empty list").
+ */
+export function listField(yaml: string, key: string): string[] | null {
+	const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+	// Block style: `key:` on its own line, followed by indented `- item` rows.
+	const blockRe = new RegExp(
+		`^${escaped}\\s*:\\s*\\r?\\n((?:[ \\t]+-[ \\t]+.+(?:\\r?\\n|$))+)`,
+		'mi',
+	);
+	const blockMatch = yaml.match(blockRe);
+	if (blockMatch) {
+		return blockMatch[1]
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith('-'))
+			.map((line) => unquote(line.slice(1).trim()))
+			.filter((s) => s.length > 0);
+	}
+
+	// Flow style: `key: [a, b, c]`
+	const flowRe = new RegExp(`^${escaped}\\s*:\\s*\\[([^\\]]*)\\]\\s*$`, 'mi');
+	const flowMatch = yaml.match(flowRe);
+	if (flowMatch) {
+		return flowMatch[1]
+			.split(',')
+			.map((s) => unquote(s.trim()))
+			.filter((s) => s.length > 0);
+	}
+
+	return null;
+}
+
+function unquote(s: string): string {
+	if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+		return s.slice(1, -1);
+	}
+	return s;
 }
