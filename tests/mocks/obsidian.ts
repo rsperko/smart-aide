@@ -87,6 +87,28 @@ export function parseLinktext(href: string): { path: string; subpath: string } {
 	return { path: href.slice(0, hashIdx), subpath: href.slice(hashIdx) };
 }
 
+/**
+ * Mirror Obsidian's parseFrontMatterAliases: accepts the frontmatter object,
+ * returns a string[] from the `aliases` (or legacy `alias`) field. Handles
+ * arrays, comma-separated strings, and YAML inline-array strings. Returns null
+ * when no aliases are present.
+ */
+export function parseFrontMatterAliases(frontmatter: Record<string, unknown> | null | undefined): string[] | null {
+	if (!frontmatter) return null;
+	const raw = (frontmatter.aliases ?? frontmatter.alias) as unknown;
+	if (raw == null) return null;
+	if (Array.isArray(raw)) {
+		const out = raw.map((v) => String(v).trim()).filter(Boolean);
+		return out.length > 0 ? out : null;
+	}
+	if (typeof raw === 'string') {
+		const stripped = raw.trim().replace(/^\[|\]$/g, '');
+		const parts = stripped.split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+		return parts.length > 0 ? parts : null;
+	}
+	return null;
+}
+
 // ---------- Platform ----------
 
 export const Platform = {

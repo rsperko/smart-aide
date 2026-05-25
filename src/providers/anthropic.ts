@@ -1,4 +1,6 @@
 import { arrayBufferToBase64 } from '../image-helpers';
+import { streamSplit } from './sse';
+import { assembleStream } from './stream-runner';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock } from '../types';
 import type {
 	AssembledTurn,
@@ -7,7 +9,6 @@ import type {
 	ProviderCapabilities,
 	StreamCallbacks,
 	StreamEvent,
-	ToolCall,
 	ToolDescriptor,
 	TurnRequest,
 } from './types';
@@ -255,10 +256,6 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 		return;
 	}
 
-	const reader = res.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
-
 	// Per content-block tracking. Anthropic emits events keyed by block index;
 	// we map tool-use blocks to a stable tool-call index so the caller's
 	// accumulator (one entry per index) matches our flow.
@@ -271,138 +268,98 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 	let completionTokens = 0;
 	let usageSeen = false;
 
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
+	for await (const part of streamSplit(res.body, '\n\n')) {
+		const trimmed = part.trim();
+		if (!trimmed) continue;
 
-		const parts = buffer.split('\n\n');
-		buffer = parts.pop() || '';
+		let eventName = '';
+		let dataStr = '';
+		for (const line of trimmed.split('\n')) {
+			if (line.startsWith('event:')) eventName = line.slice(6).trim();
+			else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+		}
+		if (!dataStr) continue;
 
-		for (const part of parts) {
-			const trimmed = part.trim();
-			if (!trimmed) continue;
+		let data: any;
+		try {
+			data = JSON.parse(dataStr);
+		} catch {
+			continue;
+		}
 
-			let eventName = '';
-			let dataStr = '';
-			for (const line of trimmed.split('\n')) {
-				if (line.startsWith('event:')) eventName = line.slice(6).trim();
-				else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+		const type = eventName || data.type;
+
+		if (type === 'message_start' && data.message?.usage) {
+			const u = data.message.usage;
+			promptTokens = u.input_tokens ?? 0;
+			cachedReadTokens = u.cache_read_input_tokens ?? 0;
+			cachedWriteTokens = u.cache_creation_input_tokens ?? 0;
+			completionTokens = u.output_tokens ?? 0;
+			usageSeen = true;
+		} else if (type === 'content_block_start') {
+			const idx = data.index ?? 0;
+			const block = data.content_block;
+			if (block?.type === 'tool_use') {
+				const toolIndex = nextToolIndex++;
+				toolIndexByBlock.set(idx, toolIndex);
+				yield {
+					type: 'tool-call-delta',
+					toolCallDelta: {
+						index: toolIndex,
+						id: block.id,
+						name: block.name,
+						argumentsDelta: '',
+					},
+				};
 			}
-			if (!dataStr) continue;
-
-			let data: any;
-			try {
-				data = JSON.parse(dataStr);
-			} catch {
-				continue;
-			}
-
-			const type = eventName || data.type;
-
-			if (type === 'message_start' && data.message?.usage) {
-				const u = data.message.usage;
-				promptTokens = u.input_tokens ?? 0;
-				cachedReadTokens = u.cache_read_input_tokens ?? 0;
-				cachedWriteTokens = u.cache_creation_input_tokens ?? 0;
-				completionTokens = u.output_tokens ?? 0;
-				usageSeen = true;
-			} else if (type === 'content_block_start') {
-				const idx = data.index ?? 0;
-				const block = data.content_block;
-				if (block?.type === 'tool_use') {
-					const toolIndex = nextToolIndex++;
-					toolIndexByBlock.set(idx, toolIndex);
+		} else if (type === 'content_block_delta') {
+			const idx = data.index ?? 0;
+			const delta = data.delta;
+			if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+				yield { type: 'text-delta', textDelta: delta.text };
+			} else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+				const toolIndex = toolIndexByBlock.get(idx);
+				if (toolIndex !== undefined) {
 					yield {
 						type: 'tool-call-delta',
-						toolCallDelta: {
-							index: toolIndex,
-							id: block.id,
-							name: block.name,
-							argumentsDelta: '',
-						},
+						toolCallDelta: { index: toolIndex, argumentsDelta: delta.partial_json },
 					};
 				}
-			} else if (type === 'content_block_delta') {
-				const idx = data.index ?? 0;
-				const delta = data.delta;
-				if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-					yield { type: 'text-delta', textDelta: delta.text };
-				} else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
-					const toolIndex = toolIndexByBlock.get(idx);
-					if (toolIndex !== undefined) {
-						yield {
-							type: 'tool-call-delta',
-							toolCallDelta: { index: toolIndex, argumentsDelta: delta.partial_json },
-						};
-					}
-				}
-			} else if (type === 'message_delta') {
-				if (data.usage?.output_tokens !== undefined) {
-					completionTokens = data.usage.output_tokens;
-					usageSeen = true;
-				}
-				if (data.delta?.stop_reason) {
-					yield { type: 'finish', finishReason: data.delta.stop_reason };
-				}
-			} else if (type === 'message_stop') {
-				if (usageSeen) {
-					yield {
-						type: 'usage',
-						usage: {
-							promptTokens,
-							completionTokens,
-							cachedReadTokens: cachedReadTokens || undefined,
-							cachedWriteTokens: cachedWriteTokens || undefined,
-						},
-					};
-				}
-				return;
-			} else if (type === 'error') {
-				yield { type: 'error', error: data.error?.message || 'anthropic stream error' };
-				return;
 			}
+		} else if (type === 'message_delta') {
+			if (data.usage?.output_tokens !== undefined) {
+				completionTokens = data.usage.output_tokens;
+				usageSeen = true;
+			}
+			if (data.delta?.stop_reason) {
+				yield { type: 'finish', finishReason: data.delta.stop_reason };
+			}
+		} else if (type === 'message_stop') {
+			if (usageSeen) {
+				yield {
+					type: 'usage',
+					usage: {
+						promptTokens,
+						completionTokens,
+						cachedReadTokens: cachedReadTokens || undefined,
+						cachedWriteTokens: cachedWriteTokens || undefined,
+					},
+				};
+			}
+			return;
+		} else if (type === 'error') {
+			yield { type: 'error', error: data.error?.message || 'anthropic stream error' };
+			return;
 		}
 	}
 }
 
-async function runTurn(
+function runTurn(
 	req: TurnRequest,
 	resolveImage: ImageResolver,
 	cb?: StreamCallbacks,
 ): Promise<AssembledTurn> {
-	let text = '';
-	const toolAccum: Map<number, { id: string; name: string; args: string }> = new Map();
-	let finishReason = 'stop';
-	let usage: AssembledTurn['usage'] | undefined;
-
-	for await (const ev of streamTurn(req, resolveImage)) {
-		if (ev.type === 'text-delta' && ev.textDelta) {
-			text += ev.textDelta;
-			cb?.onText?.(ev.textDelta);
-		} else if (ev.type === 'tool-call-delta' && ev.toolCallDelta) {
-			const { index, id, name, argumentsDelta } = ev.toolCallDelta;
-			const cur = toolAccum.get(index) ?? { id: '', name: '', args: '' };
-			if (id) cur.id = id;
-			if (name) cur.name = name;
-			if (argumentsDelta) cur.args += argumentsDelta;
-			toolAccum.set(index, cur);
-			cb?.onToolCallProgress?.(index, { id: cur.id, name: cur.name, argsAccum: cur.args });
-		} else if (ev.type === 'usage' && ev.usage) {
-			usage = ev.usage;
-			cb?.onUsage?.(ev.usage);
-		} else if (ev.type === 'finish' && ev.finishReason) {
-			finishReason = ev.finishReason;
-		} else if (ev.type === 'error') {
-			throw new Error(ev.error || 'stream error');
-		}
-	}
-
-	const toolCalls: ToolCall[] = [...toolAccum.entries()]
-		.sort(([a], [b]) => a - b)
-		.map(([, v]) => ({ id: v.id, name: v.name, arguments: v.args || '{}' }));
-
-	return { text, toolCalls, finishReason, usage };
+	return assembleStream(streamTurn, req, resolveImage, cb, { defaultToolArguments: '{}' });
 }
 
 async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise<DiscoveredModel[]> {

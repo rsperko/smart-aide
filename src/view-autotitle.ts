@@ -1,5 +1,5 @@
 import { providerFor } from './providers';
-import { resolveModelRef, SmartAideSettings } from './settings';
+import { resolveModelRefStrict, SmartAideSettings } from './settings';
 import { ChatSession, ChatStorage } from './storage';
 import { MessageEntry } from './types';
 import { messageText } from './view-helpers';
@@ -23,7 +23,9 @@ export async function maybeAutoTitle(opts: {
 	const hasAssistant = session.entries.some((e) => e.type === 'message' && e.message.role === 'assistant');
 	if (!hasUser || !hasAssistant) return;
 
-	const { endpoint, slug } = resolveModelRef(settings, settings.titleModelRef);
+	const resolved = resolveModelRefStrict(settings, settings.titleModelRef);
+	if (!resolved) return;
+	const { endpoint, slug } = resolved;
 	if (!endpoint.apiKey) return;
 
 	try {

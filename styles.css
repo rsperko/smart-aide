@@ -12,7 +12,7 @@
 	background: var(--background-primary);
 }
 
-/* Visually-hidden file inputs (paperclip / camera triggers click() on these). */
+/* Visually-hidden file input (paperclip triggers click() on this). */
 .vk-hidden {
 	display: none;
 }
@@ -26,7 +26,11 @@
 	padding: 6px 8px;
 	gap: 2px;
 	border-bottom: 1px solid var(--background-modifier-border);
-	min-height: 34px;
+	box-shadow: 0 1px 0 var(--background-modifier-border);
+	min-height: 38px;
+	position: relative;
+	z-index: 2;
+	background: var(--background-primary);
 }
 
 .vk-topbar-btn {
@@ -36,21 +40,23 @@
 }
 
 /* Auto-approve "dangerous mode" chip. Hidden by default; shown only when
-   settings.autoApproveWrites is on so the user can't forget they're in it. */
+   settings.autoApproveWrites is on. Filled fill + bold weight so it can't be
+   missed — the whole point is the user is bypassing approval. */
 .vk-danger-chip {
 	display: none;
 	align-items: center;
 	gap: 4px;
 	margin-right: 4px;
-	padding: 2px 8px;
-	border: 1px solid var(--text-warning, var(--background-modifier-error));
+	padding: 3px 10px;
+	border: 1px solid var(--background-modifier-error, var(--text-error));
 	border-radius: 10px;
-	background: transparent;
-	color: var(--text-warning, var(--text-error, var(--text-normal)));
+	background: var(--background-modifier-error, var(--text-error));
+	color: var(--text-on-accent, #fff);
 	font-size: 11px;
+	font-weight: 600;
 	font-family: inherit;
 	cursor: pointer;
-	transition: background-color 0.12s ease;
+	transition: filter 0.12s ease;
 }
 
 .vk-danger-chip.is-visible {
@@ -58,15 +64,16 @@
 }
 
 .vk-danger-chip:hover {
-	background: var(--background-modifier-hover);
+	filter: brightness(1.15);
 }
 
 .vk-danger-chip-icon {
-	font-size: 11px;
+	font-size: 12px;
 }
 
 .vk-danger-chip-text {
 	letter-spacing: 0.3px;
+	text-transform: uppercase;
 }
 
 .vk-topbar-btn svg {
@@ -186,6 +193,14 @@
 .vk-empty-meta-row {
 	font-size: 11px;
 	color: var(--text-faint);
+}
+
+.vk-empty-action {
+	margin-top: 12px;
+	padding: 6px 14px;
+	border-radius: 6px;
+	font-size: 13px;
+	cursor: pointer;
 }
 
 /* ---------- Messages ---------- */
@@ -730,9 +745,9 @@ details[open] > .vk-tool-summary::before {
 .vk-input {
 	width: 100%;
 	box-sizing: border-box;
-	/* explicit height so iOS WebKit doesn't compute a giant intrinsic size from the flex parent; JS autosizes on input */
-	height: 110px;
-	min-height: 110px;
+	/* explicit height so iOS WebKit doesn't compute a giant intrinsic size from the flex parent; JS autosizes on input. ~2 rows when empty so we don't waste mobile space; grows up to 240px. */
+	height: 72px;
+	min-height: 72px;
 	max-height: 240px;
 	padding: 5px 6px;
 	border: none;
@@ -791,6 +806,11 @@ details[open] > .vk-tool-summary::before {
 .vk-model-chip:focus {
 	outline: none;
 	border-color: var(--interactive-accent);
+}
+
+.vk-model-chip-missing {
+	color: var(--text-warning, var(--text-error));
+	border-color: var(--text-warning, var(--text-error));
 }
 
 .vk-model-chip-name {
@@ -1510,8 +1530,9 @@ details[open] > .vk-research-summary::after {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	font-family: var(--font-monospace);
-	font-size: 11px;
+	font-family: inherit;
+	font-size: 12px;
+	line-height: 1.4;
 }
 
 .vk-research-call {
@@ -1602,6 +1623,15 @@ details[open] > .vk-research-summary::after {
 	display: -webkit-box;
 	-webkit-line-clamp: 2;
 	-webkit-box-orient: vertical;
+}
+
+.vk-citation-folder {
+	font-size: 10px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	margin-top: 2px;
 }
 
 /* ---------- Copy button on code blocks ---------- */

@@ -141,6 +141,20 @@ export function resolveModelRef(
 	return { endpoint, slug: ref.slug };
 }
 
+/**
+ * Like resolveModelRef, but returns null when the referenced endpoint no longer
+ * exists. Use on the send path to refuse a request rather than silently pairing
+ * a stale slug with whichever endpoint happens to be first.
+ */
+export function resolveModelRefStrict(
+	settings: SmartAideSettings,
+	ref: ModelRef,
+): { endpoint: Endpoint; slug: string } | null {
+	const endpoint = findEndpoint(settings, ref.endpointId);
+	if (!endpoint) return null;
+	return { endpoint, slug: ref.slug };
+}
+
 export function endpointModelCount(endpoint: Endpoint): number {
 	const discovered = endpoint.discoveredModels ?? [];
 	const manual = endpoint.models ?? [];

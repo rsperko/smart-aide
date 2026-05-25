@@ -1,4 +1,12 @@
-import { App, TFile, getAllTags, normalizePath, prepareFuzzySearch, prepareSimpleSearch } from 'obsidian';
+import {
+	App,
+	TFile,
+	getAllTags,
+	normalizePath,
+	parseFrontMatterAliases,
+	prepareFuzzySearch,
+	prepareSimpleSearch,
+} from 'obsidian';
 import type { ToolDescriptor } from './providers/types';
 import { ApprovalPreview, Tool, ToolContext } from './types';
 
@@ -28,8 +36,62 @@ const RRF_K = 60;
 // boost in the explicit-boost range (1.5x–5x is typical).
 const PHRASE_WEIGHT = 2;
 
-type HitWhere = 'filename' | 'heading' | 'tag' | 'content';
-const TIER_PRIORITY: Record<HitWhere, number> = { filename: 4, heading: 3, tag: 2, content: 1 };
+// Fire fuzzy metadata as a TRUE last resort — only when exact metadata AND the
+// content scan both returned zero. A higher threshold (e.g. fire when thin) was
+// tried and reintroduced character-scatter noise (e.g. "thou art" → "The Four
+// Agreements" via t-h-o-u-a-r-t scattered in order). The cleaner fix lives one
+// layer up: ordering content scan *before* fuzzy means a real body match
+// suppresses noisy fuzzy guesses.
+const FUZZY_THRESHOLD = 1;
+
+// Trigger an automatic body-content scan when metadata returns fewer than
+// this many distinct files (or when the query is wrapped in quotes, or when
+// deepSearch=true is set explicitly). Lifts the "Agent B has to retry with
+// deepSearch=true" tax on natural-language queries.
+const CONTENT_AUTO_THRESHOLD = 6;
+
+// Mobile-safe file budget for an *auto* body scan (cachedRead is slow on
+// iPhone first-cache). deepSearch=true lifts the cap to CONTENT_DEEP_FILE_BUDGET.
+const CONTENT_AUTO_FILE_BUDGET = 200;
+const CONTENT_DEEP_FILE_BUDGET = 2000;
+
+// Stopwords the AND-gate strips before requiring every token to appear.
+// Three groups:
+//   1. English filler (articles, prepositions, copulas, pronouns).
+//   2. Memory-recall verbs ("where did I WRITE about X", "the note I MENTIONED")
+//      — these scaffold the question, not the answer. Critical for natural-
+//      language recall: the body almost never contains the recall verb itself.
+//   3. Question words.
+// The exact phrase is always preserved separately for the phrase boost, so
+// "to be or not to be" still ranks files with the phrase above the bag.
+const STOPWORDS = new Set([
+	'a', 'an', 'the',
+	'of', 'to', 'in', 'on', 'at', 'for', 'from', 'with', 'as', 'by', 'about',
+	'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
+	'do', 'does', 'did', 'doing',
+	'have', 'has', 'had', 'having',
+	'i', 'you', 'me', 'my', 'your', 'we', 'us', 'our',
+	'it', 'its', 'they', 'them', 'their',
+	'that', 'this', 'these', 'those',
+	'and', 'or', 'but', 'so', 'if', 'not', 'no',
+	'write', 'wrote', 'written',
+	'say', 'said', 'says',
+	'mention', 'mentioned', 'mentions',
+	'talk', 'talked', 'talks',
+	'think', 'thought', 'thinks',
+	'remember', 'remembered',
+	'what', 'where', 'when', 'who', 'why', 'how', 'which',
+]);
+
+type HitWhere = 'filename' | 'alias' | 'heading' | 'tag' | 'linkDisplayText' | 'content';
+const TIER_PRIORITY: Record<HitWhere, number> = {
+	filename: 6,
+	alias: 5,
+	heading: 4,
+	tag: 3,
+	linkDisplayText: 2,
+	content: 1,
+};
 
 interface Hit {
 	in: HitWhere;
@@ -38,6 +100,9 @@ interface Hit {
 	line?: number;
 	startLine?: number;
 	endLine?: number;
+	heading?: string;
+	targetPath?: string;
+	fuzzy?: boolean;
 }
 
 interface FileBucket {
@@ -48,32 +113,39 @@ interface FileBucket {
 const searchVault: Tool = {
 	risk: 'read',
 	name: 'search_vault',
-	description: `Find notes. Set ≥1 of: query, tag, pathPrefix, sinceDays (AND'd).
+	description: `Find notes by name, alias, heading, tag, wikilink display text, or body content.
 
-query word-matches filename + headings + tags (fast, in-memory) — all space-separated words must appear (case-insensitive substring). Set deepSearch=true to also scan note bodies (substring match for the exact phrase) — use when default returns 0 hits or user says "search inside notes".
+Set ≥1 of: query, tag, pathPrefix, sinceDays (AND'd together).
 
-If nothing matches, a fuzzy character-order pass runs automatically (catches typos / abbreviations / partial recall). Response sets fuzzyFallback=true when this fired — treat those hits as approximate.
+query searches: filename · frontmatter aliases · headings · tags · wikilink display text. Bodies are scanned automatically when metadata returns few hits, when the query is quoted, or when deepSearch=true. The response's autoBody field tells you when a body scan ran without being asked.
 
-Use the user's exact remembered phrase, not paraphrase.
+If exact matching is thin, a fuzzy character-order pass runs automatically (catches typos / partial recall / abbreviations). Response sets fuzzyFallback=true when this fired — treat those hits as approximate.
+
+Each hit carries in: "filename" | "alias" | "heading" | "tag" | "linkDisplayText" | "content" so you can cite the match accurately ("matched alias: PascalCase"). matchedSurfaces on each result lists every surface that fired for that file — multi-surface matches are stronger.
+
+Use the user's exact remembered phrase. Don't paraphrase.
 
 Examples:
-- "find weekly review notes" → query="weekly review"
-- "where I wrote 'eventual consistency'" → query="eventual consistency"
+- "find my weekly review notes" → query="weekly review"
+- "where I wrote 'eventual consistency'" → query="\\"eventual consistency\\"" (quotes force body scan)
+- "PascalCase note" → query="PascalCase" (likely matches an alias)
+- "support characters concept" → query="support characters" (often hits link display text)
+- "the note about A to C" → query="A to C"
 - "tagged book" → tag="book"
 - "in my Daily folder" → pathPrefix="Daily"
-- "task notes about onboarding" → tag="task", query="onboarding"
 - "recent deadline notes" → query="deadline", sinceDays=30
-- "any mention of Postgres" → query="Postgres", deepSearch=true
+- "any mention of Postgres" → query="Postgres" (auto-scans body if metadata is thin)
+- "force a full-vault body scan" → query="…", deepSearch=true
 
-For vague concepts, fire parallel calls with synonyms — "find that piece on deep work" → 3 parallel calls (query="deep work", "deepwork", "flow"). Cheap.
+For vague concepts, fire 2–3 parallel calls with synonyms — "find that piece on deep work" → query="deep work" + "deepwork" + "flow". Cheap.
 
-Heading hits include startLine + endLine — pass to read_note for just that section. Read the hint field when matches=0.`,
+Heading hits AND content hits include startLine + endLine + heading — pass them to read_note for just the surrounding section. linkDisplayText hits include targetPath — read that path directly. Read the hint field when matches=0.`,
 	parameters: {
 		type: 'object',
 		properties: {
 			query: {
 				type: 'string',
-				description: "Fuzzy match phrase. User's exact words.",
+				description: "User's exact remembered words. Wrap in quotes to force a body phrase match.",
 			},
 			tag: {
 				type: 'string',
@@ -89,7 +161,7 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			},
 			deepSearch: {
 				type: 'boolean',
-				description: "Also scan note bodies (slower). Default false. Set true when default returns 0.",
+				description: "Force a full-vault body scan. Lifts the auto-body file budget. Rarely needed — the tool already auto-scans bodies when metadata is thin or the query is quoted.",
 			},
 			maxResults: {
 				type: 'integer',
@@ -98,13 +170,13 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 		},
 	},
 	async execute(args, ctx) {
-		const query = stripEnclosingQuotes(strArg(args.query));
+		const rawQuery = strArg(args.query);
+		const query = stripEnclosingQuotes(rawQuery);
+		const wasQuoted = rawQuery !== query && query.length > 0;
 		const tag = normalizeTag(strArg(args.tag));
 		const pathPrefix = strArg(args.pathPrefix);
 		const sinceDays = intArg(args.sinceDays);
 		const deepSearch = !!args.deepSearch;
-		const defaultMax = deepSearch ? DEEP_MAX_RESULTS : DEFAULT_MAX_RESULTS;
-		const maxResults = clamp(intArg(args.maxResults) ?? defaultMax, 1, HARD_MAX_RESULTS);
 
 		if (!query && !tag && !pathPrefix && sinceDays === undefined) {
 			return JSON.stringify({
@@ -142,18 +214,21 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 		};
 
 		if (query) {
+			// Single metadata pass over every (file, cache) pair. Each surface
+			// (filename, alias, heading, tag, linkDisplayText) records hits
+			// independently so RRF can fuse them.
 			const search = prepareSimpleSearch(query);
-
-			// Pass 1: filenames
 			for (const file of files) {
-				const r = search(file.basename);
-				if (r) record(file, { in: 'filename', text: file.basename, score: r.score });
-			}
+				const fr = search(file.basename);
+				if (fr) record(file, { in: 'filename', text: file.basename, score: fr.score });
 
-			// Pass 2 + 3: headings and tags via MetadataCache
-			for (const file of files) {
 				const cache = ctx.app.metadataCache.getFileCache(file);
 				if (!cache) continue;
+
+				for (const alias of parseFrontMatterAliases(cache.frontmatter) ?? []) {
+					const r = search(alias);
+					if (r) record(file, { in: 'alias', text: alias, score: r.score });
+				}
 
 				const headings = cache.headings ?? [];
 				for (let i = 0; i < headings.length; i++) {
@@ -164,7 +239,7 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 					const endLine = sectionEndLine(
 						headings,
 						i,
-						file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : h.position.start.line + 1,
+						file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : startLine,
 					);
 					record(file, {
 						in: 'heading',
@@ -175,130 +250,39 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 					});
 				}
 
-				const tagSet = new Set<string>();
-				for (const t of cache.tags ?? []) tagSet.add(t.tag);
-				const fm = cache.frontmatter?.tags;
-				if (Array.isArray(fm)) for (const t of fm) tagSet.add('#' + String(t));
-				else if (typeof fm === 'string') for (const t of fm.split(/[,\s]+/)) if (t) tagSet.add('#' + t);
-				for (const t of tagSet) {
+				for (const t of getAllTags(cache) ?? []) {
 					const r = search(t);
 					if (r) record(file, { in: 'tag', text: t, score: r.score });
 				}
-			}
 
-			// Pass 4: content scan (opt-in), word-boundary matched and scored
-			// with inline BM25. The gate requires every query token to appear
-			// as a WHOLE WORD — substring matching ("thou" inside "thoughts")
-			// floods results with false positives on common short tokens.
-			// When the full phrase appears adjacent it's scored as an extra
-			// BM25 term so phrase matches outrank scattered-token matches.
-			if (deepSearch) {
-				const queryTokens = tokenize(query);
-				const isMultiToken = queryTokens.length > 1;
-				interface ContentCandidate {
-					file: TFile;
-					dl: number;
-					tf: number[];
-					phraseTf: number;
-					matches: { line: number; snippet: string }[];
-				}
-				const candidates: ContentCandidate[] = [];
-				for (const file of files) {
-					if (buckets.has(file.path)) continue;
-					const content = await ctx.app.vault.cachedRead(file);
-					const tf = queryTokens.map((t) => countWordOccurrences(content, t));
-					// AND gate: every query token must appear as a whole word.
-					if (!tf.every((c) => c > 0)) continue;
-					const phraseTf = isMultiToken ? countWordOccurrences(content, query) : 0;
-					// Snippets prefer the adjacent phrase; fall back to the first
-					// matching token when the words are scattered.
-					let matches = isMultiToken
-						? findWordMatches(content, query, MAX_CONTENT_MATCHES_PER_FILE)
-						: [];
-					if (matches.length === 0) {
-						for (let i = 0; i < queryTokens.length; i++) {
-							matches = findWordMatches(content, queryTokens[i], MAX_CONTENT_MATCHES_PER_FILE);
-							if (matches.length > 0) break;
-						}
-					}
-					const dl = Math.max(1, content.split(/\s+/).length);
-					candidates.push({ file, dl, tf, phraseTf, matches });
-				}
-				if (candidates.length > 0) {
-					const N = candidates.length;
-					const avgdl = candidates.reduce((s, c) => s + c.dl, 0) / N;
-					const idf = queryTokens.map((_, ti) => {
-						const df = candidates.reduce((s, c) => s + (c.tf[ti] > 0 ? 1 : 0), 0);
-						return Math.log((N - df + 0.5) / (df + 0.5) + 1);
+				for (const link of cache.links ?? []) {
+					const text = link.displayText || link.link;
+					if (!text) continue;
+					const r = search(text);
+					if (!r) continue;
+					const dest = ctx.app.metadataCache.getFirstLinkpathDest?.(link.link, file.path);
+					record(file, {
+						in: 'linkDisplayText',
+						text,
+						score: r.score,
+						targetPath: dest?.path,
 					});
-					let phraseIdf = 0;
-					if (isMultiToken) {
-						const dfPhrase = candidates.reduce((s, c) => s + (c.phraseTf > 0 ? 1 : 0), 0);
-						phraseIdf = Math.log((N - dfPhrase + 0.5) / (dfPhrase + 0.5) + 1);
-					}
-					for (const c of candidates) {
-						let score = 0;
-						for (let ti = 0; ti < queryTokens.length; ti++) {
-							score += bm25TermScore(c.tf[ti], c.dl, avgdl, idf[ti]);
-						}
-						if (isMultiToken && c.phraseTf > 0) {
-							score += PHRASE_WEIGHT * bm25TermScore(c.phraseTf, c.dl, avgdl, phraseIdf);
-						}
-						for (const m of c.matches) {
-							record(c.file, {
-								in: 'content',
-								text: m.snippet,
-								line: m.line,
-								score,
-							});
-						}
-					}
+				}
+				for (const link of cache.frontmatterLinks ?? []) {
+					const text = link.displayText || link.link;
+					if (!text) continue;
+					const r = search(text);
+					if (!r) continue;
+					const dest = ctx.app.metadataCache.getFirstLinkpathDest?.(link.link, file.path);
+					record(file, {
+						in: 'linkDisplayText',
+						text,
+						score: r.score,
+						targetPath: dest?.path,
+					});
 				}
 			}
 
-			// Fuzzy fallback: only fires when nothing matched. Catches typos
-			// (imrov→improv), abbreviations (iom→Improv Openings Mid), and
-			// partial recall (weekrev→weekly review).
-			if (buckets.size === 0) {
-				const fuzzy = prepareFuzzySearch(query);
-				for (const file of files) {
-					const r = fuzzy(file.basename);
-					if (r) record(file, { in: 'filename', text: file.basename, score: r.score });
-				}
-				for (const file of files) {
-					const cache = ctx.app.metadataCache.getFileCache(file);
-					if (!cache) continue;
-					const headings = cache.headings ?? [];
-					for (let i = 0; i < headings.length; i++) {
-						const h = headings[i];
-						const r = fuzzy(h.heading);
-						if (!r) continue;
-						const startLine = h.position.start.line + 1;
-						const endLine = sectionEndLine(
-							headings,
-							i,
-							file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : h.position.start.line + 1,
-						);
-						record(file, {
-							in: 'heading',
-							text: h.heading,
-							score: r.score,
-							startLine,
-							endLine,
-						});
-					}
-					const tagSet = new Set<string>();
-					for (const t of cache.tags ?? []) tagSet.add(t.tag);
-					const fm = cache.frontmatter?.tags;
-					if (Array.isArray(fm)) for (const t of fm) tagSet.add('#' + String(t));
-					else if (typeof fm === 'string') for (const t of fm.split(/[,\s]+/)) if (t) tagSet.add('#' + t);
-					for (const t of tagSet) {
-						const r = fuzzy(t);
-						if (r) record(file, { in: 'tag', text: t, score: r.score });
-					}
-				}
-				if (buckets.size > 0) fuzzyFallback = true;
-			}
 		} else {
 			// No query - just filter-based listing
 			for (const file of files) {
@@ -306,10 +290,81 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			}
 		}
 
-		// Reciprocal Rank Fusion across the four surfaces. Each surface produces
-		// a ranked list; files that appear strongly across multiple surfaces
-		// (filename + content, etc.) beat files that only appear in one.
-		// No score normalization needed — RRF is famously tuning-free.
+		// Content scan — runs when:
+		//   - deepSearch=true (explicit, full file budget), OR
+		//   - the query was wrapped in quotes (user is quoting a body phrase), OR
+		//   - exact metadata returned fewer than CONTENT_AUTO_THRESHOLD files.
+		// Runs BEFORE fuzzy fallback so a real body match suppresses noisy
+		// character-scatter fuzzy guesses. Multi-surface match (filename +
+		// content) is the strongest RRF signal, so content hits CAN add to
+		// already-bucketed files — that's the win.
+		let autoBody = false;
+		if (query && (deepSearch || wasQuoted || buckets.size < CONTENT_AUTO_THRESHOLD)) {
+			const fileBudget = deepSearch ? CONTENT_DEEP_FILE_BUDGET : CONTENT_AUTO_FILE_BUDGET;
+			// Bucketed files first (cheap multi-surface confirmation), then most
+			// recently modified — recency is the closest mobile-safe proxy for
+			// "likely to be the one the user means."
+			const ordered = [...files].sort((a, b) => {
+				const aB = buckets.has(a.path) ? 0 : 1;
+				const bB = buckets.has(b.path) ? 0 : 1;
+				if (aB !== bB) return aB - bB;
+				return b.stat.mtime - a.stat.mtime;
+			});
+			const filesToScan = ordered.slice(0, fileBudget);
+			await runContentScan(ctx, filesToScan, query, record, !deepSearch);
+			autoBody = !deepSearch;
+		}
+
+		// Fuzzy fallback — true last resort. Only fires when nothing above
+		// matched. See FUZZY_THRESHOLD for why we don't fire on thin results.
+		if (query && buckets.size < FUZZY_THRESHOLD) {
+			const before = buckets.size;
+			const fuzzy = prepareFuzzySearch(query);
+			for (const file of files) {
+				const fr = fuzzy(file.basename);
+				if (fr) record(file, { in: 'filename', text: file.basename, score: fr.score, fuzzy: true });
+
+				const cache = ctx.app.metadataCache.getFileCache(file);
+				if (!cache) continue;
+
+				for (const alias of parseFrontMatterAliases(cache.frontmatter) ?? []) {
+					const r = fuzzy(alias);
+					if (r) record(file, { in: 'alias', text: alias, score: r.score, fuzzy: true });
+				}
+
+				const headings = cache.headings ?? [];
+				for (let i = 0; i < headings.length; i++) {
+					const h = headings[i];
+					const r = fuzzy(h.heading);
+					if (!r) continue;
+					const startLine = h.position.start.line + 1;
+					const endLine = sectionEndLine(
+						headings,
+						i,
+						file.stat.size > 0 ? Number.MAX_SAFE_INTEGER : startLine,
+					);
+					record(file, {
+						in: 'heading',
+						text: h.heading,
+						score: r.score,
+						startLine,
+						endLine,
+						fuzzy: true,
+					});
+				}
+
+				for (const t of getAllTags(cache) ?? []) {
+					const r = fuzzy(t);
+					if (r) record(file, { in: 'tag', text: t, score: r.score, fuzzy: true });
+				}
+			}
+			if (buckets.size > before) fuzzyFallback = true;
+		}
+
+		// RRF across every (surface, fuzzy?) pair. Splitting exact vs fuzzy means
+		// an exact filename hit always outranks a fuzzy filename hit even though
+		// both end up labelled `in: "filename"` in the response. Files that
+		// appear strongly across multiple surfaces accumulate more.
 		const rrfScores = computeRrfScores(buckets);
 		const ranked = [...buckets.values()].sort((a, b) => {
 			const aScore = rrfScores.get(a.file.path) ?? 0;
@@ -318,15 +373,21 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			return b.file.stat.mtime - a.file.stat.mtime;
 		});
 
+		const defaultMax = deepSearch ? DEEP_MAX_RESULTS : DEFAULT_MAX_RESULTS;
+		const maxResults = clamp(intArg(args.maxResults) ?? defaultMax, 1, HARD_MAX_RESULTS);
 		const sliced = ranked.slice(0, maxResults);
-		const results = sliced.map((b) => ({
-			path: b.file.path,
-			mtime: isoDate(b.file.stat.mtime),
-			hits: b.hits
-				.sort((a, h) => TIER_PRIORITY[h.in] - TIER_PRIORITY[a.in] || h.score - a.score)
-				.slice(0, MAX_HITS_PER_FILE)
-				.map(compactHit),
-		}));
+		const results = sliced.map((b) => {
+			const matchedSurfaces = [...new Set(b.hits.map((h) => h.in))];
+			return {
+				path: b.file.path,
+				mtime: isoDate(b.file.stat.mtime),
+				matchedSurfaces,
+				hits: b.hits
+					.sort((a, h) => TIER_PRIORITY[h.in] - TIER_PRIORITY[a.in] || h.score - a.score)
+					.slice(0, MAX_HITS_PER_FILE)
+					.map(compactHit),
+			};
+		});
 
 		const response: Record<string, unknown> = {
 			matches: ranked.length,
@@ -334,6 +395,7 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 			deepSearch,
 			results,
 		};
+		if (autoBody) response.autoBody = true;
 		if (fuzzyFallback) response.fuzzyFallback = true;
 		if (ranked.length === 0) {
 			response.hint = emptyHint({ query, tag, pathPrefix, sinceDays, deepSearch });
@@ -343,6 +405,147 @@ Heading hits include startLine + endLine — pass to read_note for just that sec
 		return JSON.stringify(response);
 	},
 };
+
+// Auto-body scans (not deepSearch=true) bail after this many milliseconds.
+// Note sizes vary wildly, so an elapsed-time budget guards iPhone
+// responsiveness better than a fixed file count.
+const AUTO_BODY_TIME_BUDGET_MS = 1500;
+
+async function runContentScan(
+	ctx: ToolContext,
+	filesToScan: TFile[],
+	query: string,
+	record: (file: TFile, hit: Hit) => void,
+	enforceTimeBudget: boolean,
+): Promise<void> {
+	const sig = significantTokens(query);
+	const phrase = normalizeForMatch(query);
+	let phraseTokenCount = 0;
+	{
+		let inWord = false;
+		for (let i = 0; i < phrase.length; i++) {
+			const c = phrase.charCodeAt(i);
+			const isSpace = c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d;
+			if (isSpace) inWord = false;
+			else if (!inWord) { inWord = true; phraseTokenCount++; }
+		}
+	}
+	const isMultiToken = phraseTokenCount > 1;
+	// "A to C", "the of", etc. — the gate strips everything; only the literal
+	// phrase carries signal. Require the phrase to be present, no per-token gate.
+	const allWeak = sig.length === 0;
+
+	// Per-file record retains only NUMERIC stats and (when the gate passes)
+	// the small `hits` array — never the raw content. content + normalized go
+	// out of scope at the end of each loop body, releasing potentially
+	// megabytes per file across a deep scan.
+	interface ContentDoc {
+		file: TFile;
+		dl: number;
+		tf: number[];
+		phraseTf: number;
+		passesGate: boolean;
+		hits: Hit[];
+	}
+	const scanned: ContentDoc[] = [];
+	const startMs = Date.now();
+	for (const file of filesToScan) {
+		if (enforceTimeBudget && Date.now() - startMs > AUTO_BODY_TIME_BUDGET_MS) break;
+		const content = await ctx.app.vault.cachedRead(file);
+		const normalized = normalizeForMatch(content);
+		const tf = sig.map((t) => countWordOccurrencesNormalized(normalized, t));
+		const phraseTf = isMultiToken ? countWordOccurrencesNormalized(normalized, phrase) : 0;
+		const passesGate = allWeak ? phraseTf > 0 : tf.every((c) => c > 0);
+		const dl = Math.max(1, countWords(content));
+
+		const hits: Hit[] = [];
+		if (passesGate) {
+			// Score field is filled in pass 2 once IDF is known; build snippets
+			// + heading context now while we still have the strings.
+			let matches = isMultiToken
+				? findWordMatchesNormalized(content, normalized, phrase, MAX_CONTENT_MATCHES_PER_FILE)
+				: [];
+			if (matches.length === 0) {
+				const probes = sig.length > 0 ? sig : [phrase];
+				for (const probe of probes) {
+					matches = findWordMatchesNormalized(content, normalized, probe, MAX_CONTENT_MATCHES_PER_FILE);
+					if (matches.length > 0) break;
+				}
+			}
+			const cache = ctx.app.metadataCache.getFileCache(file);
+			const headings = cache?.headings ?? [];
+			const totalLines = countNewlines(content) + 1;
+			for (const m of matches) {
+				const enclosing = findEnclosingHeading(headings, m.line, totalLines);
+				const hit: Hit = { in: 'content', text: m.snippet, line: m.line, score: 0 };
+				if (enclosing) {
+					hit.heading = enclosing.heading;
+					hit.startLine = enclosing.startLine;
+					hit.endLine = enclosing.endLine;
+				}
+				hits.push(hit);
+			}
+		}
+		scanned.push({ file, dl, tf, phraseTf, passesGate, hits });
+		// content + normalized fall out of scope here.
+	}
+
+	const hasCandidates = scanned.some((d) => d.passesGate);
+	if (!hasCandidates) return;
+
+	// IDF over the scanned corpus (not just candidates) — corrects the previous
+	// bug where DF was measured AFTER the AND-gate, so every term looked common.
+	const N = Math.max(1, scanned.length);
+	let totalDl = 0;
+	for (const d of scanned) totalDl += d.dl;
+	const avgdl = totalDl / N;
+	const idf = sig.map((_, ti) => {
+		let df = 0;
+		for (const d of scanned) if (d.tf[ti] > 0) df++;
+		return Math.log((N - df + 0.5) / (df + 0.5) + 1);
+	});
+	let phraseIdf = 0;
+	if (isMultiToken) {
+		let dfPhrase = 0;
+		for (const d of scanned) if (d.phraseTf > 0) dfPhrase++;
+		phraseIdf = Math.log((N - dfPhrase + 0.5) / (dfPhrase + 0.5) + 1);
+	}
+
+	for (const c of scanned) {
+		if (!c.passesGate) continue;
+		let score = 0;
+		for (let ti = 0; ti < sig.length; ti++) {
+			score += bm25TermScore(c.tf[ti], c.dl, avgdl, idf[ti]);
+		}
+		if (isMultiToken && c.phraseTf > 0) {
+			score += PHRASE_WEIGHT * bm25TermScore(c.phraseTf, c.dl, avgdl, phraseIdf);
+		}
+		for (const h of c.hits) {
+			h.score = score;
+			record(c.file, h);
+		}
+	}
+}
+
+function findEnclosingHeading(
+	headings: { heading: string; level: number; position: { start: { line: number } } }[],
+	line: number,
+	totalLines: number,
+): { heading: string; startLine: number; endLine: number } | null {
+	if (headings.length === 0) return null;
+	let best = -1;
+	for (let i = 0; i < headings.length; i++) {
+		if (headings[i].position.start.line + 1 <= line) best = i;
+		else break;
+	}
+	if (best < 0) return null;
+	const h = headings[best];
+	return {
+		heading: h.heading,
+		startLine: h.position.start.line + 1,
+		endLine: sectionEndLine(headings, best, totalLines),
+	};
+}
 
 const AUTO_TRUNCATE_BYTES = 60_000;
 const TRUNCATED_RETURN_BYTES = 25_000;
@@ -485,6 +688,8 @@ Examples:
 	},
 	async preview(args, ctx): Promise<ApprovalPreview> {
 		const path = normalizePath(strArg(args.path));
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
+		if (guard) return { summary: `Blocked write ${path} — ${guard}` };
 		const file = ctx.app.vault.getFileByPath(path);
 		const oldContent = file ? await ctx.app.vault.read(file) : '';
 		const newContent = stripDuplicateTitleHeading(path, strArg(args.content));
@@ -534,6 +739,8 @@ Examples:
 	},
 	async preview(args, ctx): Promise<ApprovalPreview> {
 		const path = normalizePath(strArg(args.path));
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
+		if (guard) return { summary: `Blocked append ${path} — ${guard}` };
 		const file = ctx.app.vault.getFileByPath(path);
 		const newContent = strArg(args.content);
 		return {
@@ -569,6 +776,8 @@ const deleteNote: Tool = {
 	},
 	async preview(args, ctx): Promise<ApprovalPreview> {
 		const path = normalizePath(strArg(args.path));
+		const guard = pathGuard(path, ctx.metaDir, { requireMarkdown: true });
+		if (guard) return { summary: `Blocked delete ${path} — ${guard}` };
 		const file = ctx.app.vault.getFileByPath(path);
 		const oldContent = file ? await ctx.app.vault.read(file) : '';
 		return {
@@ -745,55 +954,112 @@ function rangeResponse(
 	});
 }
 
-export function tokenize(s: string): string[] {
-	return s.toLowerCase().split(/\s+/).filter(Boolean);
+/**
+ * Lowercase + Unicode-normalize + collapse hyphens/underscores/slashes to
+ * spaces so `deep-work`, `deep_work`, and `deep work` are equivalent under
+ * word-boundary matching. Used by both the content gate and the content
+ * snippet finder.
+ */
+export function normalizeForMatch(s: string): string {
+	return s
+		.toLowerCase()
+		.normalize('NFKD')
+		.replace(/\p{M}+/gu, '')
+		.replace(/[-_/]+/g, ' ');
 }
 
-export function countOccurrences(haystack: string, needle: string): number {
-	if (!needle) return 0;
+/**
+ * Tokens worth requiring in the BM25 AND-gate. Drops English stopwords and
+ * length-1 tokens; falls back to the raw lowercase tokens when the strip
+ * would leave nothing (so "A to C" still keeps something to score against).
+ * The exact phrase is always preserved separately for the phrase boost.
+ */
+export function significantTokens(s: string): string[] {
+	const normalized = normalizeForMatch(s);
+	const raw = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+	const filtered = raw.filter((t) => t.length > 1 && !STOPWORDS.has(t));
+	return filtered.length > 0 ? filtered : [];
+}
+
+export function countWordOccurrencesNormalized(normalizedContent: string, normalizedNeedle: string): number {
+	if (!normalizedNeedle) return 0;
+	// exec loop instead of .match() — match() allocates an array containing
+	// every match string, which on a deep scan of 2000 files × 3 tokens is
+	// thousands of throwaway arrays.
+	const re = new RegExp(`\\b${escapeRegex(normalizedNeedle)}\\b`, 'g');
 	let count = 0;
-	let idx = 0;
-	while (true) {
-		const found = haystack.indexOf(needle, idx);
-		if (found < 0) return count;
-		count++;
-		idx = found + needle.length;
+	while (re.exec(normalizedContent) !== null) count++;
+	return count;
+}
+
+/**
+ * Allocation-light word count. Avoids `s.split(/\s+/).length`, which allocates
+ * an array proportional to file size on every call — meaningful when the
+ * content scan opens hundreds of files in one tool call.
+ */
+export function countWords(s: string): number {
+	let count = 0;
+	let inWord = false;
+	for (let i = 0, n = s.length; i < n; i++) {
+		const c = s.charCodeAt(i);
+		const isSpace = c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d || c === 0x0b || c === 0x0c;
+		if (isSpace) {
+			inWord = false;
+		} else if (!inWord) {
+			inWord = true;
+			count++;
+		}
 	}
+	return count;
 }
 
-function escapeRegex(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Count `\n` without allocating. Used for total-lines + per-match line
+ * numbers in the body scan.
+ */
+export function countNewlines(s: string, endExclusive?: number): number {
+	const end = endExclusive ?? s.length;
+	let n = 0;
+	for (let i = 0; i < end; i++) {
+		if (s.charCodeAt(i) === 0x0a) n++;
+	}
+	return n;
 }
 
-function makeWordRegex(s: string): RegExp {
-	return new RegExp(`\\b${escapeRegex(s)}\\b`, 'gi');
-}
-
-export function countWordOccurrences(content: string, word: string): number {
-	if (!word) return 0;
-	const matches = content.match(makeWordRegex(word));
-	return matches ? matches.length : 0;
-}
-
-export function findWordMatches(
-	content: string,
-	needle: string,
+/**
+ * Find matches in the *normalized* content but return snippets and line
+ * numbers from the original. The two share character positions because
+ * normalization is 1-for-1 (hyphen→space) — no inserts or deletes.
+ *
+ * Line numbers are tracked incrementally as the regex advances through the
+ * string — the old `slice(0, lineStart).split('\n').length` allocated a copy
+ * of the prefix for every match, which scaled badly for files with many hits.
+ */
+export function findWordMatchesNormalized(
+	original: string,
+	normalized: string,
+	normalizedNeedle: string,
 	max: number,
 ): { line: number; snippet: string }[] {
-	if (!needle) return [];
-	const re = makeWordRegex(needle);
+	if (!normalizedNeedle) return [];
+	const re = new RegExp(`\\b${escapeRegex(normalizedNeedle)}\\b`, 'g');
 	const out: { line: number; snippet: string }[] = [];
+	let cursor = 0;
+	let lineNumber = 1;
 	let m: RegExpExecArray | null;
-	while (out.length < max && (m = re.exec(content)) !== null) {
+	while (out.length < max && (m = re.exec(normalized)) !== null) {
 		const hit = m.index;
-		const lineStart = content.lastIndexOf('\n', hit) + 1;
-		const lineEnd = content.indexOf('\n', hit);
-		const lineFullEnd = lineEnd < 0 ? content.length : lineEnd;
-		const line = content.slice(lineStart, lineFullEnd).trim();
-		const lineNumber = content.slice(0, lineStart).split('\n').length;
+		for (let i = cursor; i < hit; i++) {
+			if (original.charCodeAt(i) === 0x0a) lineNumber++;
+		}
+		cursor = hit;
+		const lineStart = original.lastIndexOf('\n', hit) + 1;
+		const lineEnd = original.indexOf('\n', hit);
+		const lineFullEnd = lineEnd < 0 ? original.length : lineEnd;
+		const line = original.slice(lineStart, lineFullEnd).trim();
 		const localHit = hit - lineStart;
 		const snippetStart = Math.max(0, localHit - CONTENT_SNIPPET_PAD);
-		const snippetEnd = Math.min(line.length, localHit + needle.length + CONTENT_SNIPPET_PAD);
+		const snippetEnd = Math.min(line.length, localHit + normalizedNeedle.length + CONTENT_SNIPPET_PAD);
 		const snippet = line.slice(snippetStart, snippetEnd);
 		out.push({
 			line: lineNumber,
@@ -804,6 +1070,10 @@ export function findWordMatches(
 	return out;
 }
 
+function escapeRegex(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function bm25TermScore(tf: number, dl: number, avgdl: number, idf: number): number {
 	if (tf === 0 || avgdl === 0) return 0;
 	const numerator = tf * (BM25_K1 + 1);
@@ -812,52 +1082,34 @@ export function bm25TermScore(tf: number, dl: number, avgdl: number, idf: number
 }
 
 export function computeRrfScores(buckets: Map<string, FileBucket>): Map<string, number> {
-	// One sorted list per surface; ranks are 1-indexed.
-	const surfaces: HitWhere[] = ['filename', 'heading', 'tag', 'content'];
+	// One sorted list per (surface, fuzzy?) pair. Splitting exact and fuzzy
+	// means an exact match always outranks a fuzzy match in the same surface
+	// (separate lists, each ranked from #1), and fuzzy hits still contribute
+	// real RRF weight when there's no exact match. ranks are 1-indexed.
+	const surfaces: HitWhere[] = ['filename', 'alias', 'heading', 'tag', 'linkDisplayText', 'content'];
 	const result = new Map<string, number>();
 	for (const surface of surfaces) {
-		const entries: { path: string; best: number }[] = [];
-		for (const b of buckets.values()) {
-			let best = -Infinity;
-			for (const h of b.hits) if (h.in === surface && h.score > best) best = h.score;
-			if (best > -Infinity) entries.push({ path: b.file.path, best });
+		for (const fuzzy of [false, true]) {
+			if (fuzzy && surface === 'content') continue;
+			if (fuzzy && surface === 'linkDisplayText') continue;
+			const entries: { path: string; best: number }[] = [];
+			for (const b of buckets.values()) {
+				let best = -Infinity;
+				for (const h of b.hits) {
+					if (h.in !== surface) continue;
+					if (!!h.fuzzy !== fuzzy) continue;
+					if (h.score > best) best = h.score;
+				}
+				if (best > -Infinity) entries.push({ path: b.file.path, best });
+			}
+			entries.sort((a, b) => b.best - a.best);
+			entries.forEach((e, i) => {
+				const rank = i + 1;
+				result.set(e.path, (result.get(e.path) ?? 0) + 1 / (RRF_K + rank));
+			});
 		}
-		entries.sort((a, b) => b.best - a.best);
-		entries.forEach((e, i) => {
-			const rank = i + 1;
-			result.set(e.path, (result.get(e.path) ?? 0) + 1 / (RRF_K + rank));
-		});
 	}
 	return result;
-}
-
-export function findContentMatches(
-	content: string,
-	query: string,
-	max: number,
-): { line: number; snippet: string }[] {
-	const lower = content.toLowerCase();
-	const out: { line: number; snippet: string }[] = [];
-	let idx = 0;
-	while (out.length < max) {
-		const hit = lower.indexOf(query, idx);
-		if (hit < 0) break;
-		const lineStart = lower.lastIndexOf('\n', hit) + 1;
-		const lineEnd = lower.indexOf('\n', hit);
-		const lineFullEnd = lineEnd < 0 ? content.length : lineEnd;
-		const line = content.slice(lineStart, lineFullEnd).trim();
-		const lineNumber = content.slice(0, lineStart).split('\n').length;
-		const localHit = hit - lineStart;
-		const snippetStart = Math.max(0, localHit - CONTENT_SNIPPET_PAD);
-		const snippetEnd = Math.min(line.length, localHit + query.length + CONTENT_SNIPPET_PAD);
-		const snippet = line.slice(snippetStart, snippetEnd);
-		out.push({
-			line: lineNumber,
-			snippet: snippetStart > 0 ? '…' + snippet : snippet,
-		});
-		idx = lineFullEnd + 1;
-	}
-	return out;
 }
 
 export function emptyHint(args: {
@@ -868,7 +1120,7 @@ export function emptyHint(args: {
 	deepSearch: boolean;
 }): string {
 	const tips: string[] = [];
-	if (args.query && !args.deepSearch) tips.push('set deepSearch=true to also scan note content');
+	if (args.query && !args.deepSearch) tips.push('set deepSearch=true to force a full-vault body scan');
 	if (args.query) tips.push('try a single key word, or issue parallel calls with related terms (synonyms)');
 	if (args.pathPrefix) tips.push('drop pathPrefix (folder may be empty or misspelled)');
 	if (args.tag) tips.push("check tag spelling - case-insensitive, leading '#' optional, exact match");
@@ -984,6 +1236,8 @@ export function pathGuard(
 
 function compactHit(h: Hit): Record<string, unknown> {
 	const out: Record<string, unknown> = { in: h.in, text: h.text };
+	if (h.heading !== undefined) out.heading = h.heading;
+	if (h.targetPath !== undefined) out.targetPath = h.targetPath;
 	if (h.line !== undefined) out.line = h.line;
 	if (h.startLine !== undefined) out.startLine = h.startLine;
 	if (h.endLine !== undefined && h.endLine !== Number.MAX_SAFE_INTEGER) out.endLine = h.endLine;

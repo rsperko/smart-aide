@@ -22,6 +22,19 @@ const MIME_TO_EXT: Record<string, string> = {
 
 const SUPPORTED_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
+// Cap on attachment size before base64 encoding. A single image temporarily
+// exists as ArrayBuffer + binary string + base64 string + JSON request body —
+// roughly 4× the raw bytes — which can trigger iOS WebView memory pressure
+// mid-request. 8MB raw inflates to ~11MB base64; comfortably below the limit
+// for both transports, generous enough for high-quality camera captures.
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+function formatBytes(n: number): string {
+	if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+	if (n >= 1024) return `${Math.round(n / 1024)}KB`;
+	return `${n}B`;
+}
+
 export function mimeFromExtension(path: string): string {
 	const dot = path.lastIndexOf('.');
 	if (dot < 0) return 'application/octet-stream';
@@ -73,6 +86,11 @@ export async function attachImageToVault(
 ): Promise<ImageBlock> {
 	if (!isSupportedImageMime(mime)) {
 		throw new Error(`${mime} is not supported. Use JPEG, PNG, GIF, or WebP.`);
+	}
+	if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+		throw new Error(
+			`Image too large (${formatBytes(bytes.byteLength)}). Max is ${formatBytes(MAX_ATTACHMENT_BYTES)} — resize or compress before attaching.`,
+		);
 	}
 	const name = suggestedImageName(filename, mime);
 	const path = await app.fileManager.getAvailablePathForAttachment(name);

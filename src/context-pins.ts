@@ -1,5 +1,12 @@
 import { App, TFile } from 'obsidian';
 
+interface PinCacheEntry {
+	mtime: number;
+	size: number;
+	status: { tokens: number; sentBytes: number; totalBytes: number; truncated: boolean };
+	section: string;
+}
+
 /**
  * Per-chat list of files pinned into the model's context. The model sees their
  * content prepended to each user turn so it can reference them without calling
@@ -7,6 +14,10 @@ import { App, TFile } from 'obsidian';
  */
 export class PinnedContext {
 	private paths: string[] = [];
+	// Keyed by path; entries are invalidated when stat (mtime+size) changes,
+	// which catches every edit Obsidian writes. Avoids re-trimming/slicing the
+	// full file content on every refreshTokenChip + every assistant-loop iteration.
+	private cache = new Map<string, PinCacheEntry>();
 
 	constructor(private app: App) {}
 
@@ -24,10 +35,12 @@ export class PinnedContext {
 
 	remove(path: string): void {
 		this.paths = this.paths.filter((p) => p !== path);
+		this.cache.delete(path);
 	}
 
 	clear(): void {
 		this.paths = [];
+		this.cache.clear();
 	}
 
 	/**
@@ -49,36 +62,32 @@ export class PinnedContext {
 	 */
 	async statusOf(path: string): Promise<{ tokens: number; sentBytes: number; totalBytes: number; truncated: boolean } | null> {
 		const file = this.app.vault.getFileByPath(path);
-		if (!(file instanceof TFile)) return null;
-		const content = await this.app.vault.cachedRead(file);
-		const truncated = content.length > PinnedContext.MAX_BYTES_PER_FILE;
-		const sentBytes = truncated ? PinnedContext.MAX_BYTES_PER_FILE : content.length;
-		return { tokens: Math.ceil(sentBytes / 4), sentBytes, totalBytes: content.length, truncated };
+		if (!(file instanceof TFile)) {
+			this.cache.delete(path);
+			return null;
+		}
+		const entry = await this.entryFor(file);
+		return entry.status;
 	}
 
 	/**
 	 * Build a preamble that prepends to the latest user message. Each turn re-
-	 * reads the file so edits show up immediately. Returns empty string if no
-	 * files are pinned (or all pinned paths are missing). Each file is capped at
-	 * MAX_BYTES_PER_FILE with an explicit marker so the model knows there's more.
+	 * reads the file when stat changed so edits show up immediately. Returns
+	 * empty string if no files are pinned (or all pinned paths are missing).
+	 * Each file is capped at MAX_BYTES_PER_FILE with an explicit marker so the
+	 * model knows there's more.
 	 */
 	async buildPreamble(): Promise<string> {
 		if (this.paths.length === 0) return '';
 		const sections: string[] = [];
 		for (const path of this.paths) {
 			const file = this.app.vault.getFileByPath(path);
-			if (!(file instanceof TFile)) continue;
-			const full = await this.app.vault.cachedRead(file);
-			const trimmed = full.trim();
-			if (trimmed.length <= PinnedContext.MAX_BYTES_PER_FILE) {
-				sections.push(`File: ${path}\n\n${trimmed}`);
-			} else {
-				const head = trimmed.slice(0, PinnedContext.MAX_BYTES_PER_FILE);
-				const marker = `\n\n…(truncated — pinned files are capped to ~${Math.round(
-					PinnedContext.MAX_BYTES_PER_FILE / 1000,
-				)}KB; full file is ${full.length} bytes; use read_note for more)`;
-				sections.push(`File: ${path}\n\n${head}${marker}`);
+			if (!(file instanceof TFile)) {
+				this.cache.delete(path);
+				continue;
 			}
+			const entry = await this.entryFor(file);
+			sections.push(entry.section);
 		}
 		if (sections.length === 0) return '';
 		return [
@@ -86,5 +95,36 @@ export class PinnedContext {
 			'',
 			...sections.map((s, i) => (i === 0 ? s : `\n---\n\n${s}`)),
 		].join('\n');
+	}
+
+	private async entryFor(file: TFile): Promise<PinCacheEntry> {
+		const cached = this.cache.get(file.path);
+		if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) {
+			return cached;
+		}
+		const full = await this.app.vault.cachedRead(file);
+		const truncatedRaw = full.length > PinnedContext.MAX_BYTES_PER_FILE;
+		const sentBytes = truncatedRaw ? PinnedContext.MAX_BYTES_PER_FILE : full.length;
+
+		const trimmed = full.trim();
+		const section = trimmed.length > PinnedContext.MAX_BYTES_PER_FILE
+			? `File: ${file.path}\n\n${trimmed.slice(0, PinnedContext.MAX_BYTES_PER_FILE)}\n\n…(truncated — pinned files are capped to ~${Math.round(
+					PinnedContext.MAX_BYTES_PER_FILE / 1000,
+				)}KB; full file is ${full.length} bytes; use read_note for more)`
+			: `File: ${file.path}\n\n${trimmed}`;
+
+		const entry: PinCacheEntry = {
+			mtime: file.stat.mtime,
+			size: file.stat.size,
+			status: {
+				tokens: Math.ceil(sentBytes / 4),
+				sentBytes,
+				totalBytes: full.length,
+				truncated: truncatedRaw,
+			},
+			section,
+		};
+		this.cache.set(file.path, entry);
+		return entry;
 	}
 }

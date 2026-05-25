@@ -19,6 +19,7 @@ import {
 	pickReplacementModelRef,
 	previewSystemPrompt,
 	resolveModelRef,
+	resolveModelRefStrict,
 	sameRef,
 	skillsDirFor,
 } from '../src/settings';
@@ -176,6 +177,26 @@ describe('resolveModelRef', () => {
 		const settings = { endpoints: [{ id: 'a', name: 'A', baseURL: '', apiKey: '' }] } as never;
 		const { endpoint } = resolveModelRef(settings, { endpointId: 'missing', slug: 'm' });
 		expect(endpoint.id).toBe('a');
+	});
+});
+
+describe('resolveModelRefStrict', () => {
+	it('returns the named endpoint when it exists', () => {
+		const settings = {
+			endpoints: [
+				{ id: 'a', name: 'A', baseURL: '', apiKey: '' },
+				{ id: 'b', name: 'B', baseURL: '', apiKey: '' },
+			],
+		} as never;
+		const result = resolveModelRefStrict(settings, { endpointId: 'b', slug: 'm' });
+		expect(result).not.toBeNull();
+		expect(result?.endpoint.id).toBe('b');
+		expect(result?.slug).toBe('m');
+	});
+
+	it('returns null when the named endpoint is missing (no silent fallback)', () => {
+		const settings = { endpoints: [{ id: 'a', name: 'A', baseURL: '', apiKey: '' }] } as never;
+		expect(resolveModelRefStrict(settings, { endpointId: 'missing', slug: 'm' })).toBeNull();
 	});
 });
 

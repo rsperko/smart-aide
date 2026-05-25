@@ -1,4 +1,6 @@
 import { arrayBufferToBase64, dataUrlFor } from '../image-helpers';
+import { streamSplit } from './sse';
+import { assembleStream } from './stream-runner';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock, Role } from '../types';
 import type {
 	AssembledTurn,
@@ -7,7 +9,6 @@ import type {
 	ProviderCapabilities,
 	StreamCallbacks,
 	StreamEvent,
-	ToolCall,
 	ToolDescriptor,
 	TurnRequest,
 } from './types';
@@ -193,108 +194,64 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 		return;
 	}
 
-	const reader = res.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
+	for await (const raw of streamSplit(res.body, '\n')) {
+		const line = raw.trim();
+		if (!line || !line.startsWith('data:')) continue;
+		const data = line.slice(5).trim();
+		if (data === '[DONE]') return;
 
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
+		let chunk: any;
+		try {
+			chunk = JSON.parse(data);
+		} catch {
+			continue;
+		}
 
-		const lines = buffer.split('\n');
-		buffer = lines.pop() || '';
+		if (chunk.usage) {
+			yield {
+				type: 'usage',
+				usage: {
+					promptTokens: chunk.usage.prompt_tokens ?? 0,
+					completionTokens: chunk.usage.completion_tokens ?? 0,
+					cachedReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+				},
+			};
+		}
 
-		for (const raw of lines) {
-			const line = raw.trim();
-			if (!line || !line.startsWith('data:')) continue;
-			const data = line.slice(5).trim();
-			if (data === '[DONE]') return;
+		const choice = chunk.choices?.[0];
+		if (!choice) continue;
 
-			let chunk: any;
-			try {
-				chunk = JSON.parse(data);
-			} catch {
-				continue;
-			}
+		const delta = choice.delta;
+		if (delta?.content) {
+			yield { type: 'text-delta', textDelta: delta.content };
+		}
 
-			if (chunk.usage) {
+		if (delta?.tool_calls) {
+			for (const tc of delta.tool_calls) {
 				yield {
-					type: 'usage',
-					usage: {
-						promptTokens: chunk.usage.prompt_tokens ?? 0,
-						completionTokens: chunk.usage.completion_tokens ?? 0,
-						cachedReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+					type: 'tool-call-delta',
+					toolCallDelta: {
+						index: tc.index ?? 0,
+						id: tc.id,
+						name: tc.function?.name,
+						argumentsDelta: tc.function?.arguments,
 					},
 				};
 			}
+		}
 
-			const choice = chunk.choices?.[0];
-			if (!choice) continue;
-
-			const delta = choice.delta;
-			if (delta?.content) {
-				yield { type: 'text-delta', textDelta: delta.content };
-			}
-
-			if (delta?.tool_calls) {
-				for (const tc of delta.tool_calls) {
-					yield {
-						type: 'tool-call-delta',
-						toolCallDelta: {
-							index: tc.index ?? 0,
-							id: tc.id,
-							name: tc.function?.name,
-							argumentsDelta: tc.function?.arguments,
-						},
-					};
-				}
-			}
-
-			if (choice.finish_reason) {
-				yield { type: 'finish', finishReason: choice.finish_reason };
-			}
+		if (choice.finish_reason) {
+			yield { type: 'finish', finishReason: choice.finish_reason };
 		}
 	}
 }
 
-async function runTurn(
+function runTurn(
 	req: TurnRequest,
 	resolveImage: ImageResolver,
 	cb?: StreamCallbacks,
 ): Promise<AssembledTurn> {
-	let text = '';
-	const toolAccum: Map<number, { id: string; name: string; args: string }> = new Map();
-	let finishReason = 'stop';
-	let usage: AssembledTurn['usage'] | undefined;
-
-	for await (const ev of streamTurn(req, resolveImage)) {
-		if (ev.type === 'text-delta' && ev.textDelta) {
-			text += ev.textDelta;
-			cb?.onText?.(ev.textDelta);
-		} else if (ev.type === 'tool-call-delta' && ev.toolCallDelta) {
-			const { index, id, name, argumentsDelta } = ev.toolCallDelta;
-			const cur = toolAccum.get(index) ?? { id: '', name: '', args: '' };
-			if (id) cur.id = id;
-			if (name) cur.name = name;
-			if (argumentsDelta) cur.args += argumentsDelta;
-			toolAccum.set(index, cur);
-			cb?.onToolCallProgress?.(index, { id: cur.id, name: cur.name, argsAccum: cur.args });
-		} else if (ev.type === 'usage' && ev.usage) {
-			usage = ev.usage;
-			cb?.onUsage?.(ev.usage);
-		} else if (ev.type === 'finish' && ev.finishReason) {
-			finishReason = ev.finishReason;
-		} else if (ev.type === 'error') {
-			throw new Error(ev.error || 'stream error');
-		}
-	}
-
-	const toolCalls: ToolCall[] = [...toolAccum.entries()]
-		.sort(([a], [b]) => a - b)
-		.map(([, v]) => ({ id: v.id, name: v.name, arguments: v.args }));
-
-	return { text, toolCalls, finishReason, usage };
+	return assembleStream(streamTurn, req, resolveImage, cb);
 }
 
 async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise<DiscoveredModel[]> {

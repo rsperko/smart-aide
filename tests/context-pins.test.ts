@@ -2,26 +2,43 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { App, TFile, Vault } from 'obsidian';
 import { PinnedContext } from '../src/context-pins';
 
+interface FileRecord {
+	content: string;
+	mtime: number;
+	size: number;
+}
+
 class MiniVault extends Vault {
-	files = new Map<string, string>();
+	files = new Map<string, FileRecord>();
+	reads: string[] = [];
 	getFileByPath(path: string): TFile | null {
-		if (!this.files.has(path)) return null;
+		const rec = this.files.get(path);
+		if (!rec) return null;
 		const f = new TFile();
 		f.path = path;
 		f.extension = 'md';
+		f.stat = { mtime: rec.mtime, ctime: 0, size: rec.size };
 		return f;
 	}
 	async cachedRead(file: TFile): Promise<string> {
-		return this.files.get(file.path) ?? '';
+		this.reads.push(file.path);
+		return this.files.get(file.path)?.content ?? '';
 	}
 }
 
 function makeApp(files: Record<string, string>): App {
 	const vault = new MiniVault();
-	for (const [p, c] of Object.entries(files)) vault.files.set(p, c);
+	let i = 1;
+	for (const [p, c] of Object.entries(files)) {
+		vault.files.set(p, { content: c, mtime: i++, size: c.length });
+	}
 	const app = new App();
 	app.vault = vault as unknown as Vault;
 	return app;
+}
+
+function vaultOf(app: App): MiniVault {
+	return app.vault as unknown as MiniVault;
 }
 
 describe('PinnedContext list/add/remove/clear', () => {
@@ -118,5 +135,123 @@ describe('PinnedContext.buildPreamble', () => {
 		pins.add('missing1.md');
 		pins.add('missing2.md');
 		expect(await pins.buildPreamble()).toBe('');
+	});
+});
+
+describe('PinnedContext stat-based caching', () => {
+	it('does not re-read the file when stat (mtime + size) is unchanged', async () => {
+		const app = makeApp({ 'a.md': 'A content' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+
+		await pins.buildPreamble();
+		await pins.statusOf('a.md');
+		await pins.buildPreamble();
+
+		// One read total: the first buildPreamble populated the cache; the
+		// statusOf and second buildPreamble both hit the cache because mtime+size
+		// haven't changed.
+		expect(vault.reads.filter((p) => p === 'a.md')).toHaveLength(1);
+	});
+
+	it('re-reads when mtime advances (the model must see edits immediately)', async () => {
+		const app = makeApp({ 'a.md': 'original' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+
+		const first = await pins.buildPreamble();
+		expect(first).toContain('original');
+
+		vault.files.set('a.md', { content: 'edited', mtime: 999, size: 'edited'.length });
+		const second = await pins.buildPreamble();
+		expect(second).toContain('edited');
+		expect(second).not.toContain('original');
+		expect(vault.reads.filter((p) => p === 'a.md')).toHaveLength(2);
+	});
+
+	it('re-reads when size changes but mtime happens to stay the same', async () => {
+		const app = makeApp({ 'a.md': 'short' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+
+		await pins.buildPreamble();
+		const originalMtime = vault.files.get('a.md')!.mtime;
+		vault.files.set('a.md', { content: 'short plus more', mtime: originalMtime, size: 'short plus more'.length });
+
+		const second = await pins.buildPreamble();
+		expect(second).toContain('short plus more');
+		expect(vault.reads.filter((p) => p === 'a.md')).toHaveLength(2);
+	});
+
+	it('statusOf reflects the current truncation state after a small file grows past the cap', async () => {
+		const app = makeApp({ 'a.md': 'small' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+
+		const before = await pins.statusOf('a.md');
+		expect(before!.truncated).toBe(false);
+
+		const huge = 'x'.repeat(PinnedContext.MAX_BYTES_PER_FILE + 100);
+		vault.files.set('a.md', { content: huge, mtime: 999, size: huge.length });
+
+		const after = await pins.statusOf('a.md');
+		expect(after!.truncated).toBe(true);
+		expect(after!.sentBytes).toBe(PinnedContext.MAX_BYTES_PER_FILE);
+	});
+
+	it('remove() evicts the cache so a re-added pin sees current content', async () => {
+		const app = makeApp({ 'a.md': 'original' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+		await pins.buildPreamble();
+
+		pins.remove('a.md');
+		vault.files.set('a.md', { content: 'edited-while-unpinned', mtime: 999, size: 'edited-while-unpinned'.length });
+
+		pins.add('a.md');
+		const out = await pins.buildPreamble();
+		expect(out).toContain('edited-while-unpinned');
+		// Two reads: initial pin + after re-pinning (would still be one if the
+		// cache had survived removal, which would surface stale content).
+		expect(vault.reads.filter((p) => p === 'a.md')).toHaveLength(2);
+	});
+
+	it('clear() evicts the cache for every pin', async () => {
+		const app = makeApp({ 'a.md': 'original-a', 'b.md': 'original-b' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+		pins.add('b.md');
+		await pins.buildPreamble();
+
+		pins.clear();
+		vault.files.set('a.md', { content: 'fresh-a', mtime: 999, size: 'fresh-a'.length });
+
+		pins.add('a.md');
+		const out = await pins.buildPreamble();
+		expect(out).toContain('fresh-a');
+	});
+
+	it('statusOf evicts a cached entry when the file disappears', async () => {
+		const app = makeApp({ 'a.md': 'original' });
+		const vault = vaultOf(app);
+		const pins = new PinnedContext(app);
+		pins.add('a.md');
+
+		expect(await pins.statusOf('a.md')).not.toBeNull();
+
+		vault.files.delete('a.md');
+		expect(await pins.statusOf('a.md')).toBeNull();
+
+		// Re-creating with new content must surface immediately rather than
+		// serving the stale cached entry from before the deletion.
+		vault.files.set('a.md', { content: 'recreated', mtime: 999, size: 'recreated'.length });
+		const out = await pins.buildPreamble();
+		expect(out).toContain('recreated');
 	});
 });

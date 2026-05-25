@@ -5,6 +5,7 @@ import {
 	attachImageToVault,
 	dataUrlFor,
 	isSupportedImageMime,
+	MAX_ATTACHMENT_BYTES,
 	mimeFromExtension,
 	mimeToExtension,
 	suggestedImageName,
@@ -134,6 +135,26 @@ describe('attachImageToVault', () => {
 	it('rejects non-image mimes', async () => {
 		const { app } = buildApp();
 		await expect(attachImageToVault(app, new ArrayBuffer(4), 'doc.pdf', 'application/pdf')).rejects.toThrow(/not supported/i);
+	});
+
+	it('rejects oversize attachments before touching the vault', async () => {
+		const { app, calls } = buildApp();
+		const huge = new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1);
+		await expect(attachImageToVault(app, huge, 'big.jpg', 'image/jpeg')).rejects.toThrow(/too large/i);
+		expect(calls).toHaveLength(0);
+	});
+
+	it('mentions the actual size and the cap in the error message', async () => {
+		const { app } = buildApp();
+		const huge = new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1024);
+		await expect(attachImageToVault(app, huge, 'big.jpg', 'image/jpeg')).rejects.toThrow(/8\.0MB/);
+	});
+
+	it('accepts attachments right at the cap', async () => {
+		const { app, calls } = buildApp();
+		const atCap = new ArrayBuffer(MAX_ATTACHMENT_BYTES);
+		await attachImageToVault(app, atCap, 'big.jpg', 'image/jpeg');
+		expect(calls).toHaveLength(1);
 	});
 });
 

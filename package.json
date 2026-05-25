@@ -1,6 +1,6 @@
 {
   "name": "smart-aide",
-  "version": "0.2.14",
+  "version": "0.3.0",
   "description": "Chat with your Obsidian vault using any OpenAI-compatible model. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,18 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
   },
-  "keywords": [],
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "ai",
+    "chat",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "openrouter",
+    "vault"
+  ],
   "author": "rsperko",
   "license": "MIT",
   "devDependencies": {

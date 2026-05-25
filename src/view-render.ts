@@ -3,6 +3,7 @@ import { ImageBlock, ToolCallBlock, ToolResultBlock } from './types';
 import {
 	buildResearchHeadline,
 	formatArgsInline,
+	humanizeToolCall,
 	researchIcon,
 	summarizeToolResult,
 	tryFormatJson,
@@ -33,7 +34,7 @@ export function renderResearchChip(
 		const row = detail.createDiv({ cls: 'vk-research-row' });
 		row.createSpan({
 			cls: 'vk-research-call',
-			text: `${call.name}${formatArgsInline(call.arguments)}`,
+			text: humanizeToolCall(call.name, call.arguments),
 		});
 		const result = results.find((r) => r.toolCallId === call.id);
 		if (result) {
@@ -43,7 +44,7 @@ export function renderResearchChip(
 	}
 	for (const skill of loadedSkills) {
 		const row = detail.createDiv({ cls: 'vk-research-row' });
-		row.createSpan({ cls: 'vk-research-call', text: `🧠 loaded skill: ${skill}` });
+		row.createSpan({ cls: 'vk-research-call', text: `Loaded skill "${skill}"` });
 	}
 }
 
@@ -59,8 +60,11 @@ export function renderCitationCard(parent: HTMLElement, result: ToolResultBlock)
 	const headingMatch = content.match(/^\s*#{1,6}\s+(.+?)\s*$/m);
 	const heading = headingMatch ? headingMatch[1].trim() : undefined;
 
-	const basename = path.replace(/\.md$/, '');
-	const href = heading ? `${basename}#${heading}` : basename;
+	const pathNoExt = path.replace(/\.md$/, '');
+	const lastSlash = pathNoExt.lastIndexOf('/');
+	const filename = lastSlash >= 0 ? pathNoExt.slice(lastSlash + 1) : pathNoExt;
+	const folder = lastSlash >= 0 ? pathNoExt.slice(0, lastSlash) : '';
+	const href = heading ? `${pathNoExt}#${heading}` : pathNoExt;
 
 	const snippetSource = headingMatch
 		? content.slice(headingMatch.index! + headingMatch[0].length)
@@ -68,7 +72,7 @@ export function renderCitationCard(parent: HTMLElement, result: ToolResultBlock)
 	const snippetLine = snippetSource
 		.split('\n')
 		.map((l) => l.trim())
-		.find((l) => l.length > 0 && !l.startsWith('#'));
+		.find((l) => l.length > 0 && !l.startsWith('#') && l !== heading);
 	const snippet = snippetLine
 		? snippetLine.replace(/^>\s*/, '').replace(/^[*\-+]\s*/, '').replace(/^\d+\.\s*/, '')
 		: '';
@@ -83,7 +87,7 @@ export function renderCitationCard(parent: HTMLElement, result: ToolResultBlock)
 	top.createSpan({ cls: 'vk-citation-icon', text: '📄' });
 
 	const titleEl = top.createSpan({ cls: 'vk-citation-title' });
-	titleEl.createSpan({ cls: 'vk-citation-path', text: basename });
+	titleEl.createSpan({ cls: 'vk-citation-path', text: filename });
 	if (heading) {
 		titleEl.createSpan({ cls: 'vk-citation-sep', text: ' › ' });
 		titleEl.createSpan({ cls: 'vk-citation-heading', text: heading });
@@ -96,6 +100,11 @@ export function renderCitationCard(parent: HTMLElement, result: ToolResultBlock)
 	if (snippet) {
 		const snip = card.createDiv({ cls: 'vk-citation-snippet' });
 		snip.setText(snippet.length > 140 ? snippet.slice(0, 137) + '…' : snippet);
+	}
+
+	if (folder) {
+		const folderEl = card.createDiv({ cls: 'vk-citation-folder' });
+		folderEl.setText(folder);
 	}
 }
 
@@ -129,6 +138,35 @@ export function renderToolResultBlock(parent: HTMLElement, block: ToolResultBloc
 	const pre = card.createEl('pre', { cls: 'vk-tool-result-body' });
 	const text = tryFormatJson(block.content);
 	pre.setText(text.length > 2000 ? text.slice(0, 2000) + '\n…(truncated)' : text);
+}
+
+/**
+ * Walk rendered markdown links and replace full vault paths in their visible
+ * text with the basename (and heading, if a subpath was given). The actual
+ * href / data-href is left intact — clicks still route to the right note.
+ * Idempotent — flags processed links so a re-render skips them.
+ */
+export function compactInternalLinks(container: HTMLElement): void {
+	const anchors = container.querySelectorAll('a.internal-link');
+	anchors.forEach((node) => {
+		const a = node as HTMLAnchorElement;
+		if (a.dataset.vkCompacted === '1') return;
+		const href = a.getAttribute('data-href') || a.getAttribute('href') || '';
+		if (!href || !href.includes('/')) return;
+		const text = (a.textContent || '').trim();
+		if (!text) return;
+		const hashIdx = href.indexOf('#');
+		const pathPart = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+		const subPart = hashIdx >= 0 ? href.slice(hashIdx + 1) : '';
+		const looksLikePath = text.includes('/') && (text.startsWith(pathPart) || text.includes(pathPart.replace(/\.md$/, '')));
+		if (!looksLikePath) return;
+		const slashIdx = pathPart.lastIndexOf('/');
+		const basename = (slashIdx >= 0 ? pathPart.slice(slashIdx + 1) : pathPart).replace(/\.md$/, '');
+		if (!basename) return;
+		a.textContent = subPart ? `${basename} › ${subPart}` : basename;
+		a.title = href;
+		a.dataset.vkCompacted = '1';
+	});
 }
 
 /**

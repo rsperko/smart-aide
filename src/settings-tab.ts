@@ -30,6 +30,7 @@ import type SmartAidePlugin from './main';
 
 export class SmartAideSettingsTab extends PluginSettingTab {
 	private editingEndpointId: string | null = null;
+	private renderGen = 0;
 
 	constructor(app: App, private plugin: SmartAidePlugin) {
 		super(app, plugin);
@@ -38,6 +39,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+		this.renderGen++;
 
 		if (this.editingEndpointId !== null) {
 			const endpoint = findEndpoint(this.plugin.settings, this.editingEndpointId);
@@ -197,17 +199,25 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			this.display();
 		});
 
-		// Background status resolution per row.
+		// Background status resolution per row. Captured generation guards against
+		// a stale display() run writing into freshly-rendered DOM after a re-display.
+		const gen = this.renderGen;
 		void (async () => {
+			const statuses = await Promise.all(
+				SAMPLE_SKILLS.map((skill) =>
+					readSampleStatus(this.plugin.app.vault, skillsDir, skill).catch(() => null),
+				),
+			);
+			if (gen !== this.renderGen) return;
 			for (let i = 0; i < SAMPLE_SKILLS.length; i++) {
 				const skill = SAMPLE_SKILLS[i];
 				const actions = rowActionEls[i];
-				try {
-					const status = await readSampleStatus(this.plugin.app.vault, skillsDir, skill);
-					actions.empty();
+				if (!actions.isConnected) continue;
+				const status = statuses[i];
+				actions.empty();
+				if (status) {
 					this.renderSampleSkillAction(actions, skill, status, skillsDir);
-				} catch {
-					actions.empty();
+				} else {
 					actions.createSpan({ text: 'unavailable' });
 				}
 			}
@@ -315,7 +325,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		root.createDiv({
 			cls: 'setting-item-description vk-section-blurb',
-			text: 'Each endpoint is an OpenAI-compatible URL plus an API key. Click Edit to set the key, test the connection, or refresh the model list.',
+			text: 'Each endpoint is a model provider — a base URL plus an API key. Default protocol is OpenAI-compatible (OpenRouter, OpenAI, local servers); Anthropic and Gemini have native protocols too. Click Edit to set the key, test, or refresh the model list.',
 		});
 
 		const list = root.createDiv({ cls: 'vk-endpoint-list' });

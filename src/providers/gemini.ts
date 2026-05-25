@@ -1,4 +1,6 @@
 import { arrayBufferToBase64 } from '../image-helpers';
+import { streamSplit } from './sse';
+import { assembleStream } from './stream-runner';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock } from '../types';
 import type {
 	AssembledTurn,
@@ -7,7 +9,6 @@ import type {
 	ProviderCapabilities,
 	StreamCallbacks,
 	StreamEvent,
-	ToolCall,
 	ToolDescriptor,
 	TurnRequest,
 } from './types';
@@ -235,70 +236,57 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 		return;
 	}
 
-	const reader = res.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
-
 	let nextToolIndex = 0;
 	let usage: { promptTokens: number; completionTokens: number; cachedReadTokens?: number } | null = null;
 	let finishReason: string | undefined;
 
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
+	for await (const raw of streamSplit(res.body, '\n')) {
+		const line = raw.trim();
+		if (!line || !line.startsWith('data:')) continue;
+		const data = line.slice(5).trim();
+		if (!data) continue;
 
-		const lines = buffer.split('\n');
-		buffer = lines.pop() || '';
+		let chunk: any;
+		try {
+			chunk = JSON.parse(data);
+		} catch {
+			continue;
+		}
 
-		for (const raw of lines) {
-			const line = raw.trim();
-			if (!line || !line.startsWith('data:')) continue;
-			const data = line.slice(5).trim();
-			if (!data) continue;
-
-			let chunk: any;
-			try {
-				chunk = JSON.parse(data);
-			} catch {
-				continue;
-			}
-
-			const candidate = chunk.candidates?.[0];
-			if (candidate?.content?.parts) {
-				for (const part of candidate.content.parts) {
-					if (typeof part.text === 'string' && part.text) {
-						yield { type: 'text-delta', textDelta: part.text };
-					} else if (part.functionCall) {
-						// Gemini doesn't stream args incrementally — the entire call arrives at once.
-						// Synthesize an id so downstream (Pi v3, view.ts) can route results back.
-						const toolIndex = nextToolIndex++;
-						const synthId = `gem_${Date.now().toString(36)}_${toolIndex}`;
-						const args = part.functionCall.args ?? {};
-						yield {
-							type: 'tool-call-delta',
-							toolCallDelta: {
-								index: toolIndex,
-								id: synthId,
-								name: part.functionCall.name,
-								argumentsDelta: JSON.stringify(args),
-							},
-						};
-					}
+		const candidate = chunk.candidates?.[0];
+		if (candidate?.content?.parts) {
+			for (const part of candidate.content.parts) {
+				if (typeof part.text === 'string' && part.text) {
+					yield { type: 'text-delta', textDelta: part.text };
+				} else if (part.functionCall) {
+					// Gemini doesn't stream args incrementally — the entire call arrives at once.
+					// Synthesize an id so downstream (Pi v3, view.ts) can route results back.
+					const toolIndex = nextToolIndex++;
+					const synthId = `gem_${Date.now().toString(36)}_${toolIndex}`;
+					const args = part.functionCall.args ?? {};
+					yield {
+						type: 'tool-call-delta',
+						toolCallDelta: {
+							index: toolIndex,
+							id: synthId,
+							name: part.functionCall.name,
+							argumentsDelta: JSON.stringify(args),
+						},
+					};
 				}
 			}
-			if (candidate?.finishReason) {
-				finishReason = candidate.finishReason;
-			}
+		}
+		if (candidate?.finishReason) {
+			finishReason = candidate.finishReason;
+		}
 
-			if (chunk.usageMetadata) {
-				const u = chunk.usageMetadata;
-				usage = {
-					promptTokens: u.promptTokenCount ?? 0,
-					completionTokens: u.candidatesTokenCount ?? 0,
-					cachedReadTokens: u.cachedContentTokenCount || undefined,
-				};
-			}
+		if (chunk.usageMetadata) {
+			const u = chunk.usageMetadata;
+			usage = {
+				promptTokens: u.promptTokenCount ?? 0,
+				completionTokens: u.candidatesTokenCount ?? 0,
+				cachedReadTokens: u.cachedContentTokenCount || undefined,
+			};
 		}
 	}
 
@@ -310,43 +298,12 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 	}
 }
 
-async function runTurn(
+function runTurn(
 	req: TurnRequest,
 	resolveImage: ImageResolver,
 	cb?: StreamCallbacks,
 ): Promise<AssembledTurn> {
-	let text = '';
-	const toolAccum: Map<number, { id: string; name: string; args: string }> = new Map();
-	let finishReason = 'stop';
-	let usage: AssembledTurn['usage'] | undefined;
-
-	for await (const ev of streamTurn(req, resolveImage)) {
-		if (ev.type === 'text-delta' && ev.textDelta) {
-			text += ev.textDelta;
-			cb?.onText?.(ev.textDelta);
-		} else if (ev.type === 'tool-call-delta' && ev.toolCallDelta) {
-			const { index, id, name, argumentsDelta } = ev.toolCallDelta;
-			const cur = toolAccum.get(index) ?? { id: '', name: '', args: '' };
-			if (id) cur.id = id;
-			if (name) cur.name = name;
-			if (argumentsDelta) cur.args += argumentsDelta;
-			toolAccum.set(index, cur);
-			cb?.onToolCallProgress?.(index, { id: cur.id, name: cur.name, argsAccum: cur.args });
-		} else if (ev.type === 'usage' && ev.usage) {
-			usage = ev.usage;
-			cb?.onUsage?.(ev.usage);
-		} else if (ev.type === 'finish' && ev.finishReason) {
-			finishReason = ev.finishReason;
-		} else if (ev.type === 'error') {
-			throw new Error(ev.error || 'stream error');
-		}
-	}
-
-	const toolCalls: ToolCall[] = [...toolAccum.entries()]
-		.sort(([a], [b]) => a - b)
-		.map(([, v]) => ({ id: v.id, name: v.name, arguments: v.args || '{}' }));
-
-	return { text, toolCalls, finishReason, usage };
+	return assembleStream(streamTurn, req, resolveImage, cb, { defaultToolArguments: '{}' });
 }
 
 async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise<DiscoveredModel[]> {

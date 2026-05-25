@@ -5,6 +5,7 @@ import {
 	createLongPressGate,
 	createScreenWakeLock,
 	displayToolName,
+	estimateEntryTokens,
 	estimateTokens,
 	extractToolCalls,
 	extractToolResults,
@@ -18,9 +19,12 @@ import {
 	formatUsageTooltip,
 	groupChainIntoBursts,
 	handleSkillLoadCall,
+	humanizeToolCall,
 	lineDiff,
+	loadedSkillNamesOnChain,
 	parseSlashContext,
 	parseSlashInvocation,
+	reduceCumulativeUsage,
 	researchIcon,
 	safeParse,
 	shouldShowRoleLabel,
@@ -385,6 +389,232 @@ describe('sumBreakdown', () => {
 	});
 });
 
+describe('estimateEntryTokens', () => {
+	const msg = (id: string, content: MessageEntry['message']['content']): Entry => ({
+		id,
+		ts: '2026-05-25T00:00:00Z',
+		type: 'message',
+		message: { role: 'user', content },
+		parentId: null,
+	} as Entry);
+
+	it('returns 0 for non-message entries', () => {
+		const modelChange: Entry = {
+			id: 'm',
+			ts: '2026-05-25T00:00:00Z',
+			type: 'model_change',
+			provider: 'anthropic',
+			modelId: 'claude',
+			parentId: null,
+		} as Entry;
+		expect(estimateEntryTokens(modelChange)).toBe(0);
+
+		const session: Entry = {
+			id: 's',
+			ts: '2026-05-25T00:00:00Z',
+			type: 'custom',
+			customType: 'turn-usage',
+			data: { promptTokens: 9999 },
+			parentId: null,
+		} as Entry;
+		expect(estimateEntryTokens(session)).toBe(0);
+	});
+
+	it('estimates plain-string content via the chars/4 rule', () => {
+		// 8 chars → ceil(8/4) = 2.
+		expect(estimateEntryTokens(msg('a', 'abcdefgh'))).toBe(2);
+	});
+
+	it('sums text blocks', () => {
+		const e = msg('a', [
+			{ type: 'text', text: 'abcd' },
+			{ type: 'text', text: 'efgh' },
+		]);
+		// Each block ceils independently: 1 + 1 = 2.
+		expect(estimateEntryTokens(e)).toBe(2);
+	});
+
+	it('adds toolCall arguments token cost plus 6-token overhead', () => {
+		const args = { path: 'note.md' };
+		const e = msg('a', [
+			{ type: 'toolCall', id: 'c1', name: 'read_note', arguments: args },
+		]);
+		// JSON.stringify(args) = '{"path":"note.md"}' → length 18 → ceil(18/4) = 5, + 6 overhead = 11.
+		expect(estimateEntryTokens(e)).toBe(11);
+	});
+
+	it('sums toolResult content length', () => {
+		const e = msg('a', [
+			{ type: 'toolResult', toolCallId: 'c1', content: 'abcdefgh' },
+		]);
+		expect(estimateEntryTokens(e)).toBe(2);
+	});
+
+	it('ignores image blocks (no token contribution from path alone)', () => {
+		const e = msg('a', [
+			{ type: 'text', text: 'abcd' },
+			{ type: 'image', path: 'attachments/photo.jpg', mime: 'image/jpeg' },
+		]);
+		// Only the text contributes.
+		expect(estimateEntryTokens(e)).toBe(1);
+	});
+
+	it('counts custom_message content (skill bodies sent to provider)', () => {
+		const skill: Entry = {
+			id: 'sk',
+			ts: '2026-05-25T00:00:00Z',
+			type: 'custom_message',
+			customType: 'skill',
+			content: 'abcdefgh',
+			parentId: null,
+		} as Entry;
+		expect(estimateEntryTokens(skill)).toBe(2);
+	});
+});
+
+describe('humanizeToolCall', () => {
+	it('search_vault — query only', () => {
+		expect(humanizeToolCall('search_vault', { query: 'weekly review' })).toBe(
+			'Searched vault for "weekly review"',
+		);
+	});
+
+	it('search_vault — query + tag + pathPrefix + deepSearch', () => {
+		const out = humanizeToolCall('search_vault', {
+			query: 'onboarding',
+			tag: '#task',
+			pathPrefix: 'Daily',
+			deepSearch: true,
+		});
+		expect(out).toBe('Searched vault for "onboarding" tag #task in Daily (deep)');
+	});
+
+	it('search_vault — bare tag (no leading #) is normalized', () => {
+		expect(humanizeToolCall('search_vault', { tag: 'book' })).toBe('Searched vault tag #book');
+	});
+
+	it('search_vault — no args at all', () => {
+		expect(humanizeToolCall('search_vault', {})).toBe('Searched vault');
+	});
+
+	it('read_note — path only strips .md', () => {
+		expect(humanizeToolCall('read_note', { path: 'Notes/foo.md' })).toBe('Read "Notes/foo"');
+	});
+
+	it('read_note — section beats line range when both are provided', () => {
+		const out = humanizeToolCall('read_note', {
+			path: 'foo.md',
+			section: 'Setup',
+			startLine: 1,
+			endLine: 10,
+		});
+		expect(out).toBe('Read "foo" — Setup');
+	});
+
+	it('read_note — startLine + endLine renders an inclusive range', () => {
+		expect(humanizeToolCall('read_note', { path: 'foo.md', startLine: 1, endLine: 10 })).toBe(
+			'Read "foo" (lines 1–10)',
+		);
+	});
+
+	it('read_note — startLine alone renders "from line N"', () => {
+		expect(humanizeToolCall('read_note', { path: 'foo.md', startLine: 5 })).toBe(
+			'Read "foo" (from line 5)',
+		);
+	});
+
+	it('read_note — without a path label', () => {
+		expect(humanizeToolCall('read_note', {})).toBe('Read note');
+	});
+
+	it('list_recent — with and without sinceDays uses singular/plural day(s)', () => {
+		expect(humanizeToolCall('list_recent', {})).toBe('Listed recent notes');
+		expect(humanizeToolCall('list_recent', { sinceDays: 1 })).toBe('Listed notes from the last 1 day');
+		expect(humanizeToolCall('list_recent', { sinceDays: 30 })).toBe('Listed notes from the last 30 days');
+	});
+
+	it('get_backlinks — with path and without', () => {
+		expect(humanizeToolCall('get_backlinks', { path: 'foo.md' })).toBe('Looked up backlinks to "foo"');
+		expect(humanizeToolCall('get_backlinks', {})).toBe('Looked up backlinks');
+	});
+
+	it('load_skill — surfaces the skill name', () => {
+		expect(humanizeToolCall('load_skill', { name: 'daily-note' })).toBe('Loaded skill "daily-note"');
+		expect(humanizeToolCall('load_skill', {})).toBe('Loaded skill');
+	});
+
+	it('write_note / append_to_note / delete_note label the path', () => {
+		expect(humanizeToolCall('write_note', { path: 'foo.md' })).toBe('Proposed write to "foo"');
+		expect(humanizeToolCall('append_to_note', { path: 'foo.md' })).toBe('Proposed append to "foo"');
+		expect(humanizeToolCall('delete_note', { path: 'foo.md' })).toBe('Proposed delete of "foo"');
+	});
+
+	it('unknown tool falls back to name(args) form via formatArgsInline', () => {
+		expect(humanizeToolCall('unknown_tool', { foo: 'bar' })).toBe('unknown_tool(foo="bar")');
+		expect(humanizeToolCall('also_unknown', {})).toBe('also_unknown()');
+	});
+
+	it('clips very long quoted values with an ellipsis', () => {
+		const longPath = 'a/'.repeat(60) + 'note.md';
+		const out = humanizeToolCall('read_note', { path: longPath });
+		// quoted() uses max=60 for read_note, clip leaves max-1 chars + "…".
+		expect(out.startsWith('Read "')).toBe(true);
+		expect(out.includes('…')).toBe(true);
+	});
+});
+
+describe('reduceCumulativeUsage', () => {
+	const usageEntry = (
+		targetEntryId: string,
+		promptTokens: number,
+		completionTokens: number,
+		cachedTokens?: number,
+	): Entry => ({
+		id: `u-${targetEntryId}`,
+		ts: '2026-05-25T00:00:00Z',
+		type: 'custom',
+		customType: 'turn-usage',
+		data: { targetEntryId, promptTokens, completionTokens, cachedTokens },
+		parentId: null,
+	} as Entry);
+
+	it('sums turn-usage entries across the chain', () => {
+		const chain = [
+			usageEntry('a', 100, 50, 10),
+			usageEntry('b', 200, 75),
+			usageEntry('c', 50, 25, 5),
+		];
+		expect(reduceCumulativeUsage(chain)).toEqual({ prompt: 350, completion: 150, cached: 15 });
+	});
+
+	it('returns zeros for an empty chain', () => {
+		expect(reduceCumulativeUsage([])).toEqual({ prompt: 0, completion: 0, cached: 0 });
+	});
+
+	it('ignores non-turn-usage custom entries and malformed payloads', () => {
+		const chain: Entry[] = [
+			usageEntry('a', 10, 5),
+			{
+				id: 'x',
+				ts: '2026-05-25T00:00:00Z',
+				type: 'custom',
+				customType: 'session_info',
+				data: { promptTokens: 9999, completionTokens: 9999 },
+				parentId: null,
+			} as Entry,
+			{
+				id: 'y',
+				ts: '2026-05-25T00:00:00Z',
+				type: 'custom',
+				customType: 'turn-usage',
+				data: { targetEntryId: 'y', promptTokens: 'not a number' },
+				parentId: null,
+			} as Entry,
+		];
+		expect(reduceCumulativeUsage(chain)).toEqual({ prompt: 10, completion: 5, cached: 0 });
+	});
+});
+
 describe('formatCostUsd', () => {
 	it('returns null when no pricing is known', () => {
 		expect(formatCostUsd(1000, 500, undefined)).toBeNull();
@@ -723,28 +953,28 @@ describe('handleSkillLoadCall', () => {
 		// [assistant tool_call → tool result → user skill context] — the order
 		// OpenAI / Anthropic / Gemini require for tool_call/tool_result adjacency.
 		const pending: { name: string; body: string }[] = [];
-		const out = handleSkillLoadCall({ name: 'note-capture' }, registry, pending);
+		const out = handleSkillLoadCall({ name: 'note-capture' }, registry, pending, new Set());
 		expect(pending).toEqual([{ name: 'note-capture', body: 'SKILL BODY' }]);
 		expect(JSON.parse(out)).toEqual({ status: 'loaded', skill: 'note-capture' });
 	});
 
 	it('returns an error and does not enqueue when name is missing', () => {
 		const pending: { name: string; body: string }[] = [];
-		const out = handleSkillLoadCall({}, registry, pending);
+		const out = handleSkillLoadCall({}, registry, pending, new Set());
 		expect(pending).toEqual([]);
 		expect(JSON.parse(out)).toEqual({ error: 'name is required' });
 	});
 
 	it('returns an error and does not enqueue when name is blank whitespace', () => {
 		const pending: { name: string; body: string }[] = [];
-		const out = handleSkillLoadCall({ name: '   ' }, registry, pending);
+		const out = handleSkillLoadCall({ name: '   ' }, registry, pending, new Set());
 		expect(pending).toEqual([]);
 		expect(JSON.parse(out)).toEqual({ error: 'name is required' });
 	});
 
 	it('returns the available-skills list when the requested skill is unknown', () => {
 		const pending: { name: string; body: string }[] = [];
-		const out = handleSkillLoadCall({ name: 'missing' }, registry, pending);
+		const out = handleSkillLoadCall({ name: 'missing' }, registry, pending, new Set());
 		expect(pending).toEqual([]);
 		expect(JSON.parse(out)).toEqual({
 			error: "no skill named 'missing'",
@@ -758,9 +988,78 @@ describe('handleSkillLoadCall', () => {
 			visibleOnThisPlatform: () => [],
 		};
 		const pending: { name: string; body: string }[] = [];
-		handleSkillLoadCall({ name: 'a' }, multi, pending);
-		handleSkillLoadCall({ name: 'b' }, multi, pending);
+		handleSkillLoadCall({ name: 'a' }, multi, pending, new Set());
+		handleSkillLoadCall({ name: 'b' }, multi, pending, new Set());
 		expect(pending.map((p) => p.name)).toEqual(['a', 'b']);
+	});
+
+	it('short-circuits with already_loaded when the skill is in alreadyLoaded', () => {
+		const pending: { name: string; body: string }[] = [];
+		const out = handleSkillLoadCall({ name: 'note-capture' }, registry, pending, new Set(['note-capture']));
+		expect(pending).toEqual([]);
+		expect(JSON.parse(out)).toEqual({ status: 'already_loaded', skill: 'note-capture' });
+	});
+
+	it('short-circuits when the skill was already queued earlier in the same batch', () => {
+		const pending: { name: string; body: string }[] = [{ name: 'note-capture', body: 'SKILL BODY' }];
+		const out = handleSkillLoadCall({ name: 'note-capture' }, registry, pending, new Set());
+		expect(pending).toHaveLength(1);
+		expect(JSON.parse(out)).toEqual({ status: 'already_loaded', skill: 'note-capture' });
+	});
+});
+
+describe('loadedSkillNamesOnChain', () => {
+	const skillEntry = (display: string | undefined): Entry => ({
+		id: 's',
+		ts: '2026-05-25T00:00:00Z',
+		type: 'custom_message',
+		customType: 'skill',
+		content: 'body',
+		...(display !== undefined ? { display } : {}),
+		parentId: null,
+	} as Entry);
+
+	const invocationEntry = (display: string | undefined): Entry => ({
+		id: 'i',
+		ts: '2026-05-25T00:00:00Z',
+		type: 'custom_message',
+		customType: 'skill-invocation',
+		content: 'body',
+		...(display !== undefined ? { display } : {}),
+		parentId: null,
+	} as Entry);
+
+	it("strips the 'skill: ' prefix from load_skill entry display", () => {
+		const names = loadedSkillNamesOnChain([skillEntry('skill: note-capture')]);
+		expect([...names]).toEqual(['note-capture']);
+	});
+
+	it('uses display verbatim for skill-invocation entries', () => {
+		const names = loadedSkillNamesOnChain([invocationEntry('daily-note')]);
+		expect([...names]).toEqual(['daily-note']);
+	});
+
+	it('merges both customTypes and dedupes overlapping names', () => {
+		const chain = [skillEntry('skill: foo'), invocationEntry('bar'), skillEntry('skill: foo')];
+		const names = loadedSkillNamesOnChain(chain);
+		expect([...names].sort()).toEqual(['bar', 'foo']);
+	});
+
+	it('skips entries with missing or blank display', () => {
+		const chain = [skillEntry(undefined), invocationEntry('   ')];
+		const names = loadedSkillNamesOnChain(chain);
+		expect(names.size).toBe(0);
+	});
+
+	it('ignores non-custom_message entries', () => {
+		const msg: Entry = {
+			id: 'm',
+			ts: '2026-05-25T00:00:00Z',
+			type: 'message',
+			message: { role: 'user', content: 'hello' },
+			parentId: null,
+		} as Entry;
+		expect(loadedSkillNamesOnChain([msg]).size).toBe(0);
 	});
 });
 
