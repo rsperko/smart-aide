@@ -495,6 +495,112 @@ export function createLongPressGate(opts: {
 	};
 }
 
+export interface ScreenWakeLockSentinel {
+	released: boolean;
+	release(): Promise<void>;
+	addEventListener(type: 'release', listener: () => void): void;
+}
+
+export interface WakeLockNavigator {
+	wakeLock?: { request(type: 'screen'): Promise<ScreenWakeLockSentinel> };
+}
+
+export interface VisibilitySource {
+	readonly visibilityState: 'visible' | 'hidden' | 'prerender';
+	addEventListener(type: 'visibilitychange', listener: () => void): void;
+	removeEventListener(type: 'visibilitychange', listener: () => void): void;
+}
+
+export interface ScreenWakeLock {
+	acquire(): Promise<void>;
+	release(): Promise<void>;
+	dispose(): void;
+}
+
+/**
+ * Keeps the screen awake while the caller wants the lock held. iOS WKWebView
+ * (Capacitor) auto-releases the sentinel whenever the page goes hidden, so we
+ * listen for visibilitychange and re-request on the next 'visible' transition
+ * as long as release() hasn't been called. A silent no-op when
+ * navigator.wakeLock is unavailable (older iOS, unsupported webview).
+ */
+export function createScreenWakeLock(opts: {
+	navigator: WakeLockNavigator;
+	visibility: VisibilitySource;
+	onError?: (err: unknown) => void;
+}): ScreenWakeLock {
+	let wanted = false;
+	let sentinel: ScreenWakeLockSentinel | null = null;
+	let pending: Promise<void> | null = null;
+
+	const requestOnce = async () => {
+		if (!opts.navigator.wakeLock) return;
+		if (sentinel) return;
+		if (pending) return pending;
+		pending = (async () => {
+			try {
+				const s = await opts.navigator.wakeLock!.request('screen');
+				if (!wanted) {
+					await s.release().catch(() => {});
+					return;
+				}
+				sentinel = s;
+				s.addEventListener('release', () => {
+					if (sentinel === s) sentinel = null;
+				});
+			} catch (err) {
+				opts.onError?.(err);
+			} finally {
+				pending = null;
+			}
+		})();
+		return pending;
+	};
+
+	const onVisibilityChange = () => {
+		if (opts.visibility.visibilityState === 'hidden' && sentinel) {
+			// iOS WKWebView auto-releases when hidden anyway; do it explicitly so
+			// our state stays in sync regardless of whether the 'release' event fires.
+			const held = sentinel;
+			sentinel = null;
+			void held.release().catch(() => {});
+			return;
+		}
+		if (opts.visibility.visibilityState === 'visible' && wanted && !sentinel) {
+			void requestOnce();
+		}
+	};
+	opts.visibility.addEventListener('visibilitychange', onVisibilityChange);
+
+	return {
+		async acquire() {
+			wanted = true;
+			if (opts.visibility.visibilityState === 'visible') {
+				await requestOnce();
+			}
+		},
+		async release() {
+			wanted = false;
+			const held = sentinel;
+			sentinel = null;
+			if (held) {
+				try {
+					await held.release();
+				} catch (err) {
+					opts.onError?.(err);
+				}
+			}
+		},
+		dispose() {
+			opts.visibility.removeEventListener('visibilitychange', onVisibilityChange);
+			wanted = false;
+			const held = sentinel;
+			sentinel = null;
+			if (held) void held.release().catch(() => {});
+		},
+	};
+}
+
 export function summarizeToolResult(content: string): string {
 	try {
 		const parsed = JSON.parse(content);

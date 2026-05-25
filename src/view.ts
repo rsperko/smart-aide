@@ -12,8 +12,10 @@ import { PinnedContext } from './context-pins';
 import { findEndpoint, resolveModelRef } from './settings';
 import {
 	Burst,
+	ScreenWakeLock,
 	TokenBreakdown,
 	createLongPressGate,
+	createScreenWakeLock,
 	estimateTokens,
 	filterSkillsForSlash,
 	filterTools,
@@ -58,6 +60,7 @@ export class ChatView extends ItemView {
 	private session: ChatSession | null = null;
 	private modelRef: ModelRef;
 	private abort: AbortController | null = null;
+	private wakeLock: ScreenWakeLock | null = null;
 	private approveAllInTurn = false;
 	private turnUsageByEntry: Map<string, TurnUsage> = new Map();
 	private loadedSkills: string[] = [];
@@ -119,6 +122,17 @@ export class ChatView extends ItemView {
 		this.abort?.abort();
 		this.closeTokenPopover();
 		this.closeSlashPopover();
+		this.wakeLock?.dispose();
+		this.wakeLock = null;
+	}
+
+	private ensureWakeLock(): ScreenWakeLock {
+		if (this.wakeLock) return this.wakeLock;
+		this.wakeLock = createScreenWakeLock({
+			navigator: window.navigator as unknown as Parameters<typeof createScreenWakeLock>[0]['navigator'],
+			visibility: window.document,
+		});
+		return this.wakeLock;
 	}
 
 	async newChat(): Promise<void> {
@@ -1414,6 +1428,10 @@ export class ChatView extends ItemView {
 		this.stopBtn.show();
 		this.sendBtn.hide();
 		this.updateSendState();
+		// Keep the screen awake while the model is working. iOS auto-locks within
+		// ~30s of idle, which kills the SSE stream mid-response. The helper is a
+		// silent no-op when navigator.wakeLock is unavailable.
+		void this.ensureWakeLock().acquire();
 
 		let hitTurnCap = false;
 		try {
@@ -1596,6 +1614,7 @@ export class ChatView extends ItemView {
 			this.abort = null;
 			this.updateSendState();
 			this.updateTabTitle();
+			void this.wakeLock?.release();
 		}
 	}
 

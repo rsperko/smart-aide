@@ -3,6 +3,7 @@ import { afterEach, beforeEach, vi } from 'vitest';
 import {
 	buildResearchHeadline,
 	createLongPressGate,
+	createScreenWakeLock,
 	displayToolName,
 	estimateTokens,
 	extractToolCalls,
@@ -28,7 +29,12 @@ import {
 	tryFormatJson,
 	tryParseJSON,
 } from '../src/view-helpers';
-import type { SkillRegistryLike } from '../src/view-helpers';
+import type {
+	ScreenWakeLockSentinel,
+	SkillRegistryLike,
+	VisibilitySource,
+	WakeLockNavigator,
+} from '../src/view-helpers';
 import type { Entry, MessageEntry, ToolCallBlock, ToolResultBlock } from '../src/types';
 
 describe('lineDiff', () => {
@@ -834,5 +840,171 @@ describe('createLongPressGate', () => {
 		expect(onLongPress).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(200);
 		expect(onLongPress).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('createScreenWakeLock', () => {
+	interface FakeSentinel extends ScreenWakeLockSentinel {
+		released: boolean;
+		listeners: Array<() => void>;
+		simulateOsRelease(): void;
+	}
+
+	function makeSentinel(): FakeSentinel {
+		const listeners: Array<() => void> = [];
+		const s = {
+			released: false,
+			listeners,
+			addEventListener: (type: 'release', listener: () => void) => {
+				if (type === 'release') listeners.push(listener);
+			},
+			release: vi.fn(async () => {
+				s.released = true;
+				for (const l of listeners) l();
+			}),
+			simulateOsRelease() {
+				s.released = true;
+				for (const l of listeners) l();
+			},
+		};
+		return s as unknown as FakeSentinel;
+	}
+
+	function makeVisibility(initial: 'visible' | 'hidden' = 'visible'): VisibilitySource & {
+		set(state: 'visible' | 'hidden'): void;
+	} {
+		let state = initial;
+		const listeners: Array<() => void> = [];
+		return {
+			get visibilityState() {
+				return state;
+			},
+			addEventListener: (type: 'visibilitychange', listener: () => void) => {
+				if (type === 'visibilitychange') listeners.push(listener);
+			},
+			removeEventListener: (type: 'visibilitychange', listener: () => void) => {
+				if (type !== 'visibilitychange') return;
+				const i = listeners.indexOf(listener);
+				if (i >= 0) listeners.splice(i, 1);
+			},
+			set(next) {
+				state = next;
+				for (const l of [...listeners]) l();
+			},
+		};
+	}
+
+	it('requests a screen wake lock on acquire', async () => {
+		const sentinel = makeSentinel();
+		const request = vi.fn(async () => sentinel);
+		const navigator: WakeLockNavigator = { wakeLock: { request } };
+		const visibility = makeVisibility();
+		const lock = createScreenWakeLock({ navigator, visibility });
+		await lock.acquire();
+		expect(request).toHaveBeenCalledWith('screen');
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
+	it('is idempotent when acquire is called while the sentinel is already held', async () => {
+		const request = vi.fn(async () => makeSentinel());
+		const navigator: WakeLockNavigator = { wakeLock: { request } };
+		const lock = createScreenWakeLock({ navigator, visibility: makeVisibility() });
+		await lock.acquire();
+		await lock.acquire();
+		await lock.acquire();
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
+	it('releases the held sentinel on release()', async () => {
+		const sentinel = makeSentinel();
+		const navigator: WakeLockNavigator = { wakeLock: { request: async () => sentinel } };
+		const lock = createScreenWakeLock({ navigator, visibility: makeVisibility() });
+		await lock.acquire();
+		await lock.release();
+		expect(sentinel.release).toHaveBeenCalledTimes(1);
+	});
+
+	it('release() with nothing held is a no-op', async () => {
+		const lock = createScreenWakeLock({
+			navigator: { wakeLock: { request: vi.fn() } },
+			visibility: makeVisibility(),
+		});
+		await expect(lock.release()).resolves.toBeUndefined();
+	});
+
+	it('is a silent no-op when navigator.wakeLock is unavailable (old iOS, unsupported webview)', async () => {
+		const onError = vi.fn();
+		const lock = createScreenWakeLock({
+			navigator: {},
+			visibility: makeVisibility(),
+			onError,
+		});
+		await lock.acquire();
+		await lock.release();
+		expect(onError).not.toHaveBeenCalled();
+	});
+
+	it('re-acquires when the page returns to visible if the caller still wants the lock', async () => {
+		const request = vi.fn(async () => makeSentinel());
+		const visibility = makeVisibility('visible');
+		const lock = createScreenWakeLock({ navigator: { wakeLock: { request } }, visibility });
+		await lock.acquire();
+		expect(request).toHaveBeenCalledTimes(1);
+		// OS releases the sentinel when the page goes hidden (matches real behavior).
+		visibility.set('hidden');
+		await Promise.resolve();
+		// Coming back to visible should re-request because release() was never called.
+		visibility.set('visible');
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(request).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not re-acquire on visibility change after the caller explicitly released', async () => {
+		const request = vi.fn(async () => makeSentinel());
+		const visibility = makeVisibility();
+		const lock = createScreenWakeLock({ navigator: { wakeLock: { request } }, visibility });
+		await lock.acquire();
+		await lock.release();
+		visibility.set('hidden');
+		visibility.set('visible');
+		await Promise.resolve();
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
+	it('survives a rejected request without throwing and allows a retry', async () => {
+		const onError = vi.fn();
+		let calls = 0;
+		const sentinel = makeSentinel();
+		const request = vi.fn(async () => {
+			calls++;
+			if (calls === 1) throw new Error('denied');
+			return sentinel;
+		});
+		const lock = createScreenWakeLock({
+			navigator: { wakeLock: { request } },
+			visibility: makeVisibility(),
+			onError,
+		});
+		await lock.acquire();
+		expect(onError).toHaveBeenCalledTimes(1);
+		await lock.acquire();
+		expect(request).toHaveBeenCalledTimes(2);
+		expect(sentinel.release).not.toHaveBeenCalled();
+	});
+
+	it('dispose() removes the visibility listener and releases any held sentinel', async () => {
+		const sentinel = makeSentinel();
+		const request = vi.fn(async () => sentinel);
+		const visibility = makeVisibility();
+		const lock = createScreenWakeLock({ navigator: { wakeLock: { request } }, visibility });
+		await lock.acquire();
+		lock.dispose();
+		// After dispose, visibility changes must not trigger more requests.
+		visibility.set('hidden');
+		visibility.set('visible');
+		await Promise.resolve();
+		expect(request).toHaveBeenCalledTimes(1);
+		expect(sentinel.release).toHaveBeenCalledTimes(1);
 	});
 });

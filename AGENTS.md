@@ -110,6 +110,8 @@ Does **not** work on mobile:
 
 If you add a desktop-only feature, set `isDesktopOnly: true` in `manifest.json`. We currently target both, so default to `false`.
 
+**Screen wake lock.** While a stream is in flight, the view holds a `screen` wake lock via `createScreenWakeLock` (a pure helper in `view-helpers.ts`) so iPhone auto-lock doesn't kill the SSE stream mid-response. WKWebView ships the Wake Lock API since iOS 16.4; the helper is a silent no-op on older versions or any platform without `navigator.wakeLock`. The lock only prevents *auto-lock* — if the user explicitly locks or backgrounds the app, WKWebView still suspends JS and the stream dies. No JS API can prevent that; it would require native iOS code (background URLSession, BGTaskScheduler) that a plugin can't add. Survey of Obsidian LLM plugins (Smart Composer, Copilot, TextGenerator, Cannoli, bmo, khoj) confirms none of them ship even the wake-lock guard, so this is first-mover territory in the ecosystem.
+
 ## Tool design principles
 
 Tools are mini-skills — a small model (Haiku, Flash) reads each tool's description cold and decides what to call and how to fill parameters. Apply these consistently when adding or modifying a tool.
