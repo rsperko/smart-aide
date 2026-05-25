@@ -1,13 +1,13 @@
 import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, parseLinktext, setIcon } from 'obsidian';
 import { TOOLS } from './tools';
 import { ChatSession } from './storage';
-import { bumpRecent, friendlyModelName } from './models';
-import { ModelPickerModal } from './picker-models';
+import { friendlyModelName } from './models';
+import { BrowseAllPickerModal, FavoritesPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
 import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
-import { findEndpoint, resolveModelRef, resolveModelRefStrict, toggleFavorite } from './settings';
+import { findEndpoint, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict } from './settings';
 import {
 	Burst,
 	ScreenWakeLock,
@@ -448,16 +448,33 @@ export class ChatView extends ItemView {
 	}
 
 	openModelPicker(): void {
-		new ModelPickerModal(
+		new FavoritesPickerModal(
 			this.app,
 			this.plugin.settings.endpoints,
 			this.modelRef,
-			this.plugin.settings.modelRecents,
+			this.plugin.settings.favoriteModels,
+			(picked) => void this.setModel(picked),
+			() => this.openBrowseAllPicker(),
+		).open();
+	}
+
+	private openBrowseAllPicker(): void {
+		new BrowseAllPickerModal(
+			this.app,
+			this.plugin.settings.endpoints,
+			this.modelRef,
 			this.plugin.settings.favoriteModels,
 			{
 				onPick: (picked) => void this.setModel(picked),
-				onToggleFavorite: async (ref) => {
-					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
+				onToggleFavorite: async (ref, nextFavorite) => {
+					const current = this.plugin.settings;
+					const updatedFavorites = nextFavorite
+						? [...current.favoriteModels, ref]
+						: removeFavorite(current.favoriteModels, ref);
+					this.plugin.settings = rebindDefaultsToFavorites({
+						...current,
+						favoriteModels: updatedFavorites,
+					});
 					await this.plugin.saveSettings();
 				},
 			},
@@ -470,9 +487,6 @@ export class ChatView extends ItemView {
 		this.refreshModelChip();
 		// Context window and pricing change with the model — refresh the chip.
 		void this.refreshTokenChip();
-
-		this.plugin.settings.modelRecents = bumpRecent(this.plugin.settings.modelRecents, newRef);
-		await this.plugin.saveSettings();
 
 		if (this.session) {
 			const e = this.plugin.storage.makeModelChangeEntry(

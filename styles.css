@@ -885,16 +885,16 @@ details[open] > .vk-tool-summary::before {
 	flex-shrink: 0;
 }
 
-/* ---------- Model picker modal suggestions ---------- */
+/* ---------- Model pickers (favorites + browse-all) ---------- */
 
-.vk-model-suggestion {
+.vk-picker-row {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	padding: 6px 12px;
 }
 
-.vk-model-suggestion-body {
+.vk-picker-body {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
@@ -902,57 +902,83 @@ details[open] > .vk-tool-summary::before {
 	min-width: 0;
 }
 
-.vk-model-suggestion-main {
+.vk-picker-favorite-row .vk-picker-main,
+.vk-picker-main {
 	display: flex;
 	align-items: baseline;
 	gap: 8px;
 	flex-wrap: wrap;
 }
 
-.vk-model-suggestion-name {
+.vk-picker-name {
 	font-weight: 600;
 	color: var(--text-normal);
 }
 
-.vk-model-suggestion-current,
-.vk-model-suggestion-recent {
+.vk-picker-tag {
 	font-size: 11px;
 	color: var(--text-muted);
 }
 
-.vk-model-suggestion-current {
+.vk-picker-tag-current {
 	color: var(--interactive-accent);
 }
 
-.vk-model-suggestion-slug {
+.vk-picker-tag-warn {
+	color: var(--text-error, var(--text-muted));
+}
+
+.vk-picker-sub {
 	font-size: 11px;
 	color: var(--text-faint);
 	font-family: var(--font-monospace);
 }
 
-.vk-model-suggestion-meta {
+.vk-picker-meta {
 	font-size: 11px;
 	color: var(--text-muted);
 	font-variant-numeric: tabular-nums;
 }
 
-.vk-model-suggestion-tools {
-	font-size: 11px;
-	color: var(--text-muted);
+.vk-picker-meta-warn {
+	color: var(--text-error, var(--text-muted));
 }
 
-.vk-model-suggestion-endpoint {
+.vk-picker-endpoint {
 	color: var(--text-faint);
 	font-style: italic;
 }
 
-/* Star button — toggles favorite. Outlined ☆ by default, filled ★ when
-   favorited. Generous tap target on mobile (FuzzySuggestModal rows are roomy
-   already, but iOS WebKit shrinks bare <button>s). */
-.vk-model-suggestion-star {
+/* In favorites picker: rows render in two lines (name / slug). In browse picker
+   the body has its own wrapper (.vk-picker-body) so the star can sit beside
+   the two-line block. The favorites rows don't wrap a body — apply the same
+   column layout directly. */
+.vk-picker-favorite-row {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 2px;
+}
+
+/* Browse-all footer row in the favorites picker — visually distinct so it
+   reads as an action, not a model. */
+.vk-picker-browse-row {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 8px;
+	margin-top: 4px;
+}
+
+.vk-picker-browse-label {
+	color: var(--text-accent, var(--interactive-accent));
+	font-weight: 500;
+}
+
+/* Star button — generous tap target so iOS finger hits don't fall through to
+   row selection. Outlined ☆ by default, filled ★ when on. State changes by
+   DOM mutation in place (no modal close/reopen) so the toggle reads immediately. */
+.vk-picker-star {
 	flex-shrink: 0;
-	width: 32px;
-	height: 32px;
+	width: 36px;
+	height: 36px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -960,7 +986,7 @@ details[open] > .vk-tool-summary::before {
 	border: none;
 	border-radius: 4px;
 	color: var(--text-faint);
-	font-size: 18px;
+	font-size: 20px;
 	line-height: 1;
 	cursor: pointer;
 	-webkit-appearance: none;
@@ -968,16 +994,16 @@ details[open] > .vk-tool-summary::before {
 	padding: 0;
 }
 
-.vk-model-suggestion-star:hover {
+.vk-picker-star:hover {
 	background: var(--background-modifier-hover);
 	color: var(--text-muted);
 }
 
-.vk-model-suggestion-star-on {
+.vk-picker-star-on {
 	color: var(--text-accent, var(--interactive-accent));
 }
 
-.vk-model-suggestion-star-on:hover {
+.vk-picker-star-on:hover {
 	color: var(--text-accent, var(--interactive-accent));
 }
 
@@ -1060,6 +1086,13 @@ details[open] > .vk-tool-summary::before {
 	color: var(--text-muted);
 	font-style: italic;
 	margin-right: 8px;
+}
+
+/* Settings: shown next to Default/Title model rows when favorites is empty. */
+.vk-empty-hint {
+	font-size: 13px;
+	color: var(--text-faint);
+	font-style: italic;
 }
 
 /* ---------- Endpoint list (compact rows) ---------- */

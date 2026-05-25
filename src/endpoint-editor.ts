@@ -238,12 +238,13 @@ export function renderEndpointEditor(
 		advSummary.setText('Advanced');
 		const advBody = advDetails.createDiv({ cls: 'vk-endpoint-section-body' });
 
-		// Manual list — fallback subsection inside Advanced.
+		// Manual list — fallback subsection inside Advanced. With /models working,
+		// these slugs only matter if you want to expose a model discovery missed.
 		manualHost = advBody.createDiv({ cls: 'vk-endpoint-subsection' });
-		manualHost.createDiv({ cls: 'vk-endpoint-subsection-title', text: `Model slugs (fallback${manualCount ? ` · ${manualCount}` : ''})` });
+		manualHost.createDiv({ cls: 'vk-endpoint-subsection-title', text: `Manual model slugs${manualCount ? ` · ${manualCount}` : ''}` });
 		manualHost.createDiv({
 			cls: 'setting-item-description',
-			text: '/models discovery is the primary source for this endpoint. Add slugs here only if you want to pin a manual list or override discovery.',
+			text: 'Add slugs here only if /models discovery missed a model you want available.',
 		});
 		renderManualListInto(manualHost, endpoint, ctx);
 
@@ -252,10 +253,10 @@ export function renderEndpointEditor(
 		headersHost.createDiv({ cls: 'vk-endpoint-subsection-title', text: 'Custom headers' });
 		renderHeadersInto(headersHost, endpoint, ctx);
 	} else {
-		// Discovery didn't deliver — manual list is the primary path. Surface it
-		// at top level with a blurb that names it as the fallback.
+		// Discovery didn't deliver — the manual slug list is the only source of
+		// available models for this endpoint, so surface it at top level.
 		manualHost = container.createDiv({ cls: 'vk-endpoint-manual-primary' });
-		manualHost.createDiv({ cls: 'vk-endpoint-section-summary', text: `Model slugs${manualCount ? ` (${manualCount})` : ''}` });
+		manualHost.createDiv({ cls: 'vk-endpoint-section-summary', text: `Manual model slugs${manualCount ? ` (${manualCount})` : ''}` });
 		manualHost.createDiv({
 			cls: 'setting-item-description',
 			text: "This endpoint didn't return any models from /models. List the slugs you want available here, one per line.",

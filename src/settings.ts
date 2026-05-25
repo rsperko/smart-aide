@@ -5,10 +5,9 @@ export interface SmartAideSettings {
 	endpoints: Endpoint[];
 	defaultModelRef: ModelRef;
 	titleModelRef: ModelRef;
-	modelRecents: ModelRef[];
-	/** Cross-endpoint favorites — ordered. The picker surfaces these first; the
-	 * Settings tab renders the list inline so users can build a curated set
-	 * spanning providers without round-tripping through each endpoint editor. */
+	/** Cross-endpoint favorites — ordered. Every model picker shows favorites
+	 * first; defaults are picked from this list. The Settings tab renders the
+	 * list inline so users can curate across providers. */
 	favoriteModels: ModelRef[];
 	systemPrompt: string;
 	autoApproveWrites: boolean;
@@ -76,7 +75,6 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	endpoints: [defaultOpenRouterEndpoint()],
 	defaultModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
 	titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
-	modelRecents: [],
 	favoriteModels: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
@@ -97,7 +95,6 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			endpoints: r.endpoints as Endpoint[],
 			defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
 			titleModelRef: (r.titleModelRef as ModelRef) ?? (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.titleModelRef,
-			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
 			favoriteModels: sanitizeFavorites(r.favoriteModels),
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
@@ -111,22 +108,13 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 	const legacyModels = Array.isArray(r.models) ? (r.models as string[]) : undefined;
 	const legacyDefault = typeof r.defaultModel === 'string' ? r.defaultModel : DEFAULT_MODEL;
 	const legacyTitle = typeof r.titleModel === 'string' ? r.titleModel : legacyDefault;
-	const legacyRecents = Array.isArray(r.modelRecents) ? (r.modelRecents as unknown[]) : [];
 
 	const endpoint = defaultOpenRouterEndpoint(legacyKey, legacyModels);
-	const recents: ModelRef[] = legacyRecents
-		.map((v): ModelRef | null => {
-			if (typeof v === 'string') return { endpointId: OPENROUTER_ID, slug: v };
-			if (v && typeof v === 'object' && 'slug' in v) return v as ModelRef;
-			return null;
-		})
-		.filter((v): v is ModelRef => v !== null);
 
 	return {
 		endpoints: [endpoint],
 		defaultModelRef: { endpointId: OPENROUTER_ID, slug: legacyDefault },
 		titleModelRef: { endpointId: OPENROUTER_ID, slug: legacyTitle },
-		modelRecents: recents,
 		favoriteModels: [],
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: false,
@@ -279,6 +267,25 @@ export function moveFavorite(favorites: ModelRef[], ref: ModelRef, direction: 'u
  * when it doesn't, manual is the primary path. */
 export function hasWorkingDiscovery(endpoint: Endpoint): boolean {
 	return (endpoint.discoveredModels?.length ?? 0) > 0;
+}
+
+/** Keep defaults aligned with favorites. If the current default or title ref
+ * is no longer in favorites (e.g. the user just unstarred it), bind to the
+ * first remaining favorite. If favorites is empty, leave the refs alone so
+ * the picker can show its empty state and the user can recover. */
+export function rebindDefaultsToFavorites(settings: SmartAideSettings): SmartAideSettings {
+	const { favoriteModels, defaultModelRef, titleModelRef } = settings;
+	if (favoriteModels.length === 0) return settings;
+	const next = { ...settings };
+	if (!isFavoriteRef(favoriteModels, defaultModelRef)) {
+		next.defaultModelRef = { ...favoriteModels[0] };
+	}
+	if (!isFavoriteRef(favoriteModels, titleModelRef)) {
+		// Re-mirror to the (possibly new) default rather than picking a
+		// different favorite — title-following-default is the dominant case.
+		next.titleModelRef = { ...next.defaultModelRef };
+	}
+	return next;
 }
 
 export function previewSystemPrompt(prompt: string): string {

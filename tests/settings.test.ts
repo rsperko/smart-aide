@@ -21,6 +21,7 @@ import {
 	normalizeMetaDir,
 	pickReplacementModelRef,
 	previewSystemPrompt,
+	rebindDefaultsToFavorites,
 	removeFavorite,
 	resolveModelRef,
 	resolveModelRefStrict,
@@ -55,7 +56,6 @@ describe('migrateSettings', () => {
 			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
 			defaultModelRef: { endpointId: 'e1', slug: 'm' },
 			titleModelRef: { endpointId: 'e1', slug: 't' },
-			modelRecents: [{ endpointId: 'e1', slug: 'm' }],
 			systemPrompt: 'custom',
 			autoApproveWrites: true,
 			metaDir: 'sys/',
@@ -72,30 +72,18 @@ describe('migrateSettings', () => {
 			apiKey: 'sk-or-v1-legacy',
 			defaultModel: 'anthropic/claude-haiku-4.5',
 			titleModel: 'openai/gpt-4o-mini',
-			modelRecents: ['anthropic/claude-haiku-4.5', { endpointId: 'openrouter', slug: 'x' }],
 		});
 		expect(out.endpoints).toHaveLength(1);
 		expect(out.endpoints[0].id).toBe('openrouter');
 		expect(out.endpoints[0].apiKey).toBe('sk-or-v1-legacy');
 		expect(out.defaultModelRef).toEqual({ endpointId: 'openrouter', slug: 'anthropic/claude-haiku-4.5' });
 		expect(out.titleModelRef).toEqual({ endpointId: 'openrouter', slug: 'openai/gpt-4o-mini' });
-		expect(out.modelRecents).toHaveLength(2);
 	});
 
 	it('handles a fully empty input by giving defaults', () => {
 		const out = migrateSettings(null);
 		expect(out.endpoints).toHaveLength(1);
 		expect(out.metaDir).toBe(DEFAULT_META_DIR);
-	});
-
-	it('drops legacy recents entries that are neither strings nor ModelRef objects', () => {
-		const out = migrateSettings({
-			apiKey: 'k',
-			// Mixed: valid string, valid ref, and two invalid shapes that should be filtered out.
-			modelRecents: ['valid-slug', { endpointId: 'openrouter', slug: 'also-valid' }, 42, null],
-		});
-		expect(out.modelRecents).toHaveLength(2);
-		expect(out.modelRecents.map((r) => r.slug)).toEqual(['valid-slug', 'also-valid']);
 	});
 
 	it('defaults hasSeenMentionTip to false when missing', () => {
@@ -534,5 +522,70 @@ describe('hasWorkingDiscovery', () => {
 			id: 'e1', name: 'X', baseURL: '', apiKey: 'k',
 			models: ['a', 'b', 'c'],
 		})).toBe(false);
+	});
+});
+
+describe('rebindDefaultsToFavorites', () => {
+	function settings(over: Partial<SmartAideSettings>): SmartAideSettings {
+		return {
+			...DEFAULT_SETTINGS,
+			...over,
+		};
+	}
+
+	it('returns settings unchanged when defaults are already in favorites', () => {
+		const s = settings({
+			favoriteModels: [{ endpointId: 'e1', slug: 'a' }, { endpointId: 'e1', slug: 'b' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'a' },
+		});
+		const out = rebindDefaultsToFavorites(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e1', slug: 'a' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'e1', slug: 'a' });
+	});
+
+	it('rebinds default to favorites[0] when the current default is no longer a favorite', () => {
+		const s = settings({
+			favoriteModels: [{ endpointId: 'e1', slug: 'b' }, { endpointId: 'e1', slug: 'c' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'a' },
+		});
+		const out = rebindDefaultsToFavorites(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e1', slug: 'b' });
+		// Title also re-mirrors to the new default rather than picking a different favorite.
+		expect(out.titleModelRef).toEqual({ endpointId: 'e1', slug: 'b' });
+	});
+
+	it('rebinds only title when default is still a favorite but title is not', () => {
+		const s = settings({
+			favoriteModels: [{ endpointId: 'e1', slug: 'a' }, { endpointId: 'e1', slug: 'b' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'gone' },
+		});
+		const out = rebindDefaultsToFavorites(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e1', slug: 'a' });
+		// Title mirrors the (unchanged) default.
+		expect(out.titleModelRef).toEqual({ endpointId: 'e1', slug: 'a' });
+	});
+
+	it('leaves refs alone when favorites is empty (lets the empty-state UI handle it)', () => {
+		const s = settings({
+			favoriteModels: [],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'b' },
+		});
+		const out = rebindDefaultsToFavorites(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e1', slug: 'a' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'e1', slug: 'b' });
+	});
+
+	it('does not mutate the input settings object', () => {
+		const original: SmartAideSettings = settings({
+			favoriteModels: [{ endpointId: 'e1', slug: 'b' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+		});
+		const snapshot = JSON.stringify(original);
+		rebindDefaultsToFavorites(original);
+		expect(JSON.stringify(original)).toBe(snapshot);
 	});
 });

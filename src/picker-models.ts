@@ -1,183 +1,265 @@
 import { App, FuzzyMatch, FuzzySuggestModal } from 'obsidian';
 import { friendlyModelName } from './models';
-import { type PickerItem, buildModelPickerItems } from './model-picker-filter';
+import {
+	type BrowseItem,
+	type FavoriteItem,
+	buildBrowseAllPickerItems,
+	buildFavoritesPickerItems,
+} from './model-picker-filter';
 import { sameRef } from './settings';
 import { Endpoint, ModelRef } from './types';
 
-interface DisplayItem {
-	item: PickerItem;
+// ============================================================================
+// Favorites picker — the short-list flow.
+// Used by: chat model chip, Settings → Default chat model, Settings → Title
+// model. Shows only favorites. No stars (the browse picker is where you curate).
+// Always carries a "Browse all models…" footer entry so the user can reach the
+// other picker without leaving the flow.
+// ============================================================================
+
+interface FavoriteRow {
+	kind: 'favorite';
+	item: FavoriteItem;
 	friendly: string;
 }
 
-export interface ModelPickerCallbacks {
-	onPick: (ref: ModelRef) => void;
-	/** Called when the user taps the star button on a row. The caller persists
-	 * the new favorites list and re-opens the picker (handled internally so the
-	 * UI stays in sync without a parent re-render dance). */
-	onToggleFavorite?: (ref: ModelRef) => Promise<void> | void;
+interface BrowseAllRow {
+	kind: 'browse-all';
+	label: string;
 }
 
-export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
+type FavoriteEntry = FavoriteRow | BrowseAllRow;
+
+export class FavoritesPickerModal extends FuzzySuggestModal<FavoriteEntry> {
 	private readonly multiEndpoint: boolean;
 
 	constructor(
 		app: App,
 		private endpoints: Endpoint[],
 		private current: ModelRef,
-		private recents: ModelRef[],
 		private favorites: ModelRef[],
-		private callbacks: ModelPickerCallbacks,
-		private showAll: boolean = false,
+		private onPick: (ref: ModelRef) => void,
+		private onOpenBrowseAll: () => void,
 	) {
 		super(app);
 		this.multiEndpoint = endpoints.length > 1;
-		this.setPlaceholder(showAll ? 'Select a model (all discovered)…' : 'Select a model…');
+		this.setPlaceholder(favorites.length ? 'Pick a model…' : 'No favorites yet — browse all to add some');
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
 			{ command: '↵', purpose: 'select' },
+			{ command: 'esc', purpose: 'dismiss' },
+		]);
+	}
+
+	getItems(): FavoriteEntry[] {
+		const items = buildFavoritesPickerItems(this.favorites, this.endpoints);
+		const rows: FavoriteEntry[] = items.map((item) => ({
+			kind: 'favorite' as const,
+			item,
+			friendly: friendlyModelName(item.ref.slug),
+		}));
+		rows.push({
+			kind: 'browse-all',
+			label: items.length === 0 ? 'Browse all models →' : 'Browse all models…',
+		});
+		return rows;
+	}
+
+	getItemText(entry: FavoriteEntry): string {
+		if (entry.kind === 'browse-all') return entry.label;
+		return `${entry.friendly} ${entry.item.ref.slug} ${entry.item.endpointName}`;
+	}
+
+	renderSuggestion(match: FuzzyMatch<FavoriteEntry>, el: HTMLElement): void {
+		const entry = match.item;
+		el.empty();
+
+		if (entry.kind === 'browse-all') {
+			el.addClass('vk-picker-row', 'vk-picker-browse-row');
+			el.createSpan({ cls: 'vk-picker-browse-label', text: entry.label });
+			return;
+		}
+
+		el.addClass('vk-picker-row', 'vk-picker-favorite-row');
+		const { item, friendly } = entry;
+
+		const main = el.createDiv({ cls: 'vk-picker-main' });
+		main.createSpan({ cls: 'vk-picker-name', text: friendly });
+
+		if (sameRef(item.ref, this.current)) {
+			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-current', text: '· current' });
+		}
+		if (item.orphaned) {
+			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-warn', text: '· endpoint removed' });
+		} else if (item.stale) {
+			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-warn', text: '· unavailable' });
+		}
+
+		const sub = el.createDiv({ cls: 'vk-picker-sub' });
+		sub.setText(item.ref.slug);
+		if (this.multiEndpoint || item.orphaned) {
+			sub.createSpan({ cls: 'vk-picker-endpoint', text: `  [${item.endpointName}]` });
+		}
+	}
+
+	onChooseItem(entry: FavoriteEntry): void {
+		if (entry.kind === 'browse-all') {
+			// Close happens automatically after onChooseItem returns. setTimeout
+			// hands control back so the close completes before the next modal opens.
+			window.setTimeout(() => this.onOpenBrowseAll(), 0);
+			return;
+		}
+		if (entry.item.orphaned || entry.item.stale) {
+			// Refuse to pick an unusable model — would result in a broken send.
+			return;
+		}
+		this.onPick(entry.item.ref);
+	}
+}
+
+// ============================================================================
+// Browse-all picker — the discovery + curation flow.
+// Used by: Settings → Browse all models, FavoritesPickerModal footer.
+// Shows every discovered model across every endpoint. Star button toggles
+// favorite state IN PLACE (no modal close/reopen) so mobile users see the
+// state change immediately. Row click picks the model (and the caller can
+// decide whether to auto-favorite as part of picking).
+// ============================================================================
+
+interface BrowseRow {
+	item: BrowseItem;
+	friendly: string;
+}
+
+export interface BrowseAllCallbacks {
+	onPick: (ref: ModelRef) => void;
+	onToggleFavorite: (ref: ModelRef, nextFavorite: boolean) => Promise<void> | void;
+	/** Called once the modal closes (any reason: esc, click-outside, row pick).
+	 * Lets the caller refresh state — e.g. re-render the settings tab so the
+	 * favorites list reflects stars toggled while the modal was open. */
+	onClose?: () => void;
+}
+
+export class BrowseAllPickerModal extends FuzzySuggestModal<BrowseRow> {
+	private readonly multiEndpoint: boolean;
+	private favoriteKeys: Set<string>;
+
+	constructor(
+		app: App,
+		private endpoints: Endpoint[],
+		private current: ModelRef,
+		favorites: ModelRef[],
+		private callbacks: BrowseAllCallbacks,
+	) {
+		super(app);
+		this.multiEndpoint = endpoints.length > 1;
+		this.favoriteKeys = new Set(favorites.map((f) => `${f.endpointId}::${f.slug}`));
+		this.setPlaceholder('Browse all models — type to filter, ★ to favorite');
+		this.setInstructions([
+			{ command: '↑↓', purpose: 'navigate' },
+			{ command: '↵', purpose: 'pick' },
 			{ command: '★', purpose: 'favorite' },
 			{ command: 'esc', purpose: 'dismiss' },
 		]);
 	}
 
-	getItems(): DisplayItem[] {
-		const { items } = buildModelPickerItems({
-			endpoints: this.endpoints,
-			current: this.current,
-			recents: this.recents,
-			favorites: this.favorites,
-			showAll: this.showAll,
-		});
-		return items.map((item) =>
-			item.kind === 'model'
-				? { item, friendly: friendlyModelName(item.slug) }
-				: { item, friendly: item.label },
-		);
+	getItems(): BrowseRow[] {
+		// Pass the original favorite list reconstructed from our key set — we
+		// only need it to mark isFavorite per row, and any updates we make in
+		// renderSuggestion stay synced via favoriteKeys.
+		const favorites: ModelRef[] = [];
+		for (const key of this.favoriteKeys) {
+			const [endpointId, slug] = key.split('::');
+			favorites.push({ endpointId, slug });
+		}
+		const items = buildBrowseAllPickerItems(this.endpoints, favorites);
+		return items.map((item) => ({ item, friendly: friendlyModelName(item.ref.slug) }));
 	}
 
-	getItemText(d: DisplayItem): string {
-		if (d.item.kind === 'toggle') return d.item.label;
-		return `${d.friendly} ${d.item.ref.slug} ${d.item.endpointName}`;
+	getItemText(row: BrowseRow): string {
+		return `${row.friendly} ${row.item.ref.slug} ${row.item.endpointName}`;
 	}
 
-	renderSuggestion(match: FuzzyMatch<DisplayItem>, el: HTMLElement): void {
+	renderSuggestion(match: FuzzyMatch<BrowseRow>, el: HTMLElement): void {
 		const { item, friendly } = match.item;
 		el.empty();
-		el.addClass('vk-model-suggestion');
+		el.addClass('vk-picker-row', 'vk-picker-browse-model-row');
 
-		if (item.kind === 'toggle') {
-			el.addClass('vk-model-suggestion-toggle');
-			el.createDiv({ cls: 'vk-model-suggestion-name', text: item.label });
-			return;
-		}
+		const body = el.createDiv({ cls: 'vk-picker-body' });
 
-		const body = el.createDiv({ cls: 'vk-model-suggestion-body' });
-
-		const main = body.createDiv({ cls: 'vk-model-suggestion-main' });
-		main.createSpan({ cls: 'vk-model-suggestion-name', text: friendly });
+		const main = body.createDiv({ cls: 'vk-picker-main' });
+		main.createSpan({ cls: 'vk-picker-name', text: friendly });
 
 		if (sameRef(item.ref, this.current)) {
-			main.createSpan({ cls: 'vk-model-suggestion-current', text: '· current' });
-		} else if (this.isRecent(item.ref)) {
-			main.createSpan({ cls: 'vk-model-suggestion-recent', text: '· recent' });
+			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-current', text: '· current' });
 		}
 
 		const meta = item.discovered;
 		if (meta) {
 			if (meta.contextLength !== undefined) {
-				main.createSpan({ cls: 'vk-model-suggestion-meta', text: `· ${formatContext(meta.contextLength)}` });
+				main.createSpan({ cls: 'vk-picker-meta', text: `· ${formatContext(meta.contextLength)}` });
 			}
 			if (meta.promptPrice !== undefined && meta.completionPrice !== undefined) {
 				main.createSpan({
-					cls: 'vk-model-suggestion-meta',
+					cls: 'vk-picker-meta',
 					text: `· ${formatPriceShort(meta.promptPrice, meta.completionPrice)}`,
 				});
 			}
 			if (meta.supportsTools === false) {
-				main.createSpan({ cls: 'vk-model-suggestion-tools', text: '· no tools' });
+				main.createSpan({ cls: 'vk-picker-meta vk-picker-meta-warn', text: '· no tools' });
 			}
 		}
 
-		const sub = body.createDiv({ cls: 'vk-model-suggestion-slug' });
+		const sub = body.createDiv({ cls: 'vk-picker-sub' });
 		sub.setText(item.ref.slug);
 		if (this.multiEndpoint) {
-			sub.createSpan({ cls: 'vk-model-suggestion-endpoint', text: `  [${item.endpointName}]` });
+			sub.createSpan({ cls: 'vk-picker-endpoint', text: `  [${item.endpointName}]` });
 		}
 
-		if (this.callbacks.onToggleFavorite) {
-			const star = el.createEl('button', {
-				cls: item.isFavorite ? 'vk-model-suggestion-star vk-model-suggestion-star-on' : 'vk-model-suggestion-star',
-				text: item.isFavorite ? '★' : '☆',
-				attr: {
-					'aria-label': item.isFavorite ? 'Unfavorite' : 'Favorite',
-					title: item.isFavorite ? 'Unfavorite' : 'Add to favorites',
-				},
-			});
-			// FuzzySuggestModal binds row selection on click; stop here so the star
-			// only toggles the favorite. mousedown/touchstart cover the cases where
-			// FuzzySuggestModal commits on mousedown (it does on some platforms).
-			const stop = (ev: Event) => {
-				ev.preventDefault();
-				ev.stopPropagation();
-			};
-			star.addEventListener('mousedown', stop);
-			star.addEventListener('touchstart', stop, { passive: false });
-			star.addEventListener('click', async (ev) => {
-				ev.preventDefault();
-				ev.stopPropagation();
-				await this.toggleFavorite(item.ref);
-			});
-		}
+		const key = `${item.ref.endpointId}::${item.ref.slug}`;
+		const isFav = this.favoriteKeys.has(key);
+
+		const star = el.createEl('button', {
+			cls: isFav ? 'vk-picker-star vk-picker-star-on' : 'vk-picker-star',
+			text: isFav ? '★' : '☆',
+			attr: {
+				'aria-label': isFav ? 'Unfavorite' : 'Favorite',
+				title: isFav ? 'Unfavorite' : 'Add to favorites',
+			},
+		});
+
+		// Stop row selection on every pointer event the modal listens to.
+		// Update DOM in place — no close, no reopen — so the user sees state
+		// flip immediately (the close/reopen pattern was eating the first tap
+		// on mobile).
+		const swallow = (ev: Event) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+		};
+		star.addEventListener('mousedown', swallow);
+		star.addEventListener('touchstart', swallow, { passive: false });
+		star.addEventListener('click', async (ev) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			const wasFav = this.favoriteKeys.has(key);
+			const nextFav = !wasFav;
+			if (nextFav) this.favoriteKeys.add(key);
+			else this.favoriteKeys.delete(key);
+			star.setText(nextFav ? '★' : '☆');
+			star.toggleClass('vk-picker-star-on', nextFav);
+			star.setAttribute('aria-label', nextFav ? 'Unfavorite' : 'Favorite');
+			star.setAttribute('title', nextFav ? 'Unfavorite' : 'Add to favorites');
+			await this.callbacks.onToggleFavorite(item.ref, nextFav);
+		});
 	}
 
-	onChooseItem(d: DisplayItem): void {
-		const { item } = d;
-		if (item.kind === 'toggle') {
-			const nextShowAll = item.mode === 'expand';
-			// Re-open the picker with the new mode. setTimeout 0 lets the current
-			// modal finish closing before we open the next one (Obsidian quirks).
-			window.setTimeout(() => {
-				new ModelPickerModal(
-					this.app,
-					this.endpoints,
-					this.current,
-					this.recents,
-					this.favorites,
-					this.callbacks,
-					nextShowAll,
-				).open();
-			}, 0);
-			return;
-		}
-		this.callbacks.onPick(item.ref);
+	onChooseItem(row: BrowseRow): void {
+		this.callbacks.onPick(row.item.ref);
 	}
 
-	private async toggleFavorite(ref: ModelRef): Promise<void> {
-		if (!this.callbacks.onToggleFavorite) return;
-		const wasFavorite = this.favorites.some((f) => sameRef(f, ref));
-		this.favorites = wasFavorite
-			? this.favorites.filter((f) => !sameRef(f, ref))
-			: [...this.favorites, ref];
-		await this.callbacks.onToggleFavorite(ref);
-		// Re-open so the row order and star state both refresh — the modal's
-		// internal item list is cached after first render otherwise.
-		this.close();
-		const showAll = this.showAll;
-		window.setTimeout(() => {
-			new ModelPickerModal(
-				this.app,
-				this.endpoints,
-				this.current,
-				this.recents,
-				this.favorites,
-				this.callbacks,
-				showAll,
-			).open();
-		}, 0);
-	}
-
-	private isRecent(ref: ModelRef): boolean {
-		return this.recents.some((r) => sameRef(r, ref));
+	onClose(): void {
+		super.onClose();
+		this.callbacks.onClose?.();
 	}
 }
 

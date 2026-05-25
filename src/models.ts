@@ -81,16 +81,6 @@ export function friendlyModelName(slug: string): string {
 }
 
 /**
- * Update a recents list: move the picked ModelRef to the front, dedupe, cap.
- */
-import type { ModelRef } from './types';
-
-export function bumpRecent(recents: ModelRef[], picked: ModelRef, max = 5): ModelRef[] {
-	const filtered = recents.filter((r) => !(r.endpointId === picked.endpointId && r.slug === picked.slug));
-	return [picked, ...filtered].slice(0, max);
-}
-
-/**
  * The default curated set shipped for OpenRouter endpoints. Mirrored in
  * defaultModelsFor() so "Reset to defaults" in the endpoint editor restores
  * exactly this list. Tight by design — one or two per major lab; users add

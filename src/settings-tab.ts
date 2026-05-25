@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { ModelRef, Endpoint } from './types';
-import { ModelPickerModal } from './picker-models';
+import { BrowseAllPickerModal, FavoritesPickerModal } from './picker-models';
 import { renderEndpointEditor } from './endpoint-editor';
 import { AddEndpointModal, EndpointTemplate } from './modal-add-endpoint';
 import {
@@ -24,10 +24,10 @@ import {
 	normalizeMetaDir,
 	pickReplacementModelRef,
 	previewSystemPrompt,
+	rebindDefaultsToFavorites,
 	removeFavorite,
 	sameRef,
 	skillsDirFor,
-	toggleFavorite,
 } from './settings';
 import type SmartAidePlugin from './main';
 
@@ -426,18 +426,23 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		root.createDiv({
 			cls: 'setting-item-description vk-section-blurb',
-			text: 'Pick from any model across the endpoints above. Star models in the picker to build a favorites list spanning all providers.',
+			text: 'Default chat model and title model are picked from your favorites. Browse all models to add new favorites.',
 		});
 
 		const { settings } = this.plugin;
+		const hasFavorites = settings.favoriteModels.length > 0;
 
-		new Setting(root)
+		const defaultSetting = new Setting(root)
 			.setName('Default chat model')
-			.setDesc('Used when starting a new chat.')
-			.addButton((btn) =>
+			.setDesc('Used when starting a new chat.');
+
+		if (!hasFavorites) {
+			defaultSetting.controlEl.createSpan({ cls: 'vk-empty-hint', text: 'No favorites yet' });
+		} else {
+			defaultSetting.addButton((btn) =>
 				btn.setButtonText(describeModelRef(settings, settings.defaultModelRef)).onClick(() => {
 					const wasMirroring = sameRef(settings.titleModelRef, settings.defaultModelRef);
-					this.openPickerForRef(settings.defaultModelRef, (picked) => {
+					this.openFavoritesPickerFor(settings.defaultModelRef, (picked) => {
 						settings.defaultModelRef = picked;
 						if (wasMirroring) settings.titleModelRef = picked;
 						void this.plugin.saveSettings();
@@ -445,16 +450,19 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					});
 				}),
 			);
+		}
 
 		const titleSetting = new Setting(root)
 			.setName('Title model')
 			.setDesc('Cheap model used to auto-title chats after the first exchange.');
 
-		if (sameRef(settings.titleModelRef, settings.defaultModelRef)) {
+		if (!hasFavorites) {
+			titleSetting.controlEl.createSpan({ cls: 'vk-empty-hint', text: 'No favorites yet' });
+		} else if (sameRef(settings.titleModelRef, settings.defaultModelRef)) {
 			titleSetting.controlEl.createSpan({ cls: 'vk-title-same', text: 'Same as chat model' });
 			titleSetting.addButton((btn) =>
 				btn.setButtonText('Customize…').onClick(() => {
-					this.openPickerForRef(settings.titleModelRef, (picked) => {
+					this.openFavoritesPickerFor(settings.titleModelRef, (picked) => {
 						settings.titleModelRef = picked;
 						void this.plugin.saveSettings();
 						this.display();
@@ -464,7 +472,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		} else {
 			titleSetting.addButton((btn) =>
 				btn.setButtonText(describeModelRef(settings, settings.titleModelRef)).onClick(() => {
-					this.openPickerForRef(settings.titleModelRef, (picked) => {
+					this.openFavoritesPickerFor(settings.titleModelRef, (picked) => {
 						settings.titleModelRef = picked;
 						void this.plugin.saveSettings();
 						this.display();
@@ -495,14 +503,14 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		header.createSpan({
 			cls: 'vk-favorites-count',
 			text: settings.favoriteModels.length
-				? `${settings.favoriteModels.length} pinned across endpoints`
+				? `${settings.favoriteModels.length} pinned`
 				: 'No favorites yet',
 		});
 
 		if (settings.favoriteModels.length === 0) {
 			card.createDiv({
 				cls: 'vk-favorites-empty',
-				text: 'Star models in the picker to pin them here. Favorites appear at the top of the model picker across every chat.',
+				text: 'Browse all models and tap ★ to add favorites. Favorites are the short list you pick from in chats and settings.',
 			});
 		} else {
 			const list = card.createDiv({ cls: 'vk-favorites-list' });
@@ -512,8 +520,8 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 		}
 
 		const actions = card.createDiv({ cls: 'vk-favorites-actions' });
-		const addBtn = actions.createEl('button', { text: '+ Add favorite…' });
-		addBtn.addEventListener('click', () => this.openFavoritePicker());
+		const browseBtn = actions.createEl('button', { cls: 'mod-cta', text: 'Browse all models…' });
+		browseBtn.addEventListener('click', () => this.openBrowseAllPicker());
 	}
 
 	private renderFavoriteRow(parent: HTMLElement, fav: ModelRef, idx: number, total: number): void {
@@ -555,52 +563,48 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			attr: { title: 'Remove favorite', 'aria-label': 'Remove favorite' },
 		});
 		remove.addEventListener('click', () => {
-			this.plugin.settings.favoriteModels = removeFavorite(this.plugin.settings.favoriteModels, fav);
+			let next = { ...this.plugin.settings };
+			next.favoriteModels = removeFavorite(next.favoriteModels, fav);
+			next = rebindDefaultsToFavorites(next);
+			this.plugin.settings = next;
 			void this.plugin.saveSettings();
 			this.display();
 		});
 	}
 
-	private openFavoritePicker(): void {
-		// Open in "show all" mode so users can pick anything across providers,
-		// not just the curated subset. Picking just adds to favorites (no
-		// default-model side effect) — that's the explicit "+ Add favorite" path.
-		new ModelPickerModal(
-			this.app,
-			this.plugin.settings.endpoints,
-			this.plugin.settings.defaultModelRef,
-			this.plugin.settings.modelRecents,
-			this.plugin.settings.favoriteModels,
-			{
-				onPick: (picked) => {
-					if (!this.plugin.settings.favoriteModels.some((f) => sameRef(f, picked))) {
-						this.plugin.settings.favoriteModels = [...this.plugin.settings.favoriteModels, picked];
-						void this.plugin.saveSettings().then(() => this.display());
-					}
-				},
-				onToggleFavorite: async (ref) => {
-					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
-					await this.plugin.saveSettings();
-					this.display();
-				},
-			},
-			true,
-		).open();
-	}
-
-	private openPickerForRef(current: ModelRef, onPick: (ref: ModelRef) => void): void {
-		new ModelPickerModal(
+	private openFavoritesPickerFor(current: ModelRef, onPick: (ref: ModelRef) => void): void {
+		new FavoritesPickerModal(
 			this.app,
 			this.plugin.settings.endpoints,
 			current,
-			this.plugin.settings.modelRecents,
+			this.plugin.settings.favoriteModels,
+			onPick,
+			() => this.openBrowseAllPicker(),
+		).open();
+	}
+
+	private openBrowseAllPicker(): void {
+		new BrowseAllPickerModal(
+			this.app,
+			this.plugin.settings.endpoints,
+			this.plugin.settings.defaultModelRef,
 			this.plugin.settings.favoriteModels,
 			{
-				onPick,
-				onToggleFavorite: async (ref) => {
-					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
+				onPick: () => {
+					new Notice('Tap ★ to favorite. Set defaults from Settings → Default chat model.');
+				},
+				onToggleFavorite: async (ref, nextFavorite) => {
+					const current = this.plugin.settings;
+					const updatedFavorites = nextFavorite
+						? [...current.favoriteModels, ref]
+						: removeFavorite(current.favoriteModels, ref);
+					this.plugin.settings = rebindDefaultsToFavorites({
+						...current,
+						favoriteModels: updatedFavorites,
+					});
 					await this.plugin.saveSettings();
 				},
+				onClose: () => this.display(),
 			},
 		).open();
 	}
