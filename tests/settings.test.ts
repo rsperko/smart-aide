@@ -11,17 +11,22 @@ import {
 	endpointModelCount,
 	endpointSummary,
 	findEndpoint,
+	hasWorkingDiscovery,
 	internalDirFor,
 	isEndpointConnected,
+	isFavoriteRef,
 	migrateSettings,
+	moveFavorite,
 	newEndpointId,
 	normalizeMetaDir,
 	pickReplacementModelRef,
 	previewSystemPrompt,
+	removeFavorite,
 	resolveModelRef,
 	resolveModelRefStrict,
 	sameRef,
 	skillsDirFor,
+	toggleFavorite,
 } from '../src/settings';
 import type { SmartAideSettings } from '../src/settings';
 import type { Endpoint } from '../src/types';
@@ -412,5 +417,122 @@ describe('previewSystemPrompt', () => {
 	it('leaves the default system prompt round-trippable as a flat preview', () => {
 		const out = previewSystemPrompt(DEFAULT_SYSTEM_PROMPT);
 		expect(out.length).toBeLessThanOrEqual(118);
+	});
+});
+
+describe('favoriteModels migration', () => {
+	it('defaults to empty array on multi-endpoint shape without favoriteModels', () => {
+		const out = migrateSettings({
+			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+		});
+		expect(out.favoriteModels).toEqual([]);
+	});
+
+	it('defaults to empty array on legacy shape', () => {
+		const out = migrateSettings({ apiKey: 'k' });
+		expect(out.favoriteModels).toEqual([]);
+	});
+
+	it('preserves valid ModelRef favorites through migration', () => {
+		const out = migrateSettings({
+			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+			favoriteModels: [
+				{ endpointId: 'e1', slug: 'a' },
+				{ endpointId: 'e2', slug: 'b' },
+			],
+		});
+		expect(out.favoriteModels).toEqual([
+			{ endpointId: 'e1', slug: 'a' },
+			{ endpointId: 'e2', slug: 'b' },
+		]);
+	});
+
+	it('drops malformed favorite entries and de-dups identical refs', () => {
+		const out = migrateSettings({
+			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+			favoriteModels: [
+				{ endpointId: 'e1', slug: 'a' },
+				'not-a-ref',
+				null,
+				{ endpointId: 'e1' }, // missing slug
+				{ slug: 'b' }, // missing endpointId
+				{ endpointId: 'e1', slug: 'a' }, // duplicate
+				{ endpointId: 'e2', slug: 'b' },
+			],
+		});
+		expect(out.favoriteModels).toEqual([
+			{ endpointId: 'e1', slug: 'a' },
+			{ endpointId: 'e2', slug: 'b' },
+		]);
+	});
+});
+
+describe('favorite helpers', () => {
+	const a: { endpointId: string; slug: string } = { endpointId: 'e1', slug: 'a' };
+	const b = { endpointId: 'e1', slug: 'b' };
+	const c = { endpointId: 'e2', slug: 'c' };
+
+	it('isFavoriteRef returns true for matching ref', () => {
+		expect(isFavoriteRef([a, b], a)).toBe(true);
+		expect(isFavoriteRef([a, b], c)).toBe(false);
+	});
+
+	it('toggleFavorite adds when missing, removes when present', () => {
+		expect(toggleFavorite([], a)).toEqual([a]);
+		expect(toggleFavorite([a, b], a)).toEqual([b]);
+	});
+
+	it('removeFavorite removes only the matching ref', () => {
+		expect(removeFavorite([a, b, c], b)).toEqual([a, c]);
+		expect(removeFavorite([a, b], c)).toEqual([a, b]);
+	});
+
+	it('moveFavorite up shifts toward index 0', () => {
+		expect(moveFavorite([a, b, c], b, 'up')).toEqual([b, a, c]);
+	});
+
+	it('moveFavorite down shifts toward the end', () => {
+		expect(moveFavorite([a, b, c], b, 'down')).toEqual([a, c, b]);
+	});
+
+	it('moveFavorite is a no-op at the boundary', () => {
+		expect(moveFavorite([a, b], a, 'up')).toEqual([a, b]);
+		expect(moveFavorite([a, b], b, 'down')).toEqual([a, b]);
+	});
+
+	it('moveFavorite is a no-op when the ref is not in the list', () => {
+		expect(moveFavorite([a, b], c, 'up')).toEqual([a, b]);
+	});
+});
+
+describe('hasWorkingDiscovery', () => {
+	it('true when discoveredModels has at least one entry', () => {
+		expect(hasWorkingDiscovery({
+			id: 'e1', name: 'X', baseURL: '', apiKey: 'k',
+			discoveredModels: [{ id: 'a' }],
+		})).toBe(true);
+	});
+
+	it('false when discoveredModels is empty', () => {
+		expect(hasWorkingDiscovery({
+			id: 'e1', name: 'X', baseURL: '', apiKey: 'k',
+			discoveredModels: [],
+		})).toBe(false);
+	});
+
+	it('false when discoveredModels is missing', () => {
+		expect(hasWorkingDiscovery({
+			id: 'e1', name: 'X', baseURL: '', apiKey: 'k',
+		})).toBe(false);
+	});
+
+	it('only looks at discoveredModels, not manual models — so an endpoint with manual-only is treated as no discovery', () => {
+		expect(hasWorkingDiscovery({
+			id: 'e1', name: 'X', baseURL: '', apiKey: 'k',
+			models: ['a', 'b', 'c'],
+		})).toBe(false);
 	});
 });

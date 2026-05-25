@@ -7,7 +7,7 @@ import { NotePickerModal } from './picker-notes';
 import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext } from './context-pins';
-import { findEndpoint, resolveModelRef, resolveModelRefStrict } from './settings';
+import { findEndpoint, resolveModelRef, resolveModelRefStrict, toggleFavorite } from './settings';
 import {
 	Burst,
 	ScreenWakeLock,
@@ -453,7 +453,14 @@ export class ChatView extends ItemView {
 			this.plugin.settings.endpoints,
 			this.modelRef,
 			this.plugin.settings.modelRecents,
-			(picked) => void this.setModel(picked),
+			this.plugin.settings.favoriteModels,
+			{
+				onPick: (picked) => void this.setModel(picked),
+				onToggleFavorite: async (ref) => {
+					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
+					await this.plugin.saveSettings();
+				},
+			},
 		).open();
 	}
 

@@ -32,6 +32,7 @@ describe('buildModelPickerItems — curated-only default', () => {
 			endpoints: [e],
 			current: ref('e1', 'claude-haiku-4.5'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		const slugs = result.items
@@ -51,6 +52,7 @@ describe('buildModelPickerItems — curated-only default', () => {
 			endpoints: [e],
 			current: ref('e1', 'a'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		const last = items[items.length - 1];
@@ -71,6 +73,7 @@ describe('buildModelPickerItems — curated-only default', () => {
 			endpoints: [e],
 			current: ref('e1', 'a'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		expect(hiddenCount).toBe(0);
@@ -89,6 +92,7 @@ describe('buildModelPickerItems — always-visible refs', () => {
 			endpoints: [e],
 			current: ref('e1', 'rare-model'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		const slugs = result.items
@@ -107,6 +111,7 @@ describe('buildModelPickerItems — always-visible refs', () => {
 			endpoints: [e],
 			current: ref('e1', 'a'),
 			recents: [ref('e1', 'c'), ref('e1', 'b')],
+			favorites: [],
 			showAll: false,
 		});
 		const slugs = result.items
@@ -130,6 +135,7 @@ describe('buildModelPickerItems — endpoint with no curation', () => {
 			endpoints: [e],
 			current: ref('e1', 'x'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		const slugs = result.items
@@ -151,6 +157,7 @@ describe('buildModelPickerItems — showAll mode', () => {
 			endpoints: [e],
 			current: ref('e1', 'a'),
 			recents: [],
+			favorites: [],
 			showAll: true,
 		});
 		const slugs = result.items
@@ -169,6 +176,7 @@ describe('buildModelPickerItems — showAll mode', () => {
 			endpoints: [e],
 			current: ref('e1', 'a'),
 			recents: [],
+			favorites: [],
 			showAll: true,
 		});
 		const last = items[items.length - 1];
@@ -188,6 +196,7 @@ describe('buildModelPickerItems — multi-endpoint', () => {
 			endpoints: [a, b],
 			current: ref('a', 'shared'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		const refs = result.items
@@ -214,6 +223,7 @@ describe('buildModelPickerItems — multi-endpoint', () => {
 			endpoints: [a, b],
 			current: ref('a', 'x'),
 			recents: [],
+			favorites: [],
 			showAll: false,
 		});
 		expect(hiddenCount).toBe(3);
@@ -237,6 +247,7 @@ describe('buildModelPickerItems — sort order', () => {
 			endpoints: [e],
 			current: ref('e1', 'banana'),
 			recents: [ref('e1', 'cherry')],
+			favorites: [],
 			showAll: true,
 		});
 		const slugs = items
@@ -244,5 +255,107 @@ describe('buildModelPickerItems — sort order', () => {
 			.map((i) => (i as { slug: string }).slug);
 		// cherry (recent) → banana (curated) → apple/date (alphabetical)
 		expect(slugs).toEqual(['cherry', 'banana', 'apple', 'date']);
+	});
+});
+
+describe('buildModelPickerItems — favorites', () => {
+	it('marks favorited models with isFavorite=true', () => {
+		const e = endpoint({
+			id: 'e1',
+			models: ['a', 'b'],
+			discoveredModels: [{ id: 'a' }, { id: 'b' }],
+		});
+		const { items } = buildModelPickerItems({
+			endpoints: [e],
+			current: ref('e1', 'a'),
+			recents: [],
+			favorites: [ref('e1', 'b')],
+			showAll: false,
+		});
+		const models = items.filter((i) => i.kind === 'model') as Array<{ slug: string; isFavorite: boolean }>;
+		expect(models.find((m) => m.slug === 'b')?.isFavorite).toBe(true);
+		expect(models.find((m) => m.slug === 'a')?.isFavorite).toBe(false);
+	});
+
+	it('sorts favorites before recents and curated', () => {
+		const e = endpoint({
+			id: 'e1',
+			models: ['a', 'b'],
+			discoveredModels: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+		});
+		const { items } = buildModelPickerItems({
+			endpoints: [e],
+			current: ref('e1', 'a'),
+			recents: [ref('e1', 'c')],
+			favorites: [ref('e1', 'd'), ref('e1', 'b')],
+			showAll: true,
+		});
+		const slugs = items
+			.filter((i) => i.kind === 'model')
+			.map((i) => (i as { slug: string }).slug);
+		// favorites in given order → recents → curated → alphabetical
+		expect(slugs).toEqual(['d', 'b', 'c', 'a']);
+	});
+
+	it('keeps favorites visible even when curated would hide them', () => {
+		const e = endpoint({
+			id: 'e1',
+			models: ['a'],
+			discoveredModels: [{ id: 'a' }, { id: 'b' }, { id: 'rare' }],
+		});
+		const { items, hiddenCount } = buildModelPickerItems({
+			endpoints: [e],
+			current: ref('e1', 'a'),
+			recents: [],
+			favorites: [ref('e1', 'rare')],
+			showAll: false,
+		});
+		const slugs = items
+			.filter((i) => i.kind === 'model')
+			.map((i) => (i as { slug: string }).slug);
+		expect(slugs).toContain('rare');
+		// 'b' is still hidden (not curated, not favorite); 'rare' should not be in hiddenCount.
+		expect(hiddenCount).toBe(1);
+	});
+
+	it('renders stale favorites whose slugs no longer exist in the endpoint', () => {
+		// Endpoint has discovered {a, b} but the user has a favorite for slug 'gone'
+		// that no longer appears anywhere. We still render it so the user can unstar.
+		const e = endpoint({
+			id: 'e1',
+			models: [],
+			discoveredModels: [{ id: 'a' }, { id: 'b' }],
+		});
+		const { items } = buildModelPickerItems({
+			endpoints: [e],
+			current: ref('e1', 'a'),
+			recents: [],
+			favorites: [ref('e1', 'gone')],
+			showAll: false,
+		});
+		const slugs = items
+			.filter((i) => i.kind === 'model')
+			.map((i) => (i as { slug: string }).slug);
+		expect(slugs).toContain('gone');
+	});
+
+	it('renders favorites for endpoints that no longer exist (using endpointId as fallback name)', () => {
+		const e = endpoint({ id: 'still-here', name: 'Here', models: ['a'] });
+		const { items } = buildModelPickerItems({
+			endpoints: [e],
+			current: ref('still-here', 'a'),
+			recents: [],
+			favorites: [ref('removed-endpoint', 'orphan-slug')],
+			showAll: false,
+		});
+		const models = items.filter((i) => i.kind === 'model') as Array<{
+			slug: string;
+			endpointName: string;
+			isFavorite: boolean;
+		}>;
+		const orphan = models.find((m) => m.slug === 'orphan-slug');
+		expect(orphan).toBeDefined();
+		expect(orphan?.isFavorite).toBe(true);
+		expect(orphan?.endpointName).toBe('removed-endpoint');
 	});
 });

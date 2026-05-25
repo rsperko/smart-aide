@@ -1,7 +1,7 @@
 import { App, Notice, Setting } from 'obsidian';
 import { defaultModelsFor } from './modal-add-endpoint';
 import { providerFor } from './providers';
-import { describeFreshness } from './settings';
+import { describeFreshness, hasWorkingDiscovery } from './settings';
 import { Endpoint } from './types';
 
 export interface EndpointEditorContext {
@@ -225,89 +225,50 @@ export function renderEndpointEditor(
 				}),
 		);
 
-	// Manual model list — collapsible
+	const discoveryWorks = hasWorkingDiscovery(endpoint);
 	const manualCount = endpoint.models?.length ?? 0;
-	const manualDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
-	const manualSummary = manualDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
-	manualSummary.setText(`Manual model list${manualCount ? ` (${manualCount})` : ''}`);
-	const manualBody = manualDetails.createDiv({ cls: 'vk-endpoint-section-body' });
-	manualBody.createDiv({
-		cls: 'setting-item-description',
-		text: 'One slug per line. Use when /models is unavailable or to pin a curated subset.',
-	});
-	const manualTextarea = manualBody.createEl('textarea', { cls: 'vk-settings-textarea' });
-	manualTextarea.rows = 6;
-	manualTextarea.value = (endpoint.models ?? []).join('\n');
-	manualTextarea.addEventListener('input', () => {
-		const list = manualTextarea.value
-			.split(/[\n,]/)
-			.map((s) => s.trim())
-			.filter(Boolean);
-		endpoint.models = list.length ? list : undefined;
-		void ctx.saveSettings();
-	});
 
-	// Reset to bundled defaults — only meaningful when we recognize the endpoint.
-	const defaults = defaultModelsFor(endpoint);
-	const resetRow = manualBody.createDiv({ cls: 'vk-endpoint-reset-row' });
-	const resetBtn = resetRow.createEl('button', { text: 'Reset to defaults' });
-	if (defaults && defaults.length > 0) {
-		resetBtn.title = `Replace the manual list with the ${defaults.length} bundled defaults for this provider.`;
-		let armed = false;
-		let armTimer: number | undefined;
-		const disarm = () => {
-			armed = false;
-			if (armTimer !== undefined) window.clearTimeout(armTimer);
-			armTimer = undefined;
-			resetBtn.setText('Reset to defaults');
-			resetBtn.removeClass('mod-warning');
-		};
-		resetBtn.addEventListener('click', () => {
-			if (!armed) {
-				armed = true;
-				resetBtn.setText('Confirm reset');
-				resetBtn.addClass('mod-warning');
-				armTimer = window.setTimeout(disarm, 3000);
-				return;
-			}
-			disarm();
-			endpoint.models = [...defaults];
-			manualTextarea.value = defaults.join('\n');
-			void ctx.saveSettings();
-			ctx.onChange();
-			new Notice(`Reset to ${defaults.length} bundled defaults.`);
+	// Manual model list — promoted to top level only when /models discovery has
+	// not delivered anything. When discovery works, the manual list is a
+	// power-user fallback and lives inside Advanced (below) to reduce noise.
+	let manualHost: HTMLElement;
+	if (discoveryWorks) {
+		const advDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
+		const advSummary = advDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
+		advSummary.setText('Advanced');
+		const advBody = advDetails.createDiv({ cls: 'vk-endpoint-section-body' });
+
+		// Manual list — fallback subsection inside Advanced.
+		manualHost = advBody.createDiv({ cls: 'vk-endpoint-subsection' });
+		manualHost.createDiv({ cls: 'vk-endpoint-subsection-title', text: `Model slugs (fallback${manualCount ? ` · ${manualCount}` : ''})` });
+		manualHost.createDiv({
+			cls: 'setting-item-description',
+			text: '/models discovery is the primary source for this endpoint. Add slugs here only if you want to pin a manual list or override discovery.',
 		});
-	} else {
-		resetBtn.setAttribute('disabled', 'true');
-		resetBtn.title = 'No bundled defaults for this endpoint — set models manually.';
-	}
+		renderManualListInto(manualHost, endpoint, ctx);
 
-	// Advanced — collapsible (headers)
-	const advDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
-	const advSummary = advDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
-	advSummary.setText('Advanced');
-	const advBody = advDetails.createDiv({ cls: 'vk-endpoint-section-body' });
-	advBody.createDiv({
-		cls: 'setting-item-description',
-		text: 'Custom request headers, one per line as "Key: value". For non-standard auth or routing.',
-	});
-	const advTextarea = advBody.createEl('textarea', { cls: 'vk-settings-textarea' });
-	advTextarea.rows = 4;
-	advTextarea.value = Object.entries(endpoint.headers ?? {})
-		.map(([k, v]) => `${k}: ${v}`)
-		.join('\n');
-	advTextarea.addEventListener('input', () => {
-		const headers: Record<string, string> = {};
-		for (const line of advTextarea.value.split('\n')) {
-			const idx = line.indexOf(':');
-			if (idx < 1) continue;
-			const k = line.slice(0, idx).trim();
-			const v = line.slice(idx + 1).trim();
-			if (k && v) headers[k] = v;
-		}
-		endpoint.headers = Object.keys(headers).length ? headers : undefined;
-		void ctx.saveSettings();
-	});
+		// Headers — also lives in Advanced.
+		const headersHost = advBody.createDiv({ cls: 'vk-endpoint-subsection' });
+		headersHost.createDiv({ cls: 'vk-endpoint-subsection-title', text: 'Custom headers' });
+		renderHeadersInto(headersHost, endpoint, ctx);
+	} else {
+		// Discovery didn't deliver — manual list is the primary path. Surface it
+		// at top level with a blurb that names it as the fallback.
+		manualHost = container.createDiv({ cls: 'vk-endpoint-manual-primary' });
+		manualHost.createDiv({ cls: 'vk-endpoint-section-summary', text: `Model slugs${manualCount ? ` (${manualCount})` : ''}` });
+		manualHost.createDiv({
+			cls: 'setting-item-description',
+			text: "This endpoint didn't return any models from /models. List the slugs you want available here, one per line.",
+		});
+		renderManualListInto(manualHost, endpoint, ctx);
+
+		// Headers stays in its own Advanced collapsible.
+		const advDetails = container.createEl('details', { cls: 'vk-endpoint-section' });
+		const advSummary = advDetails.createEl('summary', { cls: 'vk-endpoint-section-summary' });
+		advSummary.setText('Advanced');
+		const advBody = advDetails.createDiv({ cls: 'vk-endpoint-section-body' });
+		renderHeadersInto(advBody, endpoint, ctx);
+	}
 
 	// Delete (two-click confirm)
 	const deleteContainer = container.createDiv({ cls: 'vk-subpage-footer' });
@@ -341,6 +302,78 @@ export function keyHelpFor(baseURL: string): KeyHelp | null {
 	}
 	if (url.includes('localhost') || url.includes('127.0.0.1') || url.includes('0.0.0.0')) return { noKey: true };
 	return null;
+}
+
+function renderManualListInto(host: HTMLElement, endpoint: Endpoint, ctx: EndpointEditorContext): void {
+	const textarea = host.createEl('textarea', { cls: 'vk-settings-textarea' });
+	textarea.rows = 6;
+	textarea.value = (endpoint.models ?? []).join('\n');
+	textarea.addEventListener('input', () => {
+		const list = textarea.value
+			.split(/[\n,]/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		endpoint.models = list.length ? list : undefined;
+		void ctx.saveSettings();
+	});
+
+	const defaults = defaultModelsFor(endpoint);
+	const resetRow = host.createDiv({ cls: 'vk-endpoint-reset-row' });
+	const resetBtn = resetRow.createEl('button', { text: 'Reset to defaults' });
+	if (defaults && defaults.length > 0) {
+		resetBtn.title = `Replace the manual list with the ${defaults.length} bundled defaults for this provider.`;
+		let armed = false;
+		let armTimer: number | undefined;
+		const disarm = () => {
+			armed = false;
+			if (armTimer !== undefined) window.clearTimeout(armTimer);
+			armTimer = undefined;
+			resetBtn.setText('Reset to defaults');
+			resetBtn.removeClass('mod-warning');
+		};
+		resetBtn.addEventListener('click', () => {
+			if (!armed) {
+				armed = true;
+				resetBtn.setText('Confirm reset');
+				resetBtn.addClass('mod-warning');
+				armTimer = window.setTimeout(disarm, 3000);
+				return;
+			}
+			disarm();
+			endpoint.models = [...defaults];
+			textarea.value = defaults.join('\n');
+			void ctx.saveSettings();
+			ctx.onChange();
+			new Notice(`Reset to ${defaults.length} bundled defaults.`);
+		});
+	} else {
+		resetBtn.setAttribute('disabled', 'true');
+		resetBtn.title = 'No bundled defaults for this endpoint — set models manually.';
+	}
+}
+
+function renderHeadersInto(host: HTMLElement, endpoint: Endpoint, ctx: EndpointEditorContext): void {
+	host.createDiv({
+		cls: 'setting-item-description',
+		text: 'Custom request headers, one per line as "Key: value". For non-standard auth or routing.',
+	});
+	const textarea = host.createEl('textarea', { cls: 'vk-settings-textarea' });
+	textarea.rows = 4;
+	textarea.value = Object.entries(endpoint.headers ?? {})
+		.map(([k, v]) => `${k}: ${v}`)
+		.join('\n');
+	textarea.addEventListener('input', () => {
+		const headers: Record<string, string> = {};
+		for (const line of textarea.value.split('\n')) {
+			const idx = line.indexOf(':');
+			if (idx < 1) continue;
+			const k = line.slice(0, idx).trim();
+			const v = line.slice(idx + 1).trim();
+			if (k && v) headers[k] = v;
+		}
+		endpoint.headers = Object.keys(headers).length ? headers : undefined;
+		void ctx.saveSettings();
+	});
 }
 
 function testFailureLabel(err: Error): string {

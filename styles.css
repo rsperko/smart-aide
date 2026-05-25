@@ -616,27 +616,44 @@ details[open] > .vk-tool-summary::before {
 	font-style: italic;
 }
 
-/* Pin pills: filled, high-contrast fill (the editor's darkest var) so they
-   stand off the input card. The fill = "attached, static reference." */
+/* Pin pills: filled, high-contrast vs the input card. Semi-transparent black
+   overlay always darkens whatever's behind, regardless of theme — so the chip
+   stays clearly distinct from `--background-secondary`. */
 .vk-context-chip {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
 	font-size: 11px;
-	padding: 0 4px 0 5px;
+	padding: 1px 4px 1px 5px;
 	border: none;
 	border-radius: 4px;
-	background: var(--background-primary);
+	background: rgba(0, 0, 0, 0.55);
 	color: var(--text-normal);
 	cursor: pointer;
 	font-family: inherit;
 	transition: background-color 0.12s ease;
 	max-width: 100%;
 	line-height: 1.3;
+	/* iOS WebKit adds touch-target padding + appearance defaults to <button>;
+	   strip them so the chip honors the line-height and padding above. */
+	-webkit-appearance: none;
+	appearance: none;
+	min-height: 0;
+	height: auto;
 }
 
 .vk-context-chip:hover {
-	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	background: rgba(0, 0, 0, 0.7);
+}
+
+/* Light-theme adjustment: pure black overlay would be too heavy; lift to a
+   medium darken so the text-normal color still reads. */
+.theme-light .vk-context-chip {
+	background: rgba(0, 0, 0, 0.08);
+	color: var(--text-normal);
+}
+.theme-light .vk-context-chip:hover {
+	background: rgba(0, 0, 0, 0.14);
 }
 
 .vk-context-chip-icon {
@@ -695,10 +712,9 @@ details[open] > .vk-tool-summary::before {
 	opacity: 1;
 }
 
-/* "+ Note": outlined-button look. No fill, subtle border, hover fills.
-   The outlined-vs-filled contrast vs the pin pills above communicates
-   "action" rather than "already attached" — even when the colors are
-   similar in some themes. */
+/* "+ Note": outlined-button. No fill, subtle border, hover fills.
+   The outlined-vs-filled contrast against the pin pills communicates
+   "action" rather than "already attached." */
 .vk-context-add {
 	display: inline-flex;
 	align-items: center;
@@ -713,6 +729,11 @@ details[open] > .vk-tool-summary::before {
 	font-family: inherit;
 	line-height: 1.3;
 	transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
+	/* Same iOS reset as the pin chips. */
+	-webkit-appearance: none;
+	appearance: none;
+	min-height: 0;
+	height: auto;
 }
 
 .vk-context-add:hover {
@@ -868,15 +889,24 @@ details[open] > .vk-tool-summary::before {
 
 .vk-model-suggestion {
 	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+}
+
+.vk-model-suggestion-body {
+	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	padding: 6px 12px;
+	flex: 1;
+	min-width: 0;
 }
 
 .vk-model-suggestion-main {
 	display: flex;
 	align-items: baseline;
 	gap: 8px;
+	flex-wrap: wrap;
 }
 
 .vk-model-suggestion-name {
@@ -914,6 +944,41 @@ details[open] > .vk-tool-summary::before {
 .vk-model-suggestion-endpoint {
 	color: var(--text-faint);
 	font-style: italic;
+}
+
+/* Star button — toggles favorite. Outlined ☆ by default, filled ★ when
+   favorited. Generous tap target on mobile (FuzzySuggestModal rows are roomy
+   already, but iOS WebKit shrinks bare <button>s). */
+.vk-model-suggestion-star {
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--text-faint);
+	font-size: 18px;
+	line-height: 1;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	padding: 0;
+}
+
+.vk-model-suggestion-star:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+}
+
+.vk-model-suggestion-star-on {
+	color: var(--text-accent, var(--interactive-accent));
+}
+
+.vk-model-suggestion-star-on:hover {
+	color: var(--text-accent, var(--interactive-accent));
 }
 
 /* ---------- Settings tab: shared bits ---------- */
@@ -2153,4 +2218,161 @@ details[open] > .vk-research-summary::after {
 	display: flex;
 	justify-content: flex-end;
 	margin-top: 8px;
+}
+
+/* ---------- Settings tab: Favorites list ---------- */
+
+.vk-favorites-card {
+	margin: 8px 0 16px;
+	padding: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.vk-favorites-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.vk-favorites-title {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.vk-favorites-count {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.vk-favorites-empty {
+	font-size: 12px;
+	color: var(--text-muted);
+	padding: 8px 0;
+	line-height: 1.45;
+}
+
+.vk-favorites-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 4px 0 8px;
+}
+
+.vk-favorite-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	border-radius: 4px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+}
+
+.vk-favorite-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.vk-favorite-name {
+	font-weight: 500;
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.vk-favorite-slug {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.vk-favorite-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+}
+
+.vk-favorite-move,
+.vk-favorite-remove {
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--text-muted);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	padding: 0;
+}
+
+.vk-favorite-move:hover:not([disabled]),
+.vk-favorite-remove:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.vk-favorite-move[disabled] {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.vk-favorite-remove:hover {
+	color: var(--text-error, var(--text-normal));
+}
+
+.vk-favorites-actions {
+	display: flex;
+	justify-content: flex-end;
+}
+
+/* ---------- Endpoint editor: Advanced subsections ---------- */
+
+.vk-endpoint-subsection {
+	margin: 10px 0;
+}
+
+.vk-endpoint-subsection + .vk-endpoint-subsection {
+	padding-top: 10px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.vk-endpoint-subsection-title {
+	font-weight: 500;
+	color: var(--text-normal);
+	margin-bottom: 4px;
+}
+
+.vk-endpoint-manual-primary {
+	margin: 12px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.vk-endpoint-manual-primary .vk-endpoint-section-summary {
+	cursor: default;
+	padding: 0 0 4px;
+}
+
+.vk-endpoint-manual-primary .vk-endpoint-section-summary::before {
+	content: "";
 }

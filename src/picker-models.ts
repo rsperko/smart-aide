@@ -9,6 +9,14 @@ interface DisplayItem {
 	friendly: string;
 }
 
+export interface ModelPickerCallbacks {
+	onPick: (ref: ModelRef) => void;
+	/** Called when the user taps the star button on a row. The caller persists
+	 * the new favorites list and re-opens the picker (handled internally so the
+	 * UI stays in sync without a parent re-render dance). */
+	onToggleFavorite?: (ref: ModelRef) => Promise<void> | void;
+}
+
 export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 	private readonly multiEndpoint: boolean;
 
@@ -17,7 +25,8 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 		private endpoints: Endpoint[],
 		private current: ModelRef,
 		private recents: ModelRef[],
-		private onPick: (ref: ModelRef) => void,
+		private favorites: ModelRef[],
+		private callbacks: ModelPickerCallbacks,
 		private showAll: boolean = false,
 	) {
 		super(app);
@@ -26,6 +35,7 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
 			{ command: '↵', purpose: 'select' },
+			{ command: '★', purpose: 'favorite' },
 			{ command: 'esc', purpose: 'dismiss' },
 		]);
 	}
@@ -35,6 +45,7 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 			endpoints: this.endpoints,
 			current: this.current,
 			recents: this.recents,
+			favorites: this.favorites,
 			showAll: this.showAll,
 		});
 		return items.map((item) =>
@@ -60,7 +71,9 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 			return;
 		}
 
-		const main = el.createDiv({ cls: 'vk-model-suggestion-main' });
+		const body = el.createDiv({ cls: 'vk-model-suggestion-body' });
+
+		const main = body.createDiv({ cls: 'vk-model-suggestion-main' });
 		main.createSpan({ cls: 'vk-model-suggestion-name', text: friendly });
 
 		if (sameRef(item.ref, this.current)) {
@@ -80,17 +93,40 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 					text: `· ${formatPriceShort(meta.promptPrice, meta.completionPrice)}`,
 				});
 			}
-			if (meta.supportsTools === true) {
-				main.createSpan({ cls: 'vk-model-suggestion-tools', text: '· 🔧' });
-			} else if (meta.supportsTools === false) {
+			if (meta.supportsTools === false) {
 				main.createSpan({ cls: 'vk-model-suggestion-tools', text: '· no tools' });
 			}
 		}
 
-		const sub = el.createDiv({ cls: 'vk-model-suggestion-slug' });
+		const sub = body.createDiv({ cls: 'vk-model-suggestion-slug' });
 		sub.setText(item.ref.slug);
 		if (this.multiEndpoint) {
 			sub.createSpan({ cls: 'vk-model-suggestion-endpoint', text: `  [${item.endpointName}]` });
+		}
+
+		if (this.callbacks.onToggleFavorite) {
+			const star = el.createEl('button', {
+				cls: item.isFavorite ? 'vk-model-suggestion-star vk-model-suggestion-star-on' : 'vk-model-suggestion-star',
+				text: item.isFavorite ? '★' : '☆',
+				attr: {
+					'aria-label': item.isFavorite ? 'Unfavorite' : 'Favorite',
+					title: item.isFavorite ? 'Unfavorite' : 'Add to favorites',
+				},
+			});
+			// FuzzySuggestModal binds row selection on click; stop here so the star
+			// only toggles the favorite. mousedown/touchstart cover the cases where
+			// FuzzySuggestModal commits on mousedown (it does on some platforms).
+			const stop = (ev: Event) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+			};
+			star.addEventListener('mousedown', stop);
+			star.addEventListener('touchstart', stop, { passive: false });
+			star.addEventListener('click', async (ev) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				await this.toggleFavorite(item.ref);
+			});
 		}
 	}
 
@@ -106,13 +142,38 @@ export class ModelPickerModal extends FuzzySuggestModal<DisplayItem> {
 					this.endpoints,
 					this.current,
 					this.recents,
-					this.onPick,
+					this.favorites,
+					this.callbacks,
 					nextShowAll,
 				).open();
 			}, 0);
 			return;
 		}
-		this.onPick(item.ref);
+		this.callbacks.onPick(item.ref);
+	}
+
+	private async toggleFavorite(ref: ModelRef): Promise<void> {
+		if (!this.callbacks.onToggleFavorite) return;
+		const wasFavorite = this.favorites.some((f) => sameRef(f, ref));
+		this.favorites = wasFavorite
+			? this.favorites.filter((f) => !sameRef(f, ref))
+			: [...this.favorites, ref];
+		await this.callbacks.onToggleFavorite(ref);
+		// Re-open so the row order and star state both refresh — the modal's
+		// internal item list is cached after first render otherwise.
+		this.close();
+		const showAll = this.showAll;
+		window.setTimeout(() => {
+			new ModelPickerModal(
+				this.app,
+				this.endpoints,
+				this.current,
+				this.recents,
+				this.favorites,
+				this.callbacks,
+				showAll,
+			).open();
+		}, 0);
 	}
 
 	private isRecent(ref: ModelRef): boolean {

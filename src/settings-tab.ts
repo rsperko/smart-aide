@@ -19,12 +19,15 @@ import {
 	endpointSummary,
 	findEndpoint,
 	isEndpointConnected,
+	moveFavorite,
 	newEndpointId,
 	normalizeMetaDir,
 	pickReplacementModelRef,
 	previewSystemPrompt,
+	removeFavorite,
 	sameRef,
 	skillsDirFor,
+	toggleFavorite,
 } from './settings';
 import type SmartAidePlugin from './main';
 
@@ -423,7 +426,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 
 		root.createDiv({
 			cls: 'setting-item-description vk-section-blurb',
-			text: 'Pick from any model across the endpoints above.',
+			text: 'Pick from any model across the endpoints above. Star models in the picker to build a favorites list spanning all providers.',
 		});
 
 		const { settings } = this.plugin;
@@ -479,6 +482,110 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					}),
 			);
 		}
+
+		this.renderFavoritesList(root);
+	}
+
+	private renderFavoritesList(root: HTMLElement): void {
+		const { settings } = this.plugin;
+
+		const card = root.createDiv({ cls: 'vk-favorites-card' });
+		const header = card.createDiv({ cls: 'vk-favorites-header' });
+		header.createSpan({ cls: 'vk-favorites-title', text: '★ Favorites' });
+		header.createSpan({
+			cls: 'vk-favorites-count',
+			text: settings.favoriteModels.length
+				? `${settings.favoriteModels.length} pinned across endpoints`
+				: 'No favorites yet',
+		});
+
+		if (settings.favoriteModels.length === 0) {
+			card.createDiv({
+				cls: 'vk-favorites-empty',
+				text: 'Star models in the picker to pin them here. Favorites appear at the top of the model picker across every chat.',
+			});
+		} else {
+			const list = card.createDiv({ cls: 'vk-favorites-list' });
+			settings.favoriteModels.forEach((fav, idx) => {
+				this.renderFavoriteRow(list, fav, idx, settings.favoriteModels.length);
+			});
+		}
+
+		const actions = card.createDiv({ cls: 'vk-favorites-actions' });
+		const addBtn = actions.createEl('button', { text: '+ Add favorite…' });
+		addBtn.addEventListener('click', () => this.openFavoritePicker());
+	}
+
+	private renderFavoriteRow(parent: HTMLElement, fav: ModelRef, idx: number, total: number): void {
+		const row = parent.createDiv({ cls: 'vk-favorite-row' });
+
+		const info = row.createDiv({ cls: 'vk-favorite-info' });
+		info.createDiv({ cls: 'vk-favorite-name', text: describeModelRef(this.plugin.settings, fav) });
+		info.createDiv({ cls: 'vk-favorite-slug', text: fav.slug });
+
+		const actions = row.createDiv({ cls: 'vk-favorite-actions' });
+
+		const up = actions.createEl('button', {
+			cls: 'vk-favorite-move',
+			text: '↑',
+			attr: { title: 'Move up', 'aria-label': 'Move up' },
+		});
+		if (idx === 0) up.setAttribute('disabled', 'true');
+		up.addEventListener('click', () => {
+			this.plugin.settings.favoriteModels = moveFavorite(this.plugin.settings.favoriteModels, fav, 'up');
+			void this.plugin.saveSettings();
+			this.display();
+		});
+
+		const down = actions.createEl('button', {
+			cls: 'vk-favorite-move',
+			text: '↓',
+			attr: { title: 'Move down', 'aria-label': 'Move down' },
+		});
+		if (idx === total - 1) down.setAttribute('disabled', 'true');
+		down.addEventListener('click', () => {
+			this.plugin.settings.favoriteModels = moveFavorite(this.plugin.settings.favoriteModels, fav, 'down');
+			void this.plugin.saveSettings();
+			this.display();
+		});
+
+		const remove = actions.createEl('button', {
+			cls: 'vk-favorite-remove',
+			text: '×',
+			attr: { title: 'Remove favorite', 'aria-label': 'Remove favorite' },
+		});
+		remove.addEventListener('click', () => {
+			this.plugin.settings.favoriteModels = removeFavorite(this.plugin.settings.favoriteModels, fav);
+			void this.plugin.saveSettings();
+			this.display();
+		});
+	}
+
+	private openFavoritePicker(): void {
+		// Open in "show all" mode so users can pick anything across providers,
+		// not just the curated subset. Picking just adds to favorites (no
+		// default-model side effect) — that's the explicit "+ Add favorite" path.
+		new ModelPickerModal(
+			this.app,
+			this.plugin.settings.endpoints,
+			this.plugin.settings.defaultModelRef,
+			this.plugin.settings.modelRecents,
+			this.plugin.settings.favoriteModels,
+			{
+				onPick: (picked) => {
+					if (!this.plugin.settings.favoriteModels.some((f) => sameRef(f, picked))) {
+						this.plugin.settings.favoriteModels = [...this.plugin.settings.favoriteModels, picked];
+						void this.plugin.saveSettings().then(() => this.display());
+					}
+				},
+				onToggleFavorite: async (ref) => {
+					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
+					await this.plugin.saveSettings();
+					this.display();
+				},
+			},
+			true,
+		).open();
 	}
 
 	private openPickerForRef(current: ModelRef, onPick: (ref: ModelRef) => void): void {
@@ -487,7 +594,14 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			this.plugin.settings.endpoints,
 			current,
 			this.plugin.settings.modelRecents,
-			onPick,
+			this.plugin.settings.favoriteModels,
+			{
+				onPick,
+				onToggleFavorite: async (ref) => {
+					this.plugin.settings.favoriteModels = toggleFavorite(this.plugin.settings.favoriteModels, ref);
+					await this.plugin.saveSettings();
+				},
+			},
 		).open();
 	}
 

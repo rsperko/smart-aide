@@ -10,6 +10,9 @@ export interface ModelItem {
 	 * from an endpoint that has no curation at all (otherwise it would have
 	 * an empty picker). */
 	isCurated: boolean;
+	/** True when this ref appears in settings.favoriteModels. Drives the filled
+	 * star in the picker and bubbles the row to the top of the list. */
+	isFavorite: boolean;
 }
 
 export interface ToggleItem {
@@ -24,6 +27,7 @@ export interface BuildItemsInput {
 	endpoints: Endpoint[];
 	current: ModelRef;
 	recents: ModelRef[];
+	favorites: ModelRef[];
 	showAll: boolean;
 }
 
@@ -39,15 +43,23 @@ function keyOf(ref: ModelRef): string {
 /**
  * Pure logic behind ModelPickerModal.getItems — extracted so it can be unit-tested
  * without spinning up Obsidian. Default mode (showAll=false) returns only models
- * listed in endpoint.models, plus any current/recent models so the user can never
- * lose sight of "what's selected right now." Endpoints with empty curation lists
+ * listed in endpoint.models, plus any favorite/current/recent models so the user
+ * can never lose sight of pinned context. Endpoints with empty curation lists
  * fall back to showing all of their discovered models so they don't appear empty.
+ *
+ * Favorites are *also* surfaced when their endpoint is missing or doesn't list
+ * them in discovered/manual — a stale favorite still renders so the user can
+ * unstar it (the row just has no `discovered` metadata).
  */
 export function buildModelPickerItems(input: BuildItemsInput): BuildItemsResult {
-	const { endpoints, current, recents, showAll } = input;
+	const { endpoints, current, recents, favorites, showAll } = input;
+
+	const favoriteKeys = new Set(favorites.map(keyOf));
+	const recentKeys = recents.map(keyOf);
+	const favoriteOrder = new Map(favorites.map((f, i) => [keyOf(f), i]));
 
 	const alwaysVisibleKeys = new Set<string>();
-	for (const r of [current, ...recents]) alwaysVisibleKeys.add(keyOf(r));
+	for (const r of [current, ...recents, ...favorites]) alwaysVisibleKeys.add(keyOf(r));
 
 	const items: ModelItem[] = [];
 	const seen = new Set<string>();
@@ -70,6 +82,7 @@ export function buildModelPickerItems(input: BuildItemsInput): BuildItemsResult 
 			seen.add(key);
 
 			const isCurated = curatedKeys.has(key);
+			const isFavorite = favoriteKeys.has(key);
 			const isAlwaysVisible = alwaysVisibleKeys.has(key);
 			const include = showAll || isCurated || isAlwaysVisible || !endpointHasCurated;
 			if (!include) {
@@ -84,17 +97,43 @@ export function buildModelPickerItems(input: BuildItemsInput): BuildItemsResult 
 				slug,
 				discovered: discoveredById.get(slug),
 				isCurated: isCurated || !endpointHasCurated,
+				isFavorite,
 			});
 		}
 	}
 
-	const recentKeys = recents.map(keyOf);
+	// Stale favorites: refs to slugs (or endpoints) the picker hasn't surfaced
+	// yet. Still render them so the user can unstar — otherwise a removed
+	// endpoint orphans favorites with no UI escape hatch.
+	for (const fav of favorites) {
+		const key = keyOf(fav);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		const endpoint = endpoints.find((e) => e.id === fav.endpointId);
+		items.push({
+			kind: 'model',
+			ref: fav,
+			endpointName: endpoint?.name ?? fav.endpointId,
+			slug: fav.slug,
+			discovered: undefined,
+			isCurated: false,
+			isFavorite: true,
+		});
+	}
+
 	const rankRecent = (item: ModelItem) => {
 		const idx = recentKeys.indexOf(keyOf(item.ref));
 		return idx < 0 ? Infinity : idx;
 	};
+	const rankFavorite = (item: ModelItem) => {
+		const idx = favoriteOrder.get(keyOf(item.ref));
+		return idx === undefined ? Infinity : idx;
+	};
 
 	items.sort((a, b) => {
+		const fa = rankFavorite(a);
+		const fb = rankFavorite(b);
+		if (fa !== fb) return fa - fb;
 		const ra = rankRecent(a);
 		const rb = rankRecent(b);
 		if (ra !== rb) return ra - rb;

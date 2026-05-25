@@ -6,6 +6,10 @@ export interface SmartAideSettings {
 	defaultModelRef: ModelRef;
 	titleModelRef: ModelRef;
 	modelRecents: ModelRef[];
+	/** Cross-endpoint favorites — ordered. The picker surfaces these first; the
+	 * Settings tab renders the list inline so users can build a curated set
+	 * spanning providers without round-tripping through each endpoint editor. */
+	favoriteModels: ModelRef[];
 	systemPrompt: string;
 	autoApproveWrites: boolean;
 	metaDir: string;
@@ -73,6 +77,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	defaultModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
 	titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
 	modelRecents: [],
+	favoriteModels: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
 	metaDir: DEFAULT_META_DIR,
@@ -93,6 +98,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
 			titleModelRef: (r.titleModelRef as ModelRef) ?? (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.titleModelRef,
 			modelRecents: Array.isArray(r.modelRecents) ? (r.modelRecents as ModelRef[]) : [],
+			favoriteModels: sanitizeFavorites(r.favoriteModels),
 			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
 			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
@@ -121,12 +127,29 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		defaultModelRef: { endpointId: OPENROUTER_ID, slug: legacyDefault },
 		titleModelRef: { endpointId: OPENROUTER_ID, slug: legacyTitle },
 		modelRecents: recents,
+		favoriteModels: [],
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: false,
 		metaDir: DEFAULT_META_DIR,
 		hasSeenMentionTip: false,
 		anthropicPromptCaching: true,
 	};
+}
+
+function sanitizeFavorites(raw: unknown): ModelRef[] {
+	if (!Array.isArray(raw)) return [];
+	const out: ModelRef[] = [];
+	const seen = new Set<string>();
+	for (const v of raw) {
+		if (!v || typeof v !== 'object') continue;
+		const ref = v as Partial<ModelRef>;
+		if (typeof ref.endpointId !== 'string' || typeof ref.slug !== 'string') continue;
+		const key = `${ref.endpointId}::${ref.slug}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({ endpointId: ref.endpointId, slug: ref.slug });
+	}
+	return out;
 }
 
 export function findEndpoint(settings: SmartAideSettings, id: string): Endpoint | undefined {
@@ -222,6 +245,40 @@ export function describeModelRef(settings: SmartAideSettings, ref: ModelRef): st
 	const friendly = friendlyModelName(ref.slug);
 	if (settings.endpoints.length <= 1) return friendly;
 	return `${friendly} · ${endpoint?.name ?? ref.endpointId}`;
+}
+
+export function isFavoriteRef(favorites: ModelRef[], ref: ModelRef): boolean {
+	return favorites.some((f) => sameRef(f, ref));
+}
+
+export function toggleFavorite(favorites: ModelRef[], ref: ModelRef): ModelRef[] {
+	if (isFavoriteRef(favorites, ref)) return favorites.filter((f) => !sameRef(f, ref));
+	return [...favorites, ref];
+}
+
+export function removeFavorite(favorites: ModelRef[], ref: ModelRef): ModelRef[] {
+	return favorites.filter((f) => !sameRef(f, ref));
+}
+
+/** Move a favorite up or down in the ordered list. No-ops if the move would go
+ * out of bounds, so callers can wire arrow buttons without bounds-checking. */
+export function moveFavorite(favorites: ModelRef[], ref: ModelRef, direction: 'up' | 'down'): ModelRef[] {
+	const i = favorites.findIndex((f) => sameRef(f, ref));
+	if (i < 0) return favorites;
+	const j = direction === 'up' ? i - 1 : i + 1;
+	if (j < 0 || j >= favorites.length) return favorites;
+	const next = [...favorites];
+	const tmp = next[i];
+	next[i] = next[j];
+	next[j] = tmp;
+	return next;
+}
+
+/** "Did /models give us anything?" Drives the conditional manual-list reveal in
+ * the endpoint editor — when discovery works, manual is fallback (in Advanced);
+ * when it doesn't, manual is the primary path. */
+export function hasWorkingDiscovery(endpoint: Endpoint): boolean {
+	return (endpoint.discoveredModels?.length ?? 0) > 0;
 }
 
 export function previewSystemPrompt(prompt: string): string {
