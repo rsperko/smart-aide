@@ -822,7 +822,7 @@ export class ChatView extends ItemView {
 		});
 		const addIcon = addBtn.createSpan({ cls: 'vk-context-add-icon' });
 		setIcon(addIcon, 'plus');
-		addBtn.createSpan({ text: 'Add note' });
+		addBtn.createSpan({ text: 'Note' });
 		addBtn.title = 'Pin a note as context (or type @ in the composer)';
 		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
 
