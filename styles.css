@@ -2409,3 +2409,159 @@ details[open] > .vk-research-summary::after {
 .vk-endpoint-manual-primary .vk-endpoint-section-summary::before {
 	content: "";
 }
+
+/* --- Settings: Overview section --- */
+
+.vk-overview {
+	margin-bottom: 24px;
+}
+
+.vk-overview-heading {
+	margin: 0 0 12px;
+	font-size: var(--font-ui-large);
+}
+
+.vk-overview-banner {
+	padding: 12px 14px;
+	margin-bottom: 16px;
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--color-orange);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.vk-overview-banner-title {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.vk-overview-banner-body {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: 8px;
+}
+
+.vk-overview-banner-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.vk-overview-list {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.vk-overview-row {
+	display: grid;
+	grid-template-columns: 120px 1fr auto;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 14px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.vk-overview-row:first-child {
+	border-top: none;
+}
+
+.vk-overview-row-label {
+	font-weight: 500;
+	color: var(--text-normal);
+}
+
+.vk-overview-row-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.vk-overview-row-warn .vk-overview-row-status {
+	color: var(--color-orange);
+}
+
+.vk-overview-row-action {
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	padding: 4px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.vk-overview-row-action:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+/* --- Settings: Vault data derived paths --- */
+
+.vk-paths-grid {
+	display: grid;
+	grid-template-columns: 140px 1fr;
+	row-gap: 4px;
+	column-gap: 12px;
+	padding: 8px 14px;
+	margin: 8px 0 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	font-size: var(--font-ui-small);
+}
+
+.vk-paths-row {
+	display: contents;
+}
+
+.vk-paths-label {
+	color: var(--text-muted);
+}
+
+.vk-paths-value {
+	color: var(--text-normal);
+	font-family: var(--font-monospace);
+	word-break: break-all;
+}
+
+/* --- Settings: Skills summary line --- */
+
+.vk-skills-summary {
+	display: flex;
+	gap: 10px;
+	align-items: baseline;
+	flex-wrap: wrap;
+	margin: 8px 0 12px;
+}
+
+.vk-skills-count {
+	font-weight: 500;
+}
+
+.vk-skills-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.vk-starters-block {
+	margin-top: 18px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* --- Settings: Advanced system-prompt summary label --- */
+
+.vk-prompt-summary-label {
+	font-weight: 500;
+	margin-right: 10px;
+}
+
+/* Scroll margin so heading targets clear any sticky chrome when scrolled into view. */
+[data-section] {
+	scroll-margin-top: 12px;
+}
