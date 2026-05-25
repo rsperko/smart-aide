@@ -616,31 +616,46 @@ details[open] > .vk-tool-summary::before {
 	font-style: italic;
 }
 
+/* Context references look like Copilot's attached-file chips: subtle border,
+   transparent fill, file icon + name + small ×. The border defines the unit
+   without dominating; transparent fill blends into the input card. */
 .vk-context-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: 2px;
-	font-size: 10px;
-	padding: 0 3px 0 5px;
+	gap: 4px;
+	font-size: 11px;
+	padding: 1px 4px 1px 5px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 4px;
-	background: var(--background-primary);
+	background: transparent;
 	color: var(--text-normal);
 	cursor: pointer;
 	font-family: inherit;
-	transition: background-color 0.12s ease;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
 	max-width: 100%;
-	line-height: 1.3;
+	line-height: 1.4;
 }
 
 .vk-context-chip:hover {
 	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover, var(--text-faint));
 }
 
-/* Skill chips — distinct tint so context-source is visible at a glance. */
-.vk-context-skill {
-	border-color: var(--interactive-accent);
-	border-style: dashed;
+.vk-context-chip-icon {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.vk-context-chip-icon svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* Skill chips — accent-tinted icon distinguishes from file pins. */
+.vk-context-skill .vk-context-chip-icon {
+	color: var(--interactive-accent);
 }
 
 .vk-context-chip-truncated {
@@ -648,11 +663,11 @@ details[open] > .vk-tool-summary::before {
 }
 
 .vk-context-chip-name {
-	font-weight: 500;
+	font-weight: 400;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	max-width: 140px;
+	max-width: 160px;
 }
 
 .vk-context-chip-x {
@@ -660,46 +675,68 @@ details[open] > .vk-tool-summary::before {
 	align-items: center;
 	justify-content: center;
 	color: var(--text-faint);
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
-	font-size: 10px;
+	width: 12px;
+	height: 12px;
+	font-size: 13px;
 	line-height: 1;
 	margin-left: 1px;
+	opacity: 0.5;
+	transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.vk-context-chip:hover .vk-context-chip-x {
+	opacity: 1;
 }
 
 .vk-context-chip-x:hover {
-	background: var(--background-modifier-error, var(--background-modifier-border));
-	color: var(--text-on-accent, var(--text-normal));
+	color: var(--text-error, var(--text-normal));
+	opacity: 1;
 }
 
+/* Add-note: same chip shape as a pin so they sit on one row, but dashed
+   border signals "empty slot / action," not an already-attached note. */
 .vk-context-add {
-	font-size: 10px;
-	padding: 0 5px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	padding: 1px 6px 1px 5px;
 	border: 1px dashed var(--background-modifier-border);
 	border-radius: 4px;
 	background: transparent;
 	color: var(--text-muted);
 	cursor: pointer;
 	font-family: inherit;
-	line-height: 1.3;
+	line-height: 1.4;
+	transition: color 0.12s ease, border-color 0.12s ease, border-style 0.12s ease, background-color 0.12s ease;
 }
 
 .vk-context-add:hover {
-	background: var(--background-modifier-hover);
 	color: var(--text-normal);
 	border-style: solid;
+	border-color: var(--text-faint);
+	background: var(--background-modifier-hover);
+}
+
+.vk-context-add svg {
+	width: 12px;
+	height: 12px;
+	flex-shrink: 0;
 }
 
 .vk-context-clear {
 	font-size: 11px;
-	padding: 3px 8px;
+	padding: 1px 4px;
 	border: none;
 	background: transparent;
 	color: var(--text-faint);
 	cursor: pointer;
 	font-family: inherit;
 	text-decoration: underline;
+}
+
+.vk-context-clear:hover {
+	color: var(--text-muted);
 }
 
 .vk-context-clear:hover {
@@ -1243,16 +1280,16 @@ details[open] > .vk-tool-summary::before {
 	align-items: center;
 	gap: 4px;
 	font-size: 11px;
-	padding: 3px 8px;
-	border: 1px solid transparent;
-	border-radius: 6px;
+	padding: 2px 4px;
+	border: none;
+	border-radius: 0;
 	background: transparent;
 	color: var(--text-faint);
 	font-family: inherit;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	cursor: pointer;
-	transition: background-color 0.12s ease, color 0.12s ease;
+	transition: color 0.12s ease;
 }
 
 .vk-token-chip:empty {
@@ -1260,8 +1297,8 @@ details[open] > .vk-tool-summary::before {
 }
 
 .vk-token-chip:hover {
-	background: var(--background-modifier-hover);
 	color: var(--text-muted);
+	background: transparent;
 }
 
 .vk-token-chip.vk-token-muted {

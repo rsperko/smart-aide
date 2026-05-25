@@ -257,3 +257,58 @@ describe('ComposerController edit-fork', () => {
 		expect(rerender).toHaveBeenCalled();
 	});
 });
+
+// ---------- slash autocomplete ----------
+
+describe('ComposerController.updateSlashPopover', () => {
+	(globalThis as any).window = (globalThis as any).window ?? { setTimeout: (fn: () => void) => setTimeout(fn, 0) };
+	(globalThis as any).document = (globalThis as any).document ?? { addEventListener: () => undefined, removeEventListener: () => undefined };
+
+	function makeSlashHost(skills: Array<{ name: string; description: string; userInvocable: boolean; mobile: boolean }>): ComposerHost {
+		return makeHost({
+			skills: {
+				userInvocableSkills: () => skills.filter((s) => s.userInvocable),
+			} as unknown as SkillRegistry,
+		});
+	}
+
+	function makeSlashController(host: ComposerHost) {
+		const composerWrap = stubEl();
+		const composerEl = stubEl({ closest: () => composerWrap });
+		const attachmentRowEl = stubEl();
+		const sendBtn = stubEl();
+		const controller = new ComposerController(host, composerEl, attachmentRowEl, sendBtn);
+		return { controller, composerEl, composerWrap };
+	}
+
+	it('opens the popover when value matches /<query> and a user-invocable skill matches', () => {
+		const host = makeSlashHost([
+			{ name: 'moc-builder', description: 'Build a MOC', userInvocable: true, mobile: true },
+			{ name: 'daily-note', description: 'Daily note', userInvocable: true, mobile: true },
+		]);
+		const { controller, composerEl } = makeSlashController(host);
+		composerEl.value = '/mo';
+		controller.updateSlashPopover();
+		expect(controller.isSlashOpen()).toBe(true);
+	});
+
+	it('keeps the popover closed when there are no user-invocable skills', () => {
+		const host = makeSlashHost([
+			{ name: 'moc-builder', description: 'Build a MOC', userInvocable: false, mobile: true },
+		]);
+		const { controller, composerEl } = makeSlashController(host);
+		composerEl.value = '/mo';
+		controller.updateSlashPopover();
+		expect(controller.isSlashOpen()).toBe(false);
+	});
+
+	it('keeps the popover closed when value has trailing space (slash settled)', () => {
+		const host = makeSlashHost([
+			{ name: 'moc-builder', description: 'Build a MOC', userInvocable: true, mobile: true },
+		]);
+		const { controller, composerEl } = makeSlashController(host);
+		composerEl.value = '/mo ';
+		controller.updateSlashPopover();
+		expect(controller.isSlashOpen()).toBe(false);
+	});
+});

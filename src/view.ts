@@ -530,6 +530,11 @@ export class ChatView extends ItemView {
 		this.dangerChip.toggleClass('is-visible', on);
 	}
 
+	refreshProjection(): void {
+		this.invalidateBreakdownCache();
+		void this.refreshTokenChip();
+	}
+
 	private openPluginSettings(): void {
 		const setting = (this.app as unknown as {
 			setting?: { open?: () => void; openTabById?: (id: string) => void };
@@ -809,6 +814,18 @@ export class ChatView extends ItemView {
 		this.invalidateBreakdownCache();
 		void this.refreshTokenChip();
 
+		// Add Note sits at the start of the row (Copilot pattern) so the empty
+		// state reads as "+ Add note" first; pinned chips fall in to its right.
+		const addBtn = this.contextRowEl.createEl('button', {
+			cls: 'vk-context-add',
+			attr: { type: 'button' },
+		});
+		const addIcon = addBtn.createSpan({ cls: 'vk-context-add-icon' });
+		setIcon(addIcon, 'plus');
+		addBtn.createSpan({ text: 'Add note' });
+		addBtn.title = 'Pin a note as context (or type @ in the composer)';
+		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
+
 		const pinList = this.pinned.list();
 
 		for (const path of pinList) {
@@ -816,6 +833,8 @@ export class ChatView extends ItemView {
 				cls: 'vk-context-chip',
 				attr: { type: 'button' },
 			});
+			const icon = chip.createSpan({ cls: 'vk-context-chip-icon' });
+			setIcon(icon, 'file-text');
 			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
 			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
 			chip.title = `Pinned: ${path}`;
@@ -849,6 +868,8 @@ export class ChatView extends ItemView {
 				cls: 'vk-context-chip vk-context-skill',
 				attr: { type: 'button' },
 			});
+			const icon = chip.createSpan({ cls: 'vk-context-chip-icon' });
+			setIcon(icon, 'brain');
 			chip.createSpan({ cls: 'vk-context-chip-name', text: skillName });
 			if (skill) {
 				chip.title = skill.description;
@@ -871,14 +892,6 @@ export class ChatView extends ItemView {
 				this.refreshContextChips();
 			});
 		}
-
-		const addBtn = this.contextRowEl.createEl('button', {
-			cls: 'vk-context-add',
-			attr: { type: 'button' },
-			text: '+ note',
-		});
-		addBtn.title = 'Pin a note as context';
-		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
 	}
 
 	private openContextPicker(): void {

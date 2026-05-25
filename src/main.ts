@@ -18,9 +18,6 @@ export default class SmartAidePlugin extends Plugin {
 		this.storage = new ChatStorage(this.app.vault, chatsDirFor(this.settings.metaDir));
 		this.skills = new SkillRegistry(this.app, skillsDirFor(this.settings.metaDir));
 		this.agents = new AgentsMdRegistry(this.app, this.settings.metaDir);
-		// Discover skills + AGENTS.md in the background — don't block plugin load
-		this.skills.load().catch((e) => console.warn('smart-aide: skill load failed', e));
-		this.agents.load().catch((e) => console.warn('smart-aide: AGENTS.md load failed', e));
 
 		this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
 		this.addSettingTab(new SmartAideSettingsTab(this.app, this));
@@ -32,6 +29,7 @@ export default class SmartAidePlugin extends Plugin {
 			name: 'Reload skills & AGENTS.md',
 			callback: async () => {
 				await Promise.all([this.skills.load(), this.agents.load()]);
+				this.refreshOpenViewProjections();
 				new Notice(`Loaded ${this.skills.all().length} skills.`);
 			},
 		});
@@ -73,7 +71,18 @@ export default class SmartAidePlugin extends Plugin {
 		// Ensure smart-aide has a tab in the right sidebar so the icon shows up
 		// alongside other right-pane plugins (backlinks, outline, etc). Runs once
 		// per plugin load; if user closes the tab, it returns next time.
+		// Skills + AGENTS.md load here too — `getAbstractFileByPath` returns null
+		// until the vault has finished indexing, which is what layout-ready signals.
 		this.app.workspace.onLayoutReady(() => {
+			// Refresh token projections in open views once the manifest is real —
+			// otherwise the chip undercounts until the user nudges it (e.g. adding
+			// a pin), then jumps when the catalog/AGENTS finally land in the recompute.
+			this.skills.load()
+				.then(() => this.refreshOpenViewProjections())
+				.catch((e) => console.warn('smart-aide: skill load failed', e));
+			this.agents.load()
+				.then(() => this.refreshOpenViewProjections())
+				.catch((e) => console.warn('smart-aide: AGENTS.md load failed', e));
 			void this.ensureRightSidebarLeaf();
 			// Sweep up empty chat files from older builds that persisted on creation.
 			void this.storage.cleanupEmptyChats().catch(() => undefined);
@@ -145,6 +154,13 @@ export default class SmartAidePlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
 			const view = leaf.view as ChatView;
 			view.refreshDangerChip?.();
+		}
+	}
+
+	refreshOpenViewProjections(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+			const view = leaf.view as ChatView;
+			view.refreshProjection?.();
 		}
 	}
 

@@ -156,6 +156,39 @@ describe('SkillRegistry', () => {
 		expect(all[0].name).toBe('note-capture');
 	});
 
+	// Regression for the 0.3.0 race where plugin onload ran before
+	// Obsidian had indexed the vault, leaving the skills registry empty
+	// and the slash popover silent. The fix moved load() to onLayoutReady,
+	// but load() itself must still gracefully no-op (not throw) when the
+	// folder isn't present in the vault tree.
+	it('load() returns empty when the skills folder is not in the vault tree', async () => {
+		const registry = new SkillRegistry(app, 'sys/skills');
+		await registry.load();
+		expect(registry.all()).toEqual([]);
+		expect(registry.userInvocableSkills()).toEqual([]);
+	});
+
+	it('load() can be called twice and replaces the previous result', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const file = vault.addFile(
+			'Meta/skills/a.md',
+			'---\nname: a\ndescription: first\n---\n',
+		);
+		attachToFolder(folder, file);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+		expect(registry.all().map((s) => s.name)).toEqual(['a']);
+
+		const file2 = vault.addFile(
+			'Meta/skills/b.md',
+			'---\nname: b\ndescription: second\n---\n',
+		);
+		attachToFolder(folder, file2);
+		await registry.load();
+		expect(registry.all().map((s) => s.name)).toEqual(['a', 'b']);
+	});
+
 	it('reads a SKILL.md inside a subfolder', async () => {
 		const root = vault.addFolder('Meta/skills');
 		const sub = vault.addFolder('Meta/skills/my-skill');

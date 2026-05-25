@@ -107,6 +107,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 						this.plugin.skills.setDir(skillsDirFor(next));
 						this.plugin.agents.setDir(next);
 						await Promise.all([this.plugin.skills.load(), this.plugin.agents.load()]);
+						this.plugin.refreshOpenViewProjections();
 					}),
 			);
 
@@ -132,6 +133,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			.addButton((btn) =>
 				btn.setButtonText('Reload').onClick(async () => {
 					await Promise.all([this.plugin.skills.load(), this.plugin.agents.load()]);
+					this.plugin.refreshOpenViewProjections();
 					const count = this.plugin.skills.all().length;
 					new Notice(`Loaded ${count} skill${count === 1 ? '' : 's'}.`);
 				}),
@@ -196,6 +198,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 			if (kept) parts.push(`${kept} kept (customized — use Re-install to overwrite)`);
 			new Notice(parts.length ? parts.join(' · ') : 'Nothing to do.');
 			await this.plugin.skills.load();
+			this.plugin.refreshOpenViewProjections();
 			this.display();
 		});
 
@@ -241,6 +244,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					new Notice(`${skill.name} is already up to date.`);
 				}
 				await this.plugin.skills.load();
+				this.plugin.refreshOpenViewProjections();
 				this.display();
 			} catch (e) {
 				new Notice(`Failed to install ${skill.name}: ${(e as Error).message}`);
