@@ -33,13 +33,34 @@ export class EditSelectionModal extends Modal {
 	constructor(
 		app: App,
 		private plugin: SmartAidePlugin,
-		private selection: string,
+		selection: string,
 		private onAccept: (newText: string) => void,
 	) {
 		super(app);
+		console.log('[smart-aide] EditSelectionModal ctor: selection arg', {
+			type: typeof selection,
+			isString: typeof selection === 'string',
+			length: typeof selection === 'string' ? selection.length : -1,
+			value: selection,
+		});
+		// Coerce defensively *and* log when we have to. The 0.3.14 trace showed
+		// readSelectionText returning a real string, yet the rendered modal
+		// still showed "[object Object]". That can only happen if something
+		// between constructor and render is replacing the value — but to make
+		// this resilient regardless of root cause we keep an explicit `string`
+		// field and never let a non-string into the render path.
+		this.selection = typeof selection === 'string' ? selection : String(selection ?? '');
 	}
 
+	private selection: string = '';
+
 	onOpen(): void {
+		console.log('[smart-aide] EditSelectionModal.onOpen: this.selection', {
+			type: typeof this.selection,
+			length: typeof this.selection === 'string' ? this.selection.length : -1,
+			value: this.selection,
+		});
+
 		this.titleEl.setText('Edit with AI');
 		const { contentEl } = this;
 		contentEl.empty();
@@ -49,7 +70,15 @@ export class EditSelectionModal extends Modal {
 		const original = contentEl.createDiv({ cls: 'vk-edit-original' });
 		original.createDiv({ cls: 'vk-modal-field-label', text: 'Selection' });
 		const originalPre = original.createEl('pre', { cls: 'vk-edit-original-text' });
-		originalPre.setText(this.selection);
+		// Use textContent directly rather than Obsidian's setText — avoids any
+		// chance of a method override producing a stringified-object result.
+		const safeSelection =
+			typeof this.selection === 'string' ? this.selection : String(this.selection ?? '');
+		originalPre.textContent = safeSelection;
+		console.log('[smart-aide] EditSelectionModal.onOpen: rendered pre.textContent', {
+			length: originalPre.textContent?.length,
+			head: originalPre.textContent?.slice(0, 80),
+		});
 
 		const instr = contentEl.createDiv({ cls: 'vk-edit-instruction' });
 		instr.createDiv({ cls: 'vk-modal-field-label', text: 'Instruction' });
