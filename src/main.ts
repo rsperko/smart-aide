@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { Editor, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
 import {
@@ -15,6 +15,7 @@ import { SmartAideSettingsTab } from './settings-tab';
 import { SkillRegistry } from './skills';
 import { AgentsMdRegistry } from './agents-md';
 import { MemoryRegistry } from './memory';
+import { EditSelectionModal } from './modal-edit-selection';
 import { ChatPickerModal } from './modal-chat-picker';
 import {
 	API_KEY_STORE_PREFIX,
@@ -86,6 +87,25 @@ export default class SmartAidePlugin extends Plugin {
 			callback: () => this.openChatPicker(),
 		});
 
+		this.addCommand({
+			id: 'edit-selection',
+			name: 'Edit selection with AI',
+			editorCallback: (editor: Editor, view: MarkdownView) => this.openEditSelection(editor, view),
+			hotkeys: [{ modifiers: ['Mod'], key: 'k' }],
+		});
+
+		// Right-click in the editor (long-press on mobile) → "Edit with AI"
+		// when there's a selection.
+		this.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor, view) => {
+				if (!(view instanceof MarkdownView)) return;
+				if (!editor.getSelection()) return;
+				menu.addItem((item) => {
+					item.setTitle('Edit with AI').setIcon('wand').onClick(() => this.openEditSelection(editor, view));
+				});
+			}),
+		);
+
 		// Ensure smart-aide has a tab in the right sidebar so the icon shows up
 		// alongside other right-pane plugins (backlinks, outline, etc). Runs once
 		// per plugin load; if user closes the tab, it returns next time.
@@ -144,6 +164,17 @@ export default class SmartAidePlugin extends Plugin {
 				this.maybeReloadWatchedFile(oldPath);
 			}),
 		);
+	}
+
+	private openEditSelection(editor: Editor, _view: MarkdownView): void {
+		const selection = editor.getSelection();
+		if (!selection) {
+			new Notice('Select some text first.');
+			return;
+		}
+		new EditSelectionModal(this.app, this, selection, (newText) => {
+			editor.replaceSelection(newText);
+		}).open();
 	}
 
 	/**

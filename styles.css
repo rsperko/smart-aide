@@ -608,6 +608,98 @@ details[open] > .vk-tool-summary::before {
 	color: var(--text-error, #c62828);
 }
 
+/* ---------- Inline edit (Edit with AI) modal ---------- */
+
+.vk-edit-selection-modal .setting-item-description {
+	margin: 8px 0 4px;
+	font-weight: 600;
+	color: var(--text-muted);
+}
+
+.vk-edit-original {
+	margin-bottom: 8px;
+}
+
+.vk-edit-original-text {
+	max-height: 140px;
+	overflow-y: auto;
+	font-size: 0.85em;
+	background: var(--background-secondary);
+	padding: 8px 10px;
+	border-radius: 6px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	margin: 0;
+}
+
+.vk-edit-instruction {
+	margin-bottom: 8px;
+}
+
+.vk-edit-input {
+	width: 100%;
+	min-height: 60px;
+	resize: vertical;
+	font-family: inherit;
+	font-size: 0.95em;
+	padding: 8px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	box-sizing: border-box;
+}
+
+.vk-edit-input:disabled {
+	opacity: 0.6;
+}
+
+.vk-edit-status {
+	font-size: 0.85em;
+	color: var(--text-muted);
+	min-height: 1.4em;
+	margin: 6px 0;
+}
+
+.vk-edit-status.vk-edit-error {
+	color: var(--text-error, #c62828);
+}
+
+.vk-edit-diff {
+	max-height: 50dvh;
+	overflow-y: auto;
+	margin: 8px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 4px 0;
+}
+
+.vk-edit-diff:empty {
+	display: none;
+}
+
+.vk-edit-diff-line {
+	padding: 1px 10px;
+	font-family: var(--font-monospace, monospace);
+	font-size: 0.85em;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	line-height: 1.5;
+}
+
+/* Reuse the global vk-diff-{add,remove,context} colour classes alongside
+ * vk-edit-diff-line — see the approval-card diff above. */
+
+@media (max-width: 600px) {
+	.vk-edit-diff-line {
+		font-size: 0.8em;
+		padding: 1px 6px;
+	}
+	.vk-edit-original-text {
+		font-size: 0.8em;
+		max-height: 100px;
+	}
+}
+
 /* ---------- Input card: holds pills, textarea, and toolbar in one bordered box ---------- */
 
 .vk-input-wrap {
