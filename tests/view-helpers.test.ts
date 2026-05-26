@@ -24,6 +24,7 @@ import {
 	lineDiff,
 	loadedSkillNamesOnChain,
 	parseSlashContext,
+	parseUrlCandidate,
 	parseSlashInvocation,
 	reduceCumulativeUsage,
 	researchIcon,
@@ -929,6 +930,82 @@ describe('parseSlashContext', () => {
 	it('returns null for malformed slashes', () => {
 		expect(parseSlashContext('//foo')).toBeNull();
 		expect(parseSlashContext('/1abc')).toBeNull();
+	});
+});
+
+describe('parseUrlCandidate', () => {
+	it('returns null for empty text or zero cursor', () => {
+		expect(parseUrlCandidate('', 0)).toBeNull();
+		expect(parseUrlCandidate('hi', 0)).toBeNull();
+	});
+
+	it('returns the URL when cursor sits at the end of a bare http(s) token', () => {
+		const text = 'https://example.com/article';
+		expect(parseUrlCandidate(text, text.length)).toBe('https://example.com/article');
+
+		const httpText = 'http://example.com';
+		expect(parseUrlCandidate(httpText, httpText.length)).toBe('http://example.com');
+	});
+
+	it('does not fire on non-URL text', () => {
+		expect(parseUrlCandidate('hello world', 11)).toBeNull();
+		expect(parseUrlCandidate('plain text', 10)).toBeNull();
+	});
+
+	it('rejects URLs that lack an explicit http(s) scheme', () => {
+		// Defensive: random words like "example.com" shouldn't trigger the popover.
+		expect(parseUrlCandidate('example.com', 11)).toBeNull();
+		expect(parseUrlCandidate('www.example.com', 15)).toBeNull();
+	});
+
+	it('returns null when whitespace immediately precedes the cursor', () => {
+		// Trailing space = the user moved past the URL. Detection dismisses.
+		const text = 'https://example.com ';
+		expect(parseUrlCandidate(text, text.length)).toBeNull();
+	});
+
+	it('returns the URL when cursor is at the end of one mid-message URL', () => {
+		// Pasting a URL into the middle of a longer message.
+		const text = 'I was reading https://example.com/article';
+		expect(parseUrlCandidate(text, text.length)).toBe('https://example.com/article');
+	});
+
+	it('returns null when cursor is past the URL (user kept typing)', () => {
+		const text = 'I was reading https://example.com/article and...';
+		expect(parseUrlCandidate(text, text.length)).toBeNull();
+	});
+
+	it('picks only the URL ending at the cursor when multiple are present', () => {
+		const text = 'first https://a.com then https://b.com/path';
+		expect(parseUrlCandidate(text, text.length)).toBe('https://b.com/path');
+	});
+
+	it('returns null when the URL is multiple tokens away from the cursor', () => {
+		const text = 'https://example.com and more text';
+		expect(parseUrlCandidate(text, text.length)).toBeNull();
+	});
+
+	it('honors the cursor — same text, different position', () => {
+		const text = 'https://example.com extra';
+		// Cursor at the end of the URL itself → match.
+		expect(parseUrlCandidate(text, 'https://example.com'.length)).toBe('https://example.com');
+		// Cursor at end of whole string → no match.
+		expect(parseUrlCandidate(text, text.length)).toBeNull();
+	});
+
+	it('handles YouTube and other realistic URLs', () => {
+		const yt = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+		expect(parseUrlCandidate(yt, yt.length)).toBe(yt);
+
+		const youtuBe = 'https://youtu.be/dQw4w9WgXcQ';
+		expect(parseUrlCandidate(youtuBe, youtuBe.length)).toBe(youtuBe);
+
+		const withQueryAndHash = 'https://example.com/path?q=1&r=2#frag';
+		expect(parseUrlCandidate(withQueryAndHash, withQueryAndHash.length)).toBe(withQueryAndHash);
+	});
+
+	it('returns null when cursor is out of bounds', () => {
+		expect(parseUrlCandidate('hi', 100)).toBeNull();
 	});
 });
 

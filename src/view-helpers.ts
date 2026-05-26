@@ -552,6 +552,26 @@ export function parseSlashContext(text: string): string | null {
 }
 
 /**
+ * Return the http(s) URL ending at the cursor, or null. Used to drive the
+ * paste-detect popover: when the user pastes a URL, we look back from the
+ * caret to the nearest whitespace and check whether that token is a bare
+ * URL. Whitespace immediately after the URL dismisses (the user moved past
+ * it). Requires an explicit `http://` / `https://` scheme so the popover
+ * doesn't fire on random tokens.
+ */
+export function parseUrlCandidate(text: string, cursor: number): string | null {
+	if (cursor <= 0 || cursor > text.length) return null;
+	// Whitespace immediately before the cursor → no candidate (URL was already
+	// "settled" by typing past it).
+	if (/\s/.test(text[cursor - 1])) return null;
+	let start = cursor;
+	while (start > 0 && !/\s/.test(text[start - 1])) start--;
+	const token = text.slice(start, cursor);
+	if (!/^https?:\/\/\S+$/i.test(token)) return null;
+	return token;
+}
+
+/**
  * Filter user-invocable skills for the popover. Prefix matches first
  * (ranked alphabetically), then substring matches. Skill counts here are
  * small (typically <20), so a richer fuzzy is unnecessary; the substring

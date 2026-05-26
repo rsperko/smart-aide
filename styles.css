@@ -514,6 +514,100 @@ details[open] > .vk-tool-summary::before {
 	line-height: 1.3;
 }
 
+/* ---------- URL paste-detect popover ---------- */
+
+.vk-url-popover {
+	position: absolute;
+	bottom: calc(100% - 4px);
+	left: 12px;
+	right: 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+	z-index: 100;
+	padding: 4px;
+}
+
+.vk-url-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	min-height: 44px;
+	box-sizing: border-box;
+	transition: background-color 0.08s ease;
+}
+
+.vk-url-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.vk-url-row.is-error {
+	background: var(--background-modifier-error-hover, rgba(229, 57, 53, 0.08));
+	cursor: default;
+}
+
+.vk-url-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	color: var(--text-muted);
+	flex-shrink: 0;
+}
+
+.vk-url-row.is-error .vk-url-icon {
+	color: var(--text-error, #c62828);
+}
+
+.vk-url-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	flex: 1;
+}
+
+.vk-url-label {
+	font-weight: 600;
+	font-size: 0.95em;
+	color: var(--text-normal);
+}
+
+.vk-url-row.is-error .vk-url-label {
+	color: var(--text-error, #c62828);
+}
+
+.vk-url-target {
+	font-size: 0.82em;
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	line-height: 1.3;
+}
+
+/* ---------- URL pin modal (+ URL button) ---------- */
+
+.vk-url-pin-modal .setting-item-description {
+	margin-bottom: 12px;
+}
+
+.vk-url-pin-status {
+	margin-top: 8px;
+	font-size: 0.85em;
+	color: var(--text-muted);
+	min-height: 1.4em;
+}
+
+.vk-url-pin-status.vk-url-pin-error {
+	color: var(--text-error, #c62828);
+}
+
 /* ---------- Input card: holds pills, textarea, and toolbar in one bordered box ---------- */
 
 .vk-input-wrap {

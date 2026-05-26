@@ -4,7 +4,8 @@ import { NotePickerModal } from './picker-notes';
 import type { PinnedContext } from './context-pins';
 import type { SkillRegistry, Skill } from './skills';
 import type { SmartAideSettings } from './settings';
-import { filterSkillsForSlash, messageText, parseSlashContext } from './view-helpers';
+import { filterSkillsForSlash, messageText, parseSlashContext, parseUrlCandidate } from './view-helpers';
+import { classifyUrl, fetchWebPage, fetchYouTube } from './url-extract';
 import type { ImageBlock, MessageEntry } from './types';
 
 export interface ComposerHost {
@@ -41,6 +42,13 @@ export class ComposerController {
 	private slashItems: Skill[] = [];
 	private slashActiveIdx = 0;
 	private slashDismisser: ((ev: MouseEvent) => void) | null = null;
+	// URL paste-detect popover. Fires when the cursor sits at the end of an
+	// `https?://…` token (e.g. just after a paste). Single row, async commit.
+	private urlPopover: HTMLElement | null = null;
+	private urlCandidate: string | null = null;
+	private urlBusy = false;
+	private urlError: string | null = null;
+	private urlDismisser: ((ev: MouseEvent) => void) | null = null;
 
 	constructor(
 		private host: ComposerHost,
@@ -362,6 +370,180 @@ export class ComposerController {
 		if (ev.key === 'Escape') {
 			ev.preventDefault();
 			this.closeSlashPopover();
+			return true;
+		}
+		return false;
+	}
+
+	// ---------- URL paste-detect popover ----------
+
+	isUrlPopoverOpen(): boolean {
+		return this.urlPopover !== null;
+	}
+
+	/**
+	 * Recompute whether the cursor is currently at the end of a URL token.
+	 * Called from the composer's `input` handler. Mounts / re-renders the
+	 * inline popover when a candidate appears; closes it otherwise (unless a
+	 * fetch is already in flight — that case keeps the popover visible so the
+	 * user can see status / errors).
+	 */
+	updateUrlPopover(): void {
+		if (this.urlBusy) return;
+		const candidate = parseUrlCandidate(this.composerEl.value, this.composerEl.selectionStart ?? this.composerEl.value.length);
+		if (!candidate) {
+			this.closeUrlPopover();
+			return;
+		}
+		if (classifyUrl(candidate).kind === 'unknown') {
+			this.closeUrlPopover();
+			return;
+		}
+		this.urlCandidate = candidate;
+		this.urlError = null;
+		// Slash and URL popovers are mutually exclusive by their patterns
+		// (slash requires `/<name>` with no terminator), but close defensively
+		// so a stale slash popover doesn't overlap.
+		this.closeSlashPopover();
+		if (!this.urlPopover) this.mountUrlPopover();
+		this.renderUrlPopover();
+	}
+
+	private mountUrlPopover(): void {
+		const composerWrap = this.composerEl.closest('.vk-composer') as HTMLElement | null;
+		if (!composerWrap) return;
+		this.urlPopover = composerWrap.createDiv({ cls: 'vk-url-popover' });
+
+		this.urlDismisser = (ev: MouseEvent) => {
+			const target = ev.target as Node | null;
+			if (!target) return;
+			if (this.urlPopover?.contains(target)) return;
+			if (this.composerEl.contains(target)) return;
+			this.closeUrlPopover();
+		};
+		window.setTimeout(() => {
+			if (this.urlDismisser) document.addEventListener('click', this.urlDismisser);
+		}, 0);
+	}
+
+	closeUrlPopover(): void {
+		if (this.urlDismisser) {
+			document.removeEventListener('click', this.urlDismisser);
+			this.urlDismisser = null;
+		}
+		this.urlPopover?.remove();
+		this.urlPopover = null;
+		this.urlCandidate = null;
+		this.urlBusy = false;
+		this.urlError = null;
+	}
+
+	private renderUrlPopover(): void {
+		if (!this.urlPopover || !this.urlCandidate) return;
+		this.urlPopover.empty();
+		const row = this.urlPopover.createDiv({ cls: 'vk-url-row' + (this.urlError ? ' is-error' : '') });
+		const icon = row.createSpan({ cls: 'vk-url-icon' });
+		const kind = classifyUrl(this.urlCandidate).kind;
+		setIcon(icon, kind === 'youtube' ? 'play-circle' : 'link');
+
+		const body = row.createDiv({ cls: 'vk-url-body' });
+		if (this.urlError) {
+			body.createDiv({ cls: 'vk-url-label', text: this.urlError });
+			body.createDiv({ cls: 'vk-url-target', text: this.urlCandidate });
+		} else if (this.urlBusy) {
+			body.createDiv({ cls: 'vk-url-label', text: kind === 'youtube' ? 'Fetching transcript…' : 'Fetching page…' });
+			body.createDiv({ cls: 'vk-url-target', text: this.urlCandidate });
+		} else {
+			body.createDiv({ cls: 'vk-url-label', text: kind === 'youtube' ? 'Pin YouTube transcript' : 'Pin web page' });
+			body.createDiv({ cls: 'vk-url-target', text: this.urlCandidate });
+		}
+
+		if (!this.urlBusy && !this.urlError) {
+			// mousedown (not click) so the textarea doesn't blur before we commit;
+			// preventDefault keeps focus + the on-screen keyboard up on iOS.
+			this.host.registerDomEvent(row, 'mousedown', (ev: MouseEvent) => {
+				ev.preventDefault();
+				void this.commitUrlPin();
+			});
+		}
+	}
+
+	async commitUrlPin(): Promise<void> {
+		const candidate = this.urlCandidate;
+		if (!candidate || this.urlBusy) return;
+		this.urlError = null;
+		this.urlBusy = true;
+		this.renderUrlPopover();
+		try {
+			const { kind, normalized } = classifyUrl(candidate);
+			if (this.host.pinned.has(normalized)) {
+				new Notice('That URL is already pinned.');
+				this.stripUrlFromComposer(candidate);
+				this.closeUrlPopover();
+				return;
+			}
+			if (kind === 'youtube') {
+				const extract = await fetchYouTube(normalized);
+				this.host.pinned.addYouTube(extract);
+			} else if (kind === 'web') {
+				const extract = await fetchWebPage(normalized);
+				this.host.pinned.addUrl(extract);
+			} else {
+				throw new Error('Unsupported URL scheme');
+			}
+			this.stripUrlFromComposer(candidate);
+			this.host.refreshContextChips();
+			this.closeUrlPopover();
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			this.urlError = msg;
+			this.urlBusy = false;
+			this.renderUrlPopover();
+		}
+	}
+
+	/**
+	 * Remove the URL token (plus one trailing space, if any) from the textarea
+	 * so the user's prose doesn't carry a now-redundant URL string. Cursor
+	 * lands where the URL used to start.
+	 */
+	private stripUrlFromComposer(candidate: string): void {
+		const value = this.composerEl.value;
+		const cursor = this.composerEl.selectionStart ?? value.length;
+		const start = cursor - candidate.length;
+		if (start < 0 || value.slice(start, cursor) !== candidate) return;
+		// Also eat a single trailing space if we'd otherwise leave " " at the cut.
+		let end = cursor;
+		if (value[end] === ' ') end += 1;
+		// And eat a leading space if the URL was preceded by one and now sits
+		// next to other whitespace (so we don't leave a double space).
+		let cutStart = start;
+		if (cutStart > 0 && value[cutStart - 1] === ' ' && value[end] === ' ') cutStart -= 1;
+		this.composerEl.value = value.slice(0, cutStart) + value.slice(end);
+		this.composerEl.setSelectionRange(cutStart, cutStart);
+		this.autosize();
+		this.refreshSendState();
+	}
+
+	/**
+	 * Keyboard handling while the URL popover is open. Enter commits, Esc
+	 * dismisses (and leaves the URL in the textarea so the user keeps their
+	 * work). Returns true when the event was consumed.
+	 */
+	handleUrlPopoverKey(ev: KeyboardEvent): boolean {
+		if (ev.isComposing) return false;
+		if (ev.key === 'Enter') {
+			if (this.urlBusy) {
+				ev.preventDefault();
+				return true;
+			}
+			ev.preventDefault();
+			void this.commitUrlPin();
+			return true;
+		}
+		if (ev.key === 'Escape') {
+			ev.preventDefault();
+			this.closeUrlPopover();
 			return true;
 		}
 		return false;

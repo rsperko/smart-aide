@@ -6,7 +6,8 @@ import { BrowseAllPickerModal, FavoritesPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
 import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
-import { PinnedContext } from './context-pins';
+import { PinnedContext, type Pin } from './context-pins';
+import { UrlPinModal } from './modal-url-pin';
 import { findEndpoint, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict } from './settings';
 import {
 	Burst,
@@ -289,9 +290,10 @@ export class ChatView extends ItemView {
 		});
 		this.composerEl.rows = 2;
 		this.registerDomEvent(this.composerEl, 'keydown', (ev: KeyboardEvent) => {
-			// Slash popover, when open, takes precedence over Enter-to-send and
-			// over the textarea's default arrow/tab behavior.
+			// Slash + URL popovers, when open, take precedence over Enter-to-send
+			// and over the textarea's default arrow/tab behavior.
 			if (this.composer.isSlashOpen() && this.composer.handleSlashPopoverKey(ev)) return;
+			if (this.composer.isUrlPopoverOpen() && this.composer.handleUrlPopoverKey(ev)) return;
 			if (ev.key === '@' && !ev.isComposing) {
 				// Let the @ get typed; open the picker on next tick so cursor is past the @
 				window.setTimeout(() => this.openNoteMentionPicker(), 0);
@@ -307,6 +309,7 @@ export class ChatView extends ItemView {
 		this.registerDomEvent(this.composerEl, 'input', () => this.composer.refreshSendState());
 		this.registerDomEvent(this.composerEl, 'input', () => void this.refreshTokenChip());
 		this.registerDomEvent(this.composerEl, 'input', () => this.composer.updateSlashPopover());
+		this.registerDomEvent(this.composerEl, 'input', () => this.composer.updateUrlPopover());
 
 		// Drag-drop: vault wikilink OR a file (image) from Finder/Explorer / vault attachment
 		this.registerDomEvent(this.composerEl, 'dragover', (ev: DragEvent) => {
@@ -520,7 +523,7 @@ export class ChatView extends ItemView {
 
 		let pinned = 0;
 		for (const p of this.pinned.list()) {
-			const s = await this.pinned.statusOf(p);
+			const s = await this.pinned.statusOf(p.key);
 			if (s) pinned += s.tokens;
 		}
 
@@ -842,8 +845,9 @@ export class ChatView extends ItemView {
 		this.invalidateBreakdownCache();
 		void this.refreshTokenChip();
 
-		// Add Note sits at the start of the row (Copilot pattern) so the empty
-		// state reads as "+ Add note" first; pinned chips fall in to its right.
+		// Add Note + Add URL sit at the start of the row (Copilot pattern) so the
+		// empty state reads as "+ Note  + URL" first; pinned chips fall in to
+		// their right.
 		const addBtn = this.contextRowEl.createEl('button', {
 			cls: 'vk-context-add',
 			attr: { type: 'button' },
@@ -854,38 +858,20 @@ export class ChatView extends ItemView {
 		addBtn.title = 'Pin a note as context (or type @ in the composer)';
 		this.registerDomEvent(addBtn, 'click', () => this.openContextPicker());
 
+		const urlBtn = this.contextRowEl.createEl('button', {
+			cls: 'vk-context-add',
+			attr: { type: 'button' },
+		});
+		const urlIcon = urlBtn.createSpan({ cls: 'vk-context-add-icon' });
+		setIcon(urlIcon, 'plus');
+		urlBtn.createSpan({ text: 'URL' });
+		urlBtn.title = 'Pin a web page or YouTube video as context';
+		this.registerDomEvent(urlBtn, 'click', () => this.openUrlPinPrompt());
+
 		const pinList = this.pinned.list();
 
-		for (const path of pinList) {
-			const chip = this.contextRowEl.createEl('button', {
-				cls: 'vk-context-chip',
-				attr: { type: 'button' },
-			});
-			const icon = chip.createSpan({ cls: 'vk-context-chip-icon' });
-			setIcon(icon, 'file-text');
-			const basename = path.replace(/\.md$/i, '').split('/').pop() ?? path;
-			chip.createSpan({ cls: 'vk-context-chip-name', text: basename });
-			chip.title = `Pinned: ${path}`;
-			void this.pinned.statusOf(path).then((status) => {
-				if (!status) return;
-				if (status.truncated) {
-					chip.addClass('vk-context-chip-truncated');
-					chip.title = `${basename} · ${formatTokens(status.tokens)} · truncated. Capped at ~${Math.round(status.sentBytes / 1000)}KB; full file is ${Math.round(status.totalBytes / 1000)}KB. Use read_note for the rest.`;
-				} else if (status.tokens > 0) {
-					chip.title = `${basename} · ${formatTokens(status.tokens)}`;
-				}
-			});
-			const x = chip.createSpan({ cls: 'vk-context-chip-x', text: '×' });
-			x.setAttribute('aria-label', `Unpin ${basename}`);
-			this.registerDomEvent(x, 'click', (ev) => {
-				ev.stopPropagation();
-				this.pinned.remove(path);
-				this.refreshContextChips();
-			});
-			this.registerDomEvent(chip, 'click', (ev) => {
-				if ((ev.target as HTMLElement).classList.contains('vk-context-chip-x')) return;
-				void this.openInternalLink(path.replace(/\.md$/i, ''), false);
-			});
+		for (const pin of pinList) {
+			this.renderPinChip(pin);
 		}
 
 		// Memory chip — model-curated facts loaded into every turn. Click opens
@@ -940,6 +926,63 @@ export class ChatView extends ItemView {
 				this.refreshContextChips();
 			});
 		}
+	}
+
+	private renderPinChip(pin: Pin): void {
+		const chip = this.contextRowEl.createEl('button', {
+			cls: `vk-context-chip vk-context-pin-${pin.type}`,
+			attr: { type: 'button' },
+		});
+		const icon = chip.createSpan({ cls: 'vk-context-chip-icon' });
+		const label = pinChipLabel(pin);
+		const baseTooltip = pinChipBaseTooltip(pin);
+
+		if (pin.type === 'file') setIcon(icon, 'file-text');
+		else if (pin.type === 'url') setIcon(icon, 'link');
+		else setIcon(icon, 'play-circle');
+
+		chip.createSpan({ cls: 'vk-context-chip-name', text: label });
+		chip.title = baseTooltip;
+
+		void this.pinned.statusOf(pin.key).then((status) => {
+			if (!status) return;
+			if (status.truncated) {
+				chip.addClass('vk-context-chip-truncated');
+				chip.title = `${label} · ${formatTokens(status.tokens)} · truncated. Capped at ~${Math.round(status.sentBytes / 1000)}KB; full source is ${Math.round(status.totalBytes / 1000)}KB.`;
+			} else if (status.tokens > 0) {
+				chip.title = `${label} · ${formatTokens(status.tokens)}`;
+			}
+		});
+
+		const x = chip.createSpan({ cls: 'vk-context-chip-x', text: '×' });
+		x.setAttribute('aria-label', `Unpin ${label}`);
+		this.registerDomEvent(x, 'click', (ev) => {
+			ev.stopPropagation();
+			this.pinned.remove(pin.key);
+			this.refreshContextChips();
+		});
+
+		this.registerDomEvent(chip, 'click', (ev) => {
+			if ((ev.target as HTMLElement).classList.contains('vk-context-chip-x')) return;
+			if (pin.type === 'file') {
+				void this.openInternalLink(pin.path.replace(/\.md$/i, ''), false);
+			} else {
+				window.open(pin.url, '_blank');
+			}
+		});
+	}
+
+	private openUrlPinPrompt(): void {
+		new UrlPinModal(this.app, (result) => {
+			const url = result.extract.url;
+			if (this.pinned.has(url)) {
+				new Notice('That URL is already pinned.');
+				return;
+			}
+			if (result.kind === 'web') this.pinned.addUrl(result.extract);
+			else this.pinned.addYouTube(result.extract);
+			this.refreshContextChips();
+		}).open();
 	}
 
 	private openContextPicker(): void {
@@ -1221,4 +1264,19 @@ interface TurnUsage {
 	promptTokens: number;
 	completionTokens: number;
 	cachedTokens?: number;
+}
+
+function pinChipLabel(pin: Pin): string {
+	if (pin.type === 'file') {
+		return pin.path.replace(/\.md$/i, '').split('/').pop() ?? pin.path;
+	}
+	return pin.title || pin.url;
+}
+
+function pinChipBaseTooltip(pin: Pin): string {
+	if (pin.type === 'file') return `Pinned: ${pin.path}`;
+	if (pin.type === 'url') {
+		return pin.byline ? `${pin.title} — ${pin.byline}\n${pin.url}` : `${pin.title}\n${pin.url}`;
+	}
+	return pin.channel ? `${pin.title} — ${pin.channel}\n${pin.url}` : `${pin.title}\n${pin.url}`;
 }
