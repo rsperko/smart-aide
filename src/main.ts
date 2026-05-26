@@ -32,6 +32,9 @@ export default class SmartAidePlugin extends Plugin {
 	keyStore!: ApiKeyStore;
 
 	async onload(): Promise<void> {
+		// One-line load log so the dev console shows which build is actually running.
+		// Pulls the version from manifest.json via Obsidian's plugin manifest API.
+		console.log(`[smart-aide] loaded v${this.manifest.version}`);
 		await this.loadSettings();
 		this.storage = new ChatStorage(this.app.vault, chatsDirFor(this.settings.metaDir));
 		this.skills = new SkillRegistry(this.app, skillsDirFor(this.settings.metaDir));
@@ -336,10 +339,14 @@ export default class SmartAidePlugin extends Plugin {
  */
 function readSelectionText(editor: Editor): string {
 	const isBadSentinel = (s: string): boolean => s === '[object Object]';
+	const TAG = '[smart-aide] readSelectionText';
+	console.log(`${TAG}: called`, { editor });
 
+	// Path 1: range-based extraction
 	try {
 		const from = editor.getCursor('from');
 		const to = editor.getCursor('to');
+		console.log(`${TAG}: cursors`, { from, to });
 		if (
 			from &&
 			to &&
@@ -348,23 +355,31 @@ function readSelectionText(editor: Editor): string {
 			typeof from.ch === 'number' &&
 			typeof to.ch === 'number'
 		) {
-			if (from.line === to.line && from.ch === to.ch) return '';
+			if (from.line === to.line && from.ch === to.ch) {
+				console.log(`${TAG}: cursor positions equal — no selection`);
+				return '';
+			}
 			const range = editor.getRange(from, to);
+			console.log(`${TAG}: getRange returned`, { type: typeof range, length: typeof range === 'string' ? range.length : -1, value: range });
 			if (typeof range === 'string' && range.length > 0 && !isBadSentinel(range)) {
+				console.log(`${TAG}: ✓ accepted range result`);
 				return range;
 			}
-			console.warn('smart-aide: editor.getRange returned unusable value', { rangeType: typeof range, range });
+			console.warn(`${TAG}: rejected getRange result`, { rangeType: typeof range, range });
 		} else {
-			console.warn('smart-aide: editor.getCursor returned malformed positions', { from, to });
+			console.warn(`${TAG}: malformed cursor positions`, { from, to });
 		}
 	} catch (e) {
-		console.warn('smart-aide: editor range read failed', e);
+		console.warn(`${TAG}: range path threw`, e);
 	}
 
+	// Path 2: getSelection fallback
 	const direct = (editor as unknown as { getSelection: () => unknown }).getSelection();
+	console.log(`${TAG}: getSelection returned`, { type: typeof direct, length: typeof direct === 'string' ? direct.length : -1, value: direct });
 	if (typeof direct === 'string' && direct.length > 0 && !isBadSentinel(direct)) {
+		console.log(`${TAG}: ✓ accepted getSelection result`);
 		return direct;
 	}
-	console.warn('smart-aide: editor.getSelection returned unusable value', { type: typeof direct, value: direct });
+	console.warn(`${TAG}: rejected getSelection result`, { type: typeof direct, value: direct });
 	return '';
 }
