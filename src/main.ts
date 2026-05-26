@@ -338,15 +338,16 @@ export default class SmartAidePlugin extends Plugin {
  * share what they see and fall back to "Select some text first."
  */
 function readSelectionText(editor: Editor): string {
+	// Prefer range-based extraction (getCursor + getRange) over getSelection.
+	// In some Obsidian environments getSelection returns the literal string
+	// "[object Object]" — a plugin or wrapper somewhere stringifies the
+	// underlying selection via its default toString. getRange goes through a
+	// less-wrapped Editor code path and returns the real text.
 	const isBadSentinel = (s: string): boolean => s === '[object Object]';
-	const TAG = '[smart-aide] readSelectionText';
-	console.log(`${TAG}: called`, { editor });
 
-	// Path 1: range-based extraction
 	try {
 		const from = editor.getCursor('from');
 		const to = editor.getCursor('to');
-		console.log(`${TAG}: cursors`, { from, to });
 		if (
 			from &&
 			to &&
@@ -355,31 +356,17 @@ function readSelectionText(editor: Editor): string {
 			typeof from.ch === 'number' &&
 			typeof to.ch === 'number'
 		) {
-			if (from.line === to.line && from.ch === to.ch) {
-				console.log(`${TAG}: cursor positions equal — no selection`);
-				return '';
-			}
+			if (from.line === to.line && from.ch === to.ch) return '';
 			const range = editor.getRange(from, to);
-			console.log(`${TAG}: getRange returned`, { type: typeof range, length: typeof range === 'string' ? range.length : -1, value: range });
 			if (typeof range === 'string' && range.length > 0 && !isBadSentinel(range)) {
-				console.log(`${TAG}: ✓ accepted range result`);
 				return range;
 			}
-			console.warn(`${TAG}: rejected getRange result`, { rangeType: typeof range, range });
-		} else {
-			console.warn(`${TAG}: malformed cursor positions`, { from, to });
 		}
-	} catch (e) {
-		console.warn(`${TAG}: range path threw`, e);
-	}
+	} catch { /* fall through */ }
 
-	// Path 2: getSelection fallback
 	const direct = (editor as unknown as { getSelection: () => unknown }).getSelection();
-	console.log(`${TAG}: getSelection returned`, { type: typeof direct, length: typeof direct === 'string' ? direct.length : -1, value: direct });
 	if (typeof direct === 'string' && direct.length > 0 && !isBadSentinel(direct)) {
-		console.log(`${TAG}: ✓ accepted getSelection result`);
 		return direct;
 	}
-	console.warn(`${TAG}: rejected getSelection result`, { type: typeof direct, value: direct });
 	return '';
 }

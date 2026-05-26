@@ -18,6 +18,12 @@ type EditState = 'idle' | 'streaming' | 'done' | 'error';
  *
  * Closing the modal aborts any in-flight request. Esc closes from idle/error.
  * Cmd/Ctrl+Enter submits from idle.
+ *
+ * Important: we deliberately do NOT name the original-text field `selection`.
+ * Obsidian's `Modal` base class has its own `selection: Selection` property
+ * (the DOM Selection saved for `shouldRestoreSelection`) and overwrites our
+ * value before `onOpen` runs. The 0.3.15 trace caught this red-handed —
+ * constructor saw a 61-char string, onOpen saw `{ type: 'object', … }`.
  */
 export class EditSelectionModal extends Modal {
 	private inputEl!: HTMLTextAreaElement;
@@ -29,6 +35,7 @@ export class EditSelectionModal extends Modal {
 	private rewrite: string | null = null;
 	private aborter: AbortController | null = null;
 	private lastError: string | null = null;
+	private originalText: string = '';
 
 	constructor(
 		app: App,
@@ -37,30 +44,10 @@ export class EditSelectionModal extends Modal {
 		private onAccept: (newText: string) => void,
 	) {
 		super(app);
-		console.log('[smart-aide] EditSelectionModal ctor: selection arg', {
-			type: typeof selection,
-			isString: typeof selection === 'string',
-			length: typeof selection === 'string' ? selection.length : -1,
-			value: selection,
-		});
-		// Coerce defensively *and* log when we have to. The 0.3.14 trace showed
-		// readSelectionText returning a real string, yet the rendered modal
-		// still showed "[object Object]". That can only happen if something
-		// between constructor and render is replacing the value — but to make
-		// this resilient regardless of root cause we keep an explicit `string`
-		// field and never let a non-string into the render path.
-		this.selection = typeof selection === 'string' ? selection : String(selection ?? '');
+		this.originalText = typeof selection === 'string' ? selection : String(selection ?? '');
 	}
 
-	private selection: string = '';
-
 	onOpen(): void {
-		console.log('[smart-aide] EditSelectionModal.onOpen: this.selection', {
-			type: typeof this.selection,
-			length: typeof this.selection === 'string' ? this.selection.length : -1,
-			value: this.selection,
-		});
-
 		this.titleEl.setText('Edit with AI');
 		const { contentEl } = this;
 		contentEl.empty();
@@ -70,15 +57,7 @@ export class EditSelectionModal extends Modal {
 		const original = contentEl.createDiv({ cls: 'vk-edit-original' });
 		original.createDiv({ cls: 'vk-modal-field-label', text: 'Selection' });
 		const originalPre = original.createEl('pre', { cls: 'vk-edit-original-text' });
-		// Use textContent directly rather than Obsidian's setText — avoids any
-		// chance of a method override producing a stringified-object result.
-		const safeSelection =
-			typeof this.selection === 'string' ? this.selection : String(this.selection ?? '');
-		originalPre.textContent = safeSelection;
-		console.log('[smart-aide] EditSelectionModal.onOpen: rendered pre.textContent', {
-			length: originalPre.textContent?.length,
-			head: originalPre.textContent?.slice(0, 80),
-		});
+		originalPre.textContent = this.originalText;
 
 		const instr = contentEl.createDiv({ cls: 'vk-edit-instruction' });
 		instr.createDiv({ cls: 'vk-modal-field-label', text: 'Instruction' });
@@ -174,7 +153,7 @@ export class EditSelectionModal extends Modal {
 		this.aborter = new AbortController();
 		this.setState('streaming');
 		try {
-			const text = await runEditRequest(this.plugin, this.selection, instruction, this.aborter.signal);
+			const text = await runEditRequest(this.plugin, this.originalText, instruction, this.aborter.signal);
 			this.rewrite = text;
 			this.setState('done');
 		} catch (e) {
@@ -191,7 +170,7 @@ export class EditSelectionModal extends Modal {
 
 	private renderDiff(rewrite: string): void {
 		this.diffEl.empty();
-		const oldLines = this.selection.split('\n');
+		const oldLines = this.originalText.split('\n');
 		const newLines = rewrite.split('\n');
 		const ops = lineDiff(oldLines, newLines);
 		for (const op of ops) {
