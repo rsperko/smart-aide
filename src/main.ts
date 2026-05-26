@@ -320,22 +320,51 @@ export default class SmartAidePlugin extends Plugin {
 }
 
 /**
- * Read the currently-selected text out of an Obsidian editor. The public
- * `editor.getSelection()` API is documented to return a string, but in
- * practice some surfaces return a non-string (the screenshot from issue #4
- * showed "[object Object]" — `String({})` of an EditorSelection-shaped
- * object). Falls through to range-based extraction when getSelection lies.
+ * Read the currently-selected text out of an Obsidian editor.
+ *
+ * Some user environments have a plugin or wrapper that stringifies a
+ * selection-shaped object via its default `toString()` somewhere upstream
+ * of `editor.getSelection()`, so getSelection literally returns the string
+ * `"[object Object]"` (not the object — the string). A `typeof === 'string'`
+ * guard accepts that, so we can't rely on getSelection alone.
+ *
+ * Resolution: try range-based extraction first (`getCursor` + `getRange`),
+ * which goes through a less-wrapped Editor code path. Use getSelection
+ * only as a fallback, and reject the known-bad literal string in both
+ * paths. If anything looks malformed, log to the console so a user can
+ * share what they see and fall back to "Select some text first."
  */
 function readSelectionText(editor: Editor): string {
-	const direct = (editor as unknown as { getSelection: () => unknown }).getSelection();
-	if (typeof direct === 'string') return direct;
+	const isBadSentinel = (s: string): boolean => s === '[object Object]';
+
 	try {
 		const from = editor.getCursor('from');
 		const to = editor.getCursor('to');
-		if (from.line === to.line && from.ch === to.ch) return '';
-		const range = editor.getRange(from, to);
-		return typeof range === 'string' ? range : '';
-	} catch {
-		return '';
+		if (
+			from &&
+			to &&
+			typeof from.line === 'number' &&
+			typeof to.line === 'number' &&
+			typeof from.ch === 'number' &&
+			typeof to.ch === 'number'
+		) {
+			if (from.line === to.line && from.ch === to.ch) return '';
+			const range = editor.getRange(from, to);
+			if (typeof range === 'string' && range.length > 0 && !isBadSentinel(range)) {
+				return range;
+			}
+			console.warn('smart-aide: editor.getRange returned unusable value', { rangeType: typeof range, range });
+		} else {
+			console.warn('smart-aide: editor.getCursor returned malformed positions', { from, to });
+		}
+	} catch (e) {
+		console.warn('smart-aide: editor range read failed', e);
 	}
+
+	const direct = (editor as unknown as { getSelection: () => unknown }).getSelection();
+	if (typeof direct === 'string' && direct.length > 0 && !isBadSentinel(direct)) {
+		return direct;
+	}
+	console.warn('smart-aide: editor.getSelection returned unusable value', { type: typeof direct, value: direct });
+	return '';
 }

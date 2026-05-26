@@ -591,13 +591,15 @@ details[open] > .vk-tool-summary::before {
 	line-height: 1.3;
 }
 
-/* ---------- Narrow modal width cap (URL pin, Edit with AI) ---------- */
+/* ---------- Width cap for our purpose-built modals (URL pin, Edit with AI) ---------- */
 
-/* Obsidian's default modal width is too wide for single-purpose prompts.
- * Anything that adds `mod-vk-narrow` to the outer .modal gets this cap. */
+/* Obsidian's default modal width sprawls. `mod-vk-narrow` sets a comfortable
+ * fixed width: wide enough for ~70 chars of selection text + diff on the
+ * Edit modal, narrow enough that URL inputs aren't lost in whitespace. The
+ * `min(…, 92vw)` keeps mobile viewports happy. */
 .modal.mod-vk-narrow {
-	max-width: 480px;
-	width: auto;
+	width: min(640px, 92vw);
+	max-width: min(640px, 92vw);
 }
 
 /* Shared field layout for our modals: label above input, input full-width. */
