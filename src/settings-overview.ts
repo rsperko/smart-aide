@@ -11,6 +11,7 @@ export interface OverviewInput {
 	installedSkillCount: number;
 	sampleTotal: number;
 	agentsFound: boolean;
+	memoryFound: boolean;
 }
 
 export type BannerId = 'no-key' | 'test-failed' | 'no-favorites';
@@ -151,11 +152,13 @@ function favoritesRow(input: OverviewInput): OverviewRow {
 
 function vaultDataRow(input: OverviewInput): OverviewRow {
 	const meta = input.settings.metaDir;
-	const suffix = input.agentsFound ? 'AGENTS.md found' : 'no AGENTS.md';
+	const bits: string[] = [];
+	bits.push(input.agentsFound ? 'AGENTS.md found' : 'no AGENTS.md');
+	if (input.memoryFound) bits.push('memory loaded');
 	return {
 		id: 'vaultData',
 		label: 'Vault data',
-		status: `${meta}/ · ${suffix}`,
+		status: `${meta}/ · ${bits.join(' · ')}`,
 		tone: 'ok',
 		actionLabel: 'Open →',
 		scrollTo: 'vaultData',
@@ -212,6 +215,7 @@ export function renderOverview(root: HTMLElement, ctx: SectionContext, sampleTot
 		installedSkillCount: ctx.plugin.skills.all().length,
 		sampleTotal,
 		agentsFound: ctx.plugin.agents.text().length > 0,
+		memoryFound: ctx.plugin.memory.text().length > 0,
 	});
 
 	const section = root.createDiv({ cls: 'vk-overview' });

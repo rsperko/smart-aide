@@ -41,29 +41,39 @@ describe('pathGuard', () => {
 		expect(pathGuard('foo/../bar.md', 'Meta')).toMatch(/absolute or parent-relative/);
 	});
 
-	it('blocks metaDir/chats and metaDir/.smart-aide for any metaDir', () => {
-		expect(pathGuard('Meta/chats/x.jsonl', 'Meta')).toMatch(/chats/);
-		expect(pathGuard('Meta/.smart-aide/x', 'Meta')).toMatch(/plugin internal/);
+	it('blocks the whole `${metaDir}/Smart Aide/` subtree (chats, memory, internals)', () => {
+		// Plugin-owned storage all lives under `${metaDir}/Smart Aide/`. The guard
+		// blocks the entire subtree as a single rule — save_memory writes through
+		// its own code path, not through pathGuard.
+		expect(pathGuard('Meta/Smart Aide/chats/x.jsonl', 'Meta')).toMatch(/Smart Aide/);
+		expect(pathGuard('Meta/Smart Aide/memory.md', 'Meta')).toMatch(/Smart Aide/);
+		expect(pathGuard('Meta/Smart Aide/.internals/foo', 'Meta')).toMatch(/Smart Aide/);
 	});
 
-	it('blocks chats / internal even when metaDir has a trailing slash', () => {
-		// The fix from v0.1.16: a "sys/" metaDir used to produce "sys//chats/" guard
-		// prefixes that vault-relative paths didn't match. pathGuard now normalizes.
-		expect(pathGuard('sys/chats/x.jsonl', 'sys/')).toMatch(/chats/);
-		expect(pathGuard('sys/.smart-aide/x', 'sys/')).toMatch(/plugin internal/);
+	it('blocks the plugin home even when metaDir has a trailing slash', () => {
+		// Regression from v0.1.16: a "sys/" metaDir produced double-slash prefixes
+		// that vault-relative paths didn't match. pathGuard normalizes the trailing
+		// slash so subtree matches still fire.
+		expect(pathGuard('sys/Smart Aide/chats/x.jsonl', 'sys/')).toMatch(/Smart Aide/);
+		expect(pathGuard('sys/Smart Aide/memory.md', 'sys/')).toMatch(/Smart Aide/);
 	});
 
-	it('blocks the metaDir/chats and metaDir/.smart-aide folders themselves', () => {
-		expect(pathGuard('Meta/chats', 'Meta')).toMatch(/chats/);
-		expect(pathGuard('Meta/.smart-aide', 'Meta')).toMatch(/plugin internal/);
+	it('blocks the Smart Aide folder itself, not just its contents', () => {
+		expect(pathGuard('Meta/Smart Aide', 'Meta')).toMatch(/Smart Aide/);
 	});
 
 	it('does not overmatch sibling folders that share a prefix', () => {
 		// "MetaNotes" should not be blocked just because metaDir is "Meta".
 		expect(pathGuard('MetaNotes/a.md', 'Meta')).toBe('');
+		// "Meta/Smart Aide Notes" should not match the "Smart Aide" subtree —
+		// the guard requires the trailing-slash boundary.
+		expect(pathGuard('Meta/Smart Aide Notes/a.md', 'Meta')).toBe('');
 	});
 
-	it('allows ordinary notes', () => {
+	it('allows ordinary notes and cross-tool standards at the metaDir root', () => {
+		// Skills + AGENTS.md are cross-tool standards: they stay at the metaDir
+		// root and are NOT inside the Smart Aide subfolder, so they remain
+		// readable through general tools.
 		expect(pathGuard('Daily/2026-05-23.md', 'Meta')).toBe('');
 		expect(pathGuard('Meta/AGENTS.md', 'Meta')).toBe('');
 		expect(pathGuard('Meta/skills/foo.md', 'Meta')).toBe('');
@@ -75,10 +85,12 @@ describe('pathGuard', () => {
 		expect(pathGuard('Notes/foo.md', 'Meta', { requireMarkdown: true })).toBe('');
 	});
 
-	it('blocks chats/internal even when requireMarkdown is set (forbidden wins)', () => {
-		// A reader passing requireMarkdown: true on Meta/chats/x.jsonl should hit
-		// the chats-forbidden error, not the markdown error.
-		expect(pathGuard('Meta/chats/x.jsonl', 'Meta', { requireMarkdown: true })).toMatch(/chats/);
+	it('blocks Smart Aide subtree even when requireMarkdown is set (forbidden wins)', () => {
+		// A reader passing requireMarkdown:true on Meta/Smart Aide/chats/x.jsonl
+		// should hit the subtree-forbidden error, not the markdown error.
+		expect(
+			pathGuard('Meta/Smart Aide/chats/x.jsonl', 'Meta', { requireMarkdown: true }),
+		).toMatch(/Smart Aide/);
 	});
 });
 
@@ -211,16 +223,22 @@ describe('dispatchTool — readNote with pathGuard', () => {
 		expect(JSON.parse(out).error).toMatch(/\.md/);
 	});
 
-	it('rejects reads of chats/', async () => {
+	it('rejects reads of chats inside the Smart Aide subtree', async () => {
 		const app = new App();
-		const out = await dispatchTool(TOOLS, 'read_note', { path: 'Meta/chats/x.jsonl' }, app, 'Meta');
-		expect(JSON.parse(out).error).toMatch(/chats/);
+		const out = await dispatchTool(TOOLS, 'read_note', { path: 'Meta/Smart Aide/chats/x.jsonl' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
+	});
+
+	it('rejects reads of memory.md through the read tool (no end-run around save_memory)', async () => {
+		const app = new App();
+		const out = await dispatchTool(TOOLS, 'read_note', { path: 'Meta/Smart Aide/memory.md' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
 	});
 
 	it('rejects reads of plugin internals', async () => {
 		const app = new App();
-		const out = await dispatchTool(TOOLS, 'read_note', { path: 'Meta/.smart-aide/foo' }, app, 'Meta');
-		expect(JSON.parse(out).error).toMatch(/plugin internal/);
+		const out = await dispatchTool(TOOLS, 'read_note', { path: 'Meta/Smart Aide/.internals/foo.md' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
 	});
 
 	it('reports unknown tool name', async () => {
@@ -358,10 +376,16 @@ describe('write_note', () => {
 		expect((file as TFile & { __content: string }).__content).toBe('body');
 	});
 
-	it('refuses to write into chats/', async () => {
+	it('refuses to write into the Smart Aide subtree', async () => {
 		const app = appWithFiles([]);
-		const out = await dispatchTool(TOOLS, 'write_note', { path: 'Meta/chats/a.jsonl', content: 'x' }, app, 'Meta');
-		expect(JSON.parse(out).error).toMatch(/chats/);
+		const out = await dispatchTool(TOOLS, 'write_note', { path: 'Meta/Smart Aide/chats/a.jsonl', content: 'x' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
+	});
+
+	it('refuses to write memory.md via write_note (forces save_memory tool)', async () => {
+		const app = appWithFiles([]);
+		const out = await dispatchTool(TOOLS, 'write_note', { path: 'Meta/Smart Aide/memory.md', content: 'forged' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
 	});
 
 	it('refuses absolute and parent-relative paths', async () => {
@@ -396,8 +420,8 @@ describe('append_to_note', () => {
 
 	it('honors the path guard', async () => {
 		const app = appWithFiles([]);
-		const out = await dispatchTool(TOOLS, 'append_to_note', { path: 'Meta/.smart-aide/x', content: 'x' }, app, 'Meta');
-		expect(JSON.parse(out).error).toMatch(/plugin internal/);
+		const out = await dispatchTool(TOOLS, 'append_to_note', { path: 'Meta/Smart Aide/.internals/x', content: 'x' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
 	});
 });
 
@@ -418,10 +442,10 @@ describe('delete_note', () => {
 		expect(JSON.parse(out).error).toMatch(/not found/);
 	});
 
-	it('refuses to delete chats/', async () => {
+	it('refuses to delete inside the Smart Aide subtree', async () => {
 		const app = appWithFiles([]);
-		const out = await dispatchTool(TOOLS, 'delete_note', { path: 'Meta/chats/a.jsonl' }, app, 'Meta');
-		expect(JSON.parse(out).error).toMatch(/chats/);
+		const out = await dispatchTool(TOOLS, 'delete_note', { path: 'Meta/Smart Aide/chats/a.jsonl' }, app, 'Meta');
+		expect(JSON.parse(out).error).toMatch(/Smart Aide/);
 	});
 });
 
@@ -1081,15 +1105,15 @@ describe('write/append/delete preview()', () => {
 	});
 
 	it('write_note preview blocks forbidden paths without reading file content', async () => {
-		const file = tfile('Meta/chats/secret.md', 'should not be exposed');
+		const file = tfile('Meta/Smart Aide/chats/secret.md', 'should not be exposed');
 		const app = appWithFiles([file]);
 		const writeTool = TOOLS.find((t: Tool) => t.name === 'write_note')!;
 		const preview = await writeTool.preview!(
-			{ path: 'Meta/chats/secret.md', content: 'x' },
+			{ path: 'Meta/Smart Aide/chats/secret.md', content: 'x' },
 			{ app, metaDir: 'Meta' },
 		);
 		expect(preview.summary).toMatch(/^Blocked write/);
-		expect(preview.summary).toMatch(/chats/);
+		expect(preview.summary).toMatch(/Smart Aide/);
 		expect(preview.diff).toBeUndefined();
 	});
 
@@ -1106,11 +1130,11 @@ describe('write/append/delete preview()', () => {
 	});
 
 	it('delete_note preview blocks forbidden paths without reading file content', async () => {
-		const file = tfile('Meta/chats/secret.md', 'should not be exposed');
+		const file = tfile('Meta/Smart Aide/chats/secret.md', 'should not be exposed');
 		const app = appWithFiles([file]);
 		const deleteTool = TOOLS.find((t: Tool) => t.name === 'delete_note')!;
 		const preview = await deleteTool.preview!(
-			{ path: 'Meta/chats/secret.md' },
+			{ path: 'Meta/Smart Aide/chats/secret.md' },
 			{ app, metaDir: 'Meta' },
 		);
 		expect(preview.summary).toMatch(/^Blocked delete/);

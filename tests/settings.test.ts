@@ -13,6 +13,8 @@ import {
 	findEndpoint,
 	hasWorkingDiscovery,
 	internalDirFor,
+	memoryFileFor,
+	pluginHomeFor,
 	isEndpointConnected,
 	isFavoriteRef,
 	migrateSettings,
@@ -194,10 +196,19 @@ describe('resolveModelRefStrict', () => {
 });
 
 describe('derived meta paths', () => {
-	it('compose chats/skills/internal under the metaDir', () => {
-		expect(chatsDirFor('Meta')).toBe('Meta/chats');
+	it('nests plugin-only state (chats, internals, memory) under a branded subfolder', () => {
+		// Cross-tool standards (skills, AGENTS.md) stay at the metaDir root so
+		// other agents can read the same files. Plugin-owned storage moves
+		// under `${metaDir}/Smart Aide/` so the file tree is unambiguous.
+		expect(chatsDirFor('Meta')).toBe('Meta/Smart Aide/chats');
+		expect(internalDirFor('plugins/aide')).toBe('plugins/aide/Smart Aide/.internals');
+		expect(memoryFileFor('Meta')).toBe('Meta/Smart Aide/memory.md');
+		expect(pluginHomeFor('sys')).toBe('sys/Smart Aide');
+	});
+
+	it('leaves cross-tool standards (skills) at the metaDir root', () => {
 		expect(skillsDirFor('sys')).toBe('sys/skills');
-		expect(internalDirFor('plugins/aide')).toBe('plugins/aide/.smart-aide');
+		expect(skillsDirFor('Meta')).toBe('Meta/skills');
 	});
 });
 

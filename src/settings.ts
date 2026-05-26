@@ -20,9 +20,19 @@ export interface SmartAideSettings {
 }
 
 export const DEFAULT_META_DIR = 'Meta';
-export const chatsDirFor = (metaDir: string): string => `${metaDir}/chats`;
+
+// Smart Aide-only persistent state nests inside a branded subfolder. Cross-tool
+// standards (skills/, AGENTS.md) stay at `${metaDir}` so they read as
+// vault-native and can symlink to ~/.agents/* for Pi / Claude Code. Anything
+// the plugin owns end-to-end (chats, internals, model-curated memory) lives
+// under `${metaDir}/Smart Aide/` so the file tree visibly says "this is the
+// plugin's storage, not your notes."
+export const PLUGIN_HOME_SUBFOLDER = 'Smart Aide';
+export const pluginHomeFor = (metaDir: string): string => `${metaDir}/${PLUGIN_HOME_SUBFOLDER}`;
+export const chatsDirFor = (metaDir: string): string => `${pluginHomeFor(metaDir)}/chats`;
 export const skillsDirFor = (metaDir: string): string => `${metaDir}/skills`;
-export const internalDirFor = (metaDir: string): string => `${metaDir}/.smart-aide`;
+export const internalDirFor = (metaDir: string): string => `${pluginHomeFor(metaDir)}/.internals`;
+export const memoryFileFor = (metaDir: string): string => `${pluginHomeFor(metaDir)}/memory.md`;
 
 /**
  * Strip leading/trailing slashes and collapse repeats. `pathGuard` also

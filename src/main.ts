@@ -13,6 +13,7 @@ import {
 import { SmartAideSettingsTab } from './settings-tab';
 import { SkillRegistry } from './skills';
 import { AgentsMdRegistry } from './agents-md';
+import { MemoryRegistry } from './memory';
 import { ChatPickerModal } from './modal-chat-picker';
 import {
 	API_KEY_STORE_PREFIX,
@@ -25,6 +26,7 @@ export default class SmartAidePlugin extends Plugin {
 	storage!: ChatStorage;
 	skills!: SkillRegistry;
 	agents!: AgentsMdRegistry;
+	memory!: MemoryRegistry;
 	keyStore!: ApiKeyStore;
 
 	async onload(): Promise<void> {
@@ -32,6 +34,7 @@ export default class SmartAidePlugin extends Plugin {
 		this.storage = new ChatStorage(this.app.vault, chatsDirFor(this.settings.metaDir));
 		this.skills = new SkillRegistry(this.app, skillsDirFor(this.settings.metaDir));
 		this.agents = new AgentsMdRegistry(this.app, this.settings.metaDir);
+		this.memory = new MemoryRegistry(this.app, this.settings.metaDir);
 
 		this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
 		this.addSettingTab(new SmartAideSettingsTab(this.app, this));
@@ -40,9 +43,9 @@ export default class SmartAidePlugin extends Plugin {
 
 		this.addCommand({
 			id: 'reload-skills',
-			name: 'Reload skills & AGENTS.md',
+			name: 'Reload skills, AGENTS.md & memory',
 			callback: async () => {
-				await Promise.all([this.skills.load(), this.agents.load()]);
+				await Promise.all([this.skills.load(), this.agents.load(), this.memory.load()]);
 				this.refreshOpenViewProjections();
 				new Notice(`Loaded ${this.skills.all().length} skills.`);
 			},
@@ -97,6 +100,9 @@ export default class SmartAidePlugin extends Plugin {
 			this.agents.load()
 				.then(() => this.refreshOpenViewProjections())
 				.catch((e) => console.warn('smart-aide: AGENTS.md load failed', e));
+			this.memory.load()
+				.then(() => this.refreshOpenViewProjections())
+				.catch((e) => console.warn('smart-aide: memory load failed', e));
 			void this.ensureRightSidebarLeaf();
 			// Sweep up empty chat files from older builds that persisted on creation.
 			void this.storage.cleanupEmptyChats().catch(() => undefined);

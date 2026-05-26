@@ -14,6 +14,7 @@ function makeInput(overrides: Partial<OverviewInput> = {}): OverviewInput {
 		installedSkillCount: 0,
 		sampleTotal: 6,
 		agentsFound: false,
+		memoryFound: false,
 		...overrides,
 	};
 }
@@ -239,6 +240,16 @@ describe('buildOverview — vault data row', () => {
 			}),
 		);
 		expect(row(out, 'vaultData').status).toContain('sys');
+	});
+
+	it('appends "memory loaded" when memory is present', () => {
+		const out = buildOverview(makeInput({ agentsFound: true, memoryFound: true }));
+		expect(row(out, 'vaultData').status).toContain('memory loaded');
+	});
+
+	it('omits "memory loaded" when no memory file is present', () => {
+		const out = buildOverview(makeInput({ agentsFound: true, memoryFound: false }));
+		expect(row(out, 'vaultData').status).not.toContain('memory loaded');
 	});
 });
 

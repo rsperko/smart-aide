@@ -8,6 +8,7 @@ import {
 	prepareSimpleSearch,
 } from 'obsidian';
 import type { ToolDescriptor } from './providers/types';
+import { memoryFileFor } from './settings';
 import { ApprovalPreview, Tool, ToolContext } from './types';
 
 const DEFAULT_MAX_RESULTS = 10;
@@ -874,7 +875,159 @@ const getBacklinks: Tool = {
 	},
 };
 
-export const TOOLS: Tool[] = [searchVault, readNote, writeNote, appendToNote, deleteNote, listRecent, getBacklinks];
+export const MEMORY_SECTIONS = [
+	'Profile',
+	'Preferences',
+	'Decisions',
+	'Projects',
+	'People',
+	'References',
+] as const;
+export type MemorySection = typeof MEMORY_SECTIONS[number];
+
+const saveMemory: Tool = {
+	risk: 'write',
+	name: 'save_memory',
+	description: `Save a durable fact to the user's persistent memory. REQUIRES APPROVAL — bullet shown.
+
+Memory persists across every chat. AGENTS.md is the user's vault context (folders, conventions); save_memory is for things the user told YOU across conversations that should outlive this chat: profile, preferences, decisions, recurring projects/people, references to external systems.
+
+Save only when ALL four are true:
+1. Durable — likely to stay true across conversations (not "today" / "this turn" / "for now").
+2. Actionable — changes how you handle future requests.
+3. Explicit — user stated it. Don't infer.
+4. Non-obvious — not derivable from reading the vault or AGENTS.md.
+
+NEVER save: secrets/API keys/passwords, ephemeral task state, anything the user could have written into AGENTS.md themselves, your own opinions, contradicting facts (write the new fact; the user prunes the old).
+
+Fixed sections (pick the closest):
+- Profile — who the user is, role, perspective, vault setup.
+- Preferences — communication style, formatting, what to avoid.
+- Decisions — "we decided X because Y". Architectural / workflow choices.
+- Projects — ongoing initiatives, deadlines, current focus (decay-prone — write the date in the content).
+- People — colleagues, family, frequently-referenced names.
+- References — pointers to external systems (Linear projects, dashboards, repos).
+
+Content format — write a single bullet body. The tool prepends today's date automatically. Lead with the fact, then add **Why:** (the reason or context the user gave) and **How to apply:** (when this kicks in). Knowing why lets future-you judge edge cases instead of blindly following the rule.
+
+Examples:
+- User says "I'm a Go engineer working on payment infra" → save_memory(section="Profile", content="Go engineer on payment infrastructure. **Why:** stated up front. **How to apply:** frame backend explanations in Go terms.")
+- User says "don't summarize what you just did, I read diffs" → save_memory(section="Preferences", content="No trailing summaries — user reads the diff. **Why:** explicit feedback. **How to apply:** end responses at the work, not at a recap.")
+- User says "we switched from Express to Fastify because of the WebSocket story" → save_memory(section="Decisions", content="API on Fastify (was Express). **Why:** WebSocket support. **How to apply:** match Fastify idioms in API edits.")
+- User says "ship Q3 launch by Sep 15" → save_memory(section="Projects", content="Q3 launch ships 2026-09-15. **Why:** stated deadline. **How to apply:** flag scope work landing after that date.")
+- User says "bugs go in Linear project INGEST" → save_memory(section="References", content="Pipeline bugs tracked in Linear project INGEST. **Why:** stated reference. **How to apply:** point user there for bug context.")
+
+If memory already has a contradicting fact (e.g. user changes job), save the new one — leave the old for the user to prune.`,
+	parameters: {
+		type: 'object',
+		properties: {
+			section: {
+				type: 'string',
+				enum: [...MEMORY_SECTIONS],
+				description: 'One of: Profile, Preferences, Decisions, Projects, People, References.',
+			},
+			content: {
+				type: 'string',
+				description: 'Single-bullet body. No leading bullet character or date — the tool adds those.',
+			},
+		},
+		required: ['section', 'content'],
+	},
+	async preview(args, ctx): Promise<ApprovalPreview> {
+		const section = strArg(args.section);
+		const content = strArg(args.content);
+		const guard = memoryArgsGuard(section, content);
+		if (guard) return { summary: guard };
+		const path = normalizePath(memoryFileFor(ctx.metaDir));
+		const bullet = formatMemoryBullet(content);
+		return {
+			summary: `Remember in ${section}`,
+			diff: { kind: 'append', path, newContent: bullet },
+		};
+	},
+	async execute(args, ctx) {
+		const section = strArg(args.section);
+		const content = strArg(args.content);
+		const guard = memoryArgsGuard(section, content);
+		if (guard) return JSON.stringify({ error: guard });
+		const path = normalizePath(memoryFileFor(ctx.metaDir));
+		const bullet = formatMemoryBullet(content);
+		const file = ctx.app.vault.getFileByPath(path);
+		const current = file ? await ctx.app.vault.read(file) : '';
+		const updated = appendBulletToSection(current, section, bullet);
+		if (file) {
+			await ctx.app.vault.process(file, () => updated);
+			return JSON.stringify({ status: 'remembered', section, path });
+		}
+		const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+		if (parent && !(await ctx.app.vault.adapter.exists(parent))) {
+			await ctx.app.vault.createFolder(parent);
+		}
+		await ctx.app.vault.create(path, updated);
+		return JSON.stringify({ status: 'remembered', section, path, created: true });
+	},
+};
+
+function memoryArgsGuard(section: string, content: string): string {
+	if (!section) return 'section is required';
+	if (!(MEMORY_SECTIONS as readonly string[]).includes(section)) {
+		return `section must be one of: ${MEMORY_SECTIONS.join(', ')}`;
+	}
+	if (!content) return 'content is required';
+	return '';
+}
+
+export function formatMemoryBullet(content: string): string {
+	const date = new Date().toISOString().slice(0, 10);
+	const trimmed = content.replace(/^[-*]\s*/, '').trim();
+	return `- ${date}: ${trimmed}`;
+}
+
+/**
+ * Append a bullet under `## <section>` in `current`, creating the section at
+ * end of file if it doesn't exist. Preserves existing content; inserts the
+ * bullet just before the next `##` heading (or at EOF if the section is last).
+ */
+export function appendBulletToSection(current: string, section: string, bullet: string): string {
+	const heading = `## ${section}`;
+	const lines = current.split('\n');
+	let sectionStart = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].trim() === heading) {
+			sectionStart = i;
+			break;
+		}
+	}
+	if (sectionStart < 0) {
+		const stripped = current.replace(/\s+$/, '');
+		const lead = stripped.length > 0 ? stripped + '\n\n' : '';
+		return `${lead}${heading}\n\n${bullet}\n`;
+	}
+	let sectionEnd = lines.length;
+	for (let j = sectionStart + 1; j < lines.length; j++) {
+		if (lines[j].startsWith('## ')) {
+			sectionEnd = j;
+			break;
+		}
+	}
+	while (sectionEnd > sectionStart + 1 && lines[sectionEnd - 1].trim() === '') {
+		sectionEnd--;
+	}
+	const before = lines.slice(0, sectionEnd);
+	const after = lines.slice(sectionEnd);
+	if (before[before.length - 1].trim() !== '') {
+		before.push('');
+	}
+	before.push(bullet);
+	if (after.length === 0) {
+		before.push('');
+		return before.join('\n');
+	}
+	before.push('');
+	return [...before, ...after].join('\n');
+}
+
+export const TOOLS: Tool[] = [searchVault, readNote, writeNote, appendToNote, deleteNote, listRecent, getBacklinks, saveMemory];
 
 export const LOAD_SKILL_NAME = 'load_skill';
 
@@ -1287,13 +1440,13 @@ export function pathGuard(
 	if (path.startsWith('.obsidian/') || path === '.obsidian') return 'access to .obsidian/ is forbidden';
 	const meta = normalizePath(metaDir || '').replace(/\/+$/, '');
 	if (meta) {
-		const internalPrefix = `${meta}/.smart-aide/`;
-		const chatsPrefix = `${meta}/chats/`;
-		if (path === `${meta}/.smart-aide` || path.startsWith(internalPrefix)) {
-			return `access to ${internalPrefix} is forbidden (plugin internal)`;
-		}
-		if (path === `${meta}/chats` || path.startsWith(chatsPrefix)) {
-			return `access to ${chatsPrefix} is forbidden (chat history is managed by the plugin)`;
+		// Plugin-owned storage (chats, internals, memory.md) all nest under
+		// `${meta}/Smart Aide/`. Block the whole subtree from general tool access —
+		// save_memory writes through its own code path, not pathGuard.
+		const pluginHome = `${meta}/Smart Aide`;
+		const pluginHomePrefix = `${pluginHome}/`;
+		if (path === pluginHome || path.startsWith(pluginHomePrefix)) {
+			return `access to ${pluginHomePrefix} is forbidden (Smart Aide-managed storage)`;
 		}
 	}
 	if (opts.requireMarkdown && !/\.md$/i.test(path)) {

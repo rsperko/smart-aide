@@ -125,6 +125,11 @@ export function humanizeToolCall(name: string, args: Record<string, unknown>): s
 			return path ? `Proposed append to ${quoted(path, 60)}` : 'Proposed append';
 		case 'delete_note':
 			return path ? `Proposed delete of ${quoted(path, 60)}` : 'Proposed delete';
+		case 'save_memory': {
+			const content = typeof args.content === 'string' ? args.content : '';
+			const snippet = content.length > 0 ? ` — ${quoted(content, 60)}` : '';
+			return section ? `🧠 Remembered in ${section}${snippet}` : `🧠 Remembered${snippet}`;
+		}
 		default:
 			return `${name}${formatArgsInline(args)}`;
 	}
@@ -349,6 +354,7 @@ export function researchIcon(calls: ToolCallBlock[], invokedSkill: string | null
 		if (names.has('load_skill')) return '🧩';
 		if (names.has('write_note') || names.has('append_to_note')) return '✎';
 		if (names.has('delete_note')) return '🗑';
+		if (names.has('save_memory')) return '🧠';
 	}
 	return '🔍';
 }
@@ -396,6 +402,7 @@ export function displayToolName(name: string, count: number): string {
 		write_note: ['write', 'writes'],
 		append_to_note: ['append', 'appends'],
 		delete_note: ['delete', 'deletes'],
+		save_memory: ['memory', 'memories'],
 	};
 	const [sg, pl] = labels[name] ?? [name, name];
 	return `${count} ${count === 1 ? sg : pl}`;

@@ -3,6 +3,7 @@ import {
 	DEFAULT_META_DIR,
 	chatsDirFor,
 	internalDirFor,
+	memoryFileFor,
 	normalizeMetaDir,
 	skillsDirFor,
 } from './settings';
@@ -13,6 +14,7 @@ export interface DerivedPaths {
 	skills: string;
 	internals: string;
 	agentsMd: string;
+	memory: string;
 }
 
 export function derivedPathLabels(metaDir: string): DerivedPaths {
@@ -21,6 +23,7 @@ export function derivedPathLabels(metaDir: string): DerivedPaths {
 		skills: skillsDirFor(metaDir),
 		internals: internalDirFor(metaDir),
 		agentsMd: `${metaDir}/AGENTS.md`,
+		memory: memoryFileFor(metaDir),
 	};
 }
 
@@ -31,12 +34,12 @@ export function renderVaultData(root: HTMLElement, ctx: SectionContext): void {
 	root.createDiv({
 		cls: 'setting-item-description vk-section-blurb',
 		text:
-			'Vault-relative folder where Smart Aide stores its content. Chats, skills, plugin internals, and the optional AGENTS.md vault-context file all live here. Default: Meta. Common alternative: sys.',
+			'Vault-relative folder Smart Aide reads from. Cross-tool standards (skills, AGENTS.md) sit at the root so other agents — Pi, Claude Code, Codex — can read the same files. Plugin-only state (chats, memory, internals) nests under a `Smart Aide/` subfolder so the file tree shows what belongs to the plugin vs your notes. Default: Meta. Common alternative: sys.',
 	});
 
 	new Setting(root)
 		.setName('Meta folder')
-		.setDesc('Changing this changes where Smart Aide looks — it does not move existing chats or skills.')
+		.setDesc('Changing this changes where Smart Aide looks — it does not move existing chats, skills, or memory.')
 		.addText((t) =>
 			t
 				.setPlaceholder(DEFAULT_META_DIR)
@@ -48,7 +51,12 @@ export function renderVaultData(root: HTMLElement, ctx: SectionContext): void {
 					ctx.plugin.storage.setDir(chatsDirFor(next));
 					ctx.plugin.skills.setDir(skillsDirFor(next));
 					ctx.plugin.agents.setDir(next);
-					await Promise.all([ctx.plugin.skills.load(), ctx.plugin.agents.load()]);
+					ctx.plugin.memory.setDir(next);
+					await Promise.all([
+						ctx.plugin.skills.load(),
+						ctx.plugin.agents.load(),
+						ctx.plugin.memory.load(),
+					]);
 					ctx.plugin.refreshOpenViewProjections();
 					ctx.redisplay();
 				}),
@@ -56,18 +64,24 @@ export function renderVaultData(root: HTMLElement, ctx: SectionContext): void {
 
 	const paths = derivedPathLabels(ctx.plugin.settings.metaDir);
 	const agentsFound = ctx.plugin.agents.text().length > 0;
+	const memoryFound = ctx.plugin.memory.text().length > 0;
 	const grid = root.createDiv({ cls: 'vk-paths-grid' });
+	addPathRow(grid, 'Skills', `${paths.skills} (cross-tool)`);
+	addPathRow(grid, 'Vault context', `${paths.agentsMd} — ${agentsFound ? 'found' : 'not found'} (cross-tool)`);
 	addPathRow(grid, 'Chats', paths.chats);
-	addPathRow(grid, 'Skills', paths.skills);
+	addPathRow(grid, 'Memory', `${paths.memory} — ${memoryFound ? 'found' : 'not found'}`);
 	addPathRow(grid, 'Plugin internals', paths.internals);
-	addPathRow(grid, 'Vault context', `${paths.agentsMd} — ${agentsFound ? 'found' : 'not found'}`);
 
 	new Setting(root)
-		.setName('Reload skills & AGENTS.md')
-		.setDesc('Re-scan the skills directory and re-read AGENTS.md after editing either.')
+		.setName('Reload skills, AGENTS.md & memory')
+		.setDesc('Re-scan the skills directory and re-read AGENTS.md and memory.md after editing any of them.')
 		.addButton((btn) =>
 			btn.setButtonText('Reload').onClick(async () => {
-				await Promise.all([ctx.plugin.skills.load(), ctx.plugin.agents.load()]);
+				await Promise.all([
+					ctx.plugin.skills.load(),
+					ctx.plugin.agents.load(),
+					ctx.plugin.memory.load(),
+				]);
 				ctx.plugin.refreshOpenViewProjections();
 				const count = ctx.plugin.skills.all().length;
 				new Notice(`Loaded ${count} skill${count === 1 ? '' : 's'}.`);

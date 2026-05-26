@@ -514,7 +514,8 @@ export class ChatView extends ItemView {
 
 	private async computeContextProjection(): Promise<Omit<TokenBreakdown, 'composer'>> {
 		const base = estimateTokens(this.plugin.settings.systemPrompt);
-		const vault = estimateTokens(this.plugin.agents.text());
+		const vault =
+			estimateTokens(this.plugin.agents.text()) + estimateTokens(this.plugin.memory.text());
 		const skillsManifest = estimateTokens(this.plugin.skills.manifestText());
 
 		let pinned = 0;
@@ -729,12 +730,16 @@ export class ChatView extends ItemView {
 		const meta = empty.createDiv({ cls: 'vk-empty-meta' });
 		const skillCount = this.plugin.skills.visibleOnThisPlatform().length;
 		const agentsLoaded = this.plugin.agents.text().length > 0;
+		const memoryLoaded = this.plugin.memory.text().length > 0;
 		const skillParts: string[] = [];
 		if (skillCount > 0) {
 			skillParts.push(`${skillCount} skill${skillCount === 1 ? '' : 's'} available`);
 		}
 		if (agentsLoaded) {
 			skillParts.push('vault context loaded');
+		}
+		if (memoryLoaded) {
+			skillParts.push('memory loaded');
 		}
 		if (skillParts.length > 0) {
 			meta.createDiv({ cls: 'vk-empty-meta-row', text: `🧠 ${skillParts.join(' · ')}` });
@@ -881,6 +886,26 @@ export class ChatView extends ItemView {
 				if ((ev.target as HTMLElement).classList.contains('vk-context-chip-x')) return;
 				void this.openInternalLink(path.replace(/\.md$/i, ''), false);
 			});
+		}
+
+		// Memory chip — model-curated facts loaded into every turn. Click opens
+		// the file so the user can prune. Hidden when memory.md is empty/absent.
+		const memoryBody = this.plugin.memory.text();
+		if (memoryBody.length > 0) {
+			const memChip = this.contextRowEl.createEl('button', {
+				cls: 'vk-context-chip vk-context-memory',
+				attr: { type: 'button' },
+			});
+			const icon = memChip.createSpan({ cls: 'vk-context-chip-icon' });
+			setIcon(icon, 'brain-circuit');
+			memChip.createSpan({ cls: 'vk-context-chip-name', text: 'Memory' });
+			const sectionCount = (memoryBody.match(/^## /gm) ?? []).length;
+			memChip.title = sectionCount > 0
+				? `${sectionCount} section${sectionCount === 1 ? '' : 's'} · ${formatTokens(estimateTokens(memoryBody))}. Click to open ${this.plugin.memory.path()}`
+				: `${formatTokens(estimateTokens(memoryBody))}. Click to open ${this.plugin.memory.path()}`;
+			this.registerDomEvent(memChip, 'click', () =>
+				void this.openInternalLink(this.plugin.memory.path().replace(/\.md$/i, ''), false),
+			);
 		}
 
 		// Skill chips — surface which skills the model has loaded so the user
@@ -1047,10 +1072,14 @@ export class ChatView extends ItemView {
 	private composeSystemPrompt(): string {
 		const base = this.plugin.settings.systemPrompt;
 		const agentsBody = this.plugin.agents.text();
+		const memoryBody = this.plugin.memory.text();
 		const manifest = this.plugin.skills.manifestText();
 		const sections = [base];
 		if (agentsBody) {
 			sections.push(`Vault context (user-maintained):\n\n${agentsBody}`);
+		}
+		if (memoryBody) {
+			sections.push(`Persistent memory (your prior saves — call save_memory to extend):\n\n${memoryBody}`);
 		}
 		if (manifest) sections.push(manifest);
 		return sections.join('\n\n');

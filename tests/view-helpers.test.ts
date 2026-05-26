@@ -599,6 +599,20 @@ describe('humanizeToolCall', () => {
 		expect(humanizeToolCall('delete_note', { path: 'foo.md' })).toBe('Proposed delete of "foo"');
 	});
 
+	it('save_memory — surfaces the section name and a content snippet', () => {
+		const out = humanizeToolCall('save_memory', {
+			section: 'Preferences',
+			content: 'No trailing summaries.',
+		});
+		expect(out).toContain('🧠');
+		expect(out).toContain('Remembered in Preferences');
+		expect(out).toContain('No trailing summaries');
+	});
+
+	it('save_memory — drops the section qualifier when section is missing', () => {
+		expect(humanizeToolCall('save_memory', { content: 'foo' })).toBe('🧠 Remembered — "foo"');
+	});
+
 	it('unknown tool falls back to name(args) form via formatArgsInline', () => {
 		expect(humanizeToolCall('unknown_tool', { foo: 'bar' })).toBe('unknown_tool(foo="bar")');
 		expect(humanizeToolCall('also_unknown', {})).toBe('also_unknown()');

@@ -5,16 +5,20 @@ import type { SectionContext } from './settings-section';
 
 /**
  * Mirrors view.ts:composeSystemPrompt so the Advanced preview shows the model
- * exactly what gets sent every turn — base prompt, then AGENTS.md framing,
- * then the skill manifest. Pure so it can be unit-tested cold.
+ * exactly what gets sent every turn — base prompt, AGENTS.md framing,
+ * persistent memory, then the skill manifest. Pure so it can be unit-tested cold.
  */
 export function composedSystemPromptPreview(
 	base: string,
 	agentsBody: string,
+	memoryBody: string,
 	manifest: string,
 ): string {
 	const sections: string[] = [base];
 	if (agentsBody) sections.push(`Vault context (user-maintained):\n\n${agentsBody}`);
+	if (memoryBody) {
+		sections.push(`Persistent memory (your prior saves — call save_memory to extend):\n\n${memoryBody}`);
+	}
 	if (manifest) sections.push(manifest);
 	return sections.join('\n\n');
 }
@@ -38,7 +42,7 @@ function renderSystemPromptBlock(root: HTMLElement, ctx: SectionContext): void {
 
 	const body = details.createDiv({ cls: 'vk-prompt-body' });
 	new Setting(body)
-		.setDesc('Sent at the start of every chat. AGENTS.md and the skill manifest are appended automatically — see the composed preview below.')
+		.setDesc('Sent at the start of every chat. AGENTS.md, persistent memory, and the skill manifest are appended automatically — see the composed preview below.')
 		.addExtraButton((btn) =>
 			btn
 				.setIcon('rotate-ccw')
