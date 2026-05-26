@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { __testing } from '../src/providers/gemini';
 import type { CustomMessageEntry, MessageEntry } from '../src/types';
 
-const { renderContents, buildTools, toolResultToResponse, buildHeaders } = __testing;
+const { renderContents, buildTools, toolResultToResponse, buildHeaders, parseGeminiUsage } = __testing;
 
 function userText(id: string, text: string, parentId: string | null = null): MessageEntry {
 	return {
@@ -223,5 +223,44 @@ describe('gemini buildHeaders', () => {
 	it('includes x-goog-api-key when apiKey is set', () => {
 		const h = buildHeaders(ep('AIzaSecret'));
 		expect(h['x-goog-api-key']).toBe('AIzaSecret');
+	});
+});
+
+describe('parseGeminiUsage — implicit prompt-caching plumbing', () => {
+	it('reads promptTokenCount and candidatesTokenCount into the cross-provider shape', () => {
+		const u = parseGeminiUsage({ promptTokenCount: 1200, candidatesTokenCount: 80 });
+		expect(u).toEqual({ promptTokens: 1200, completionTokens: 80 });
+	});
+
+	it('plumbs cachedContentTokenCount through as cachedReadTokens (Gemini 2.5 implicit caching)', () => {
+		const u = parseGeminiUsage({
+			promptTokenCount: 1200,
+			candidatesTokenCount: 80,
+			cachedContentTokenCount: 1000,
+		});
+		expect(u).toEqual({
+			promptTokens: 1200,
+			completionTokens: 80,
+			cachedReadTokens: 1000,
+		});
+	});
+
+	it('drops cachedReadTokens when the cached count is 0 (no implicit cache hit)', () => {
+		const u = parseGeminiUsage({
+			promptTokenCount: 1200,
+			candidatesTokenCount: 80,
+			cachedContentTokenCount: 0,
+		});
+		expect(u).toEqual({ promptTokens: 1200, completionTokens: 80 });
+	});
+
+	it('returns null for an empty / missing payload', () => {
+		expect(parseGeminiUsage(undefined)).toBeNull();
+		expect(parseGeminiUsage(null)).toBeNull();
+	});
+
+	it('defaults missing token counts to 0 rather than NaN', () => {
+		const u = parseGeminiUsage({ promptTokenCount: 100 });
+		expect(u).toEqual({ promptTokens: 100, completionTokens: 0 });
 	});
 });

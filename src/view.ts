@@ -16,6 +16,7 @@ import {
 	createScreenWakeLock,
 	estimateEntryTokens,
 	estimateTokens,
+	evaluateContextWindow,
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
@@ -23,6 +24,7 @@ import {
 	parseSlashInvocation,
 	reduceCumulativeUsage,
 	safeParse,
+	sumBreakdown,
 } from './view-helpers';
 import { ApprovalDecision } from './view-approval';
 import { collectApprovals, runOneToolCall } from './assistant-tools';
@@ -951,9 +953,24 @@ export class ChatView extends ItemView {
 			this.openModelPicker();
 			return;
 		}
-		const { endpoint } = resolved;
+		const { endpoint, slug } = resolved;
 		const rawText = this.composerEl.value.trim();
 		if (!rawText && this.composer.pendingImages.length === 0) return;
+
+		const modelMeta = endpoint.discoveredModels?.find((m) => m.id === slug);
+		if (modelMeta?.contextLength) {
+			const projection = await this.computeContextProjection();
+			const composerTokens = estimateTokens(this.composerEl.value);
+			const totalTokens = sumBreakdown({ ...projection, composer: composerTokens });
+			const verdict = evaluateContextWindow({
+				totalTokens,
+				contextLength: modelMeta.contextLength,
+			});
+			if (verdict.block) {
+				new Notice(verdict.message!, 8000);
+				return;
+			}
+		}
 
 		// Slash invocation: `/<name> <body>` summons a user-invocable skill for this
 		// turn. The skill body is prepended as a custom_message entry, and any

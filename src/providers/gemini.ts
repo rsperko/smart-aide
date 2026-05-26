@@ -1,4 +1,5 @@
 import { arrayBufferToBase64 } from '../image-helpers';
+import { fetchWithRetry } from './retry';
 import { streamSplit } from './sse';
 import { assembleStream } from './stream-runner';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock } from '../types';
@@ -192,6 +193,25 @@ async function renderContents(
 	return contents;
 }
 
+/**
+ * Map Gemini's `usageMetadata` payload into the cross-provider TurnUsage shape.
+ * `cachedContentTokenCount` is the implicit-cache hit reported by Gemini 2.5
+ * Flash/Pro — surfacing it as `cachedReadTokens` lets the token chip and the
+ * cost popover credit the user for the cache without provider-specific code.
+ */
+export function parseGeminiUsage(
+	usageMetadata: Record<string, unknown> | null | undefined,
+): { promptTokens: number; completionTokens: number; cachedReadTokens?: number } | null {
+	if (!usageMetadata) return null;
+	const u = usageMetadata as Record<string, number | undefined>;
+	const cached = u.cachedContentTokenCount;
+	return {
+		promptTokens: u.promptTokenCount ?? 0,
+		completionTokens: u.candidatesTokenCount ?? 0,
+		cachedReadTokens: cached && cached > 0 ? cached : undefined,
+	};
+}
+
 function buildTools(tools: ToolDescriptor[]): { functionDeclarations: GeminiToolFunctionDecl[] }[] {
 	if (tools.length === 0) return [];
 	return [
@@ -219,7 +239,7 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 	if (tools.length) body.tools = tools;
 
 	const url = `${trimBase(req.endpoint.baseURL)}/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`;
-	const res = await fetch(url, {
+	const res = await fetchWithRetry(url, {
 		method: 'POST',
 		headers: buildHeaders(req.endpoint),
 		body: JSON.stringify(body),
@@ -281,12 +301,7 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 		}
 
 		if (chunk.usageMetadata) {
-			const u = chunk.usageMetadata;
-			usage = {
-				promptTokens: u.promptTokenCount ?? 0,
-				completionTokens: u.candidatesTokenCount ?? 0,
-				cachedReadTokens: u.cachedContentTokenCount || undefined,
-			};
+			usage = parseGeminiUsage(chunk.usageMetadata);
 		}
 	}
 
@@ -353,4 +368,5 @@ export const __testing = {
 	buildTools,
 	toolResultToResponse,
 	buildHeaders,
+	parseGeminiUsage,
 };

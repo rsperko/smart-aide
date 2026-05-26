@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { __testing } from '../src/providers/openai-compat';
+import { createThinkStripper } from '../src/providers/think-strip';
 import type { Entry, MessageEntry, CustomMessageEntry } from '../src/types';
 
-const { renderMessages, toolsToOpenAI, buildHeaders } = __testing;
+const {
+	renderMessages,
+	toolsToOpenAI,
+	buildHeaders,
+	applyClaudeCacheBreakpoints,
+	isClaudeBackedModel,
+	eventsFromOpenAIChunk,
+	flushStripperEvents,
+} = __testing;
 
 function endpoint(over: Partial<{
 	id: string;
@@ -219,6 +228,231 @@ describe('openai-compat buildHeaders', () => {
 		const h = buildHeaders(endpoint({ apiKey: '', headers: { 'X-Custom': 'v' } }));
 		expect(h['X-Custom']).toBe('v');
 		expect(h['Authorization']).toBeUndefined();
+	});
+});
+
+describe('isClaudeBackedModel', () => {
+	it('matches OpenRouter-style anthropic/claude-* slugs', () => {
+		expect(isClaudeBackedModel('anthropic/claude-haiku-4.5')).toBe(true);
+		expect(isClaudeBackedModel('anthropic/claude-opus-4.7')).toBe(true);
+	});
+
+	it('matches bare claude-* slugs', () => {
+		expect(isClaudeBackedModel('claude-3-5-sonnet')).toBe(true);
+		expect(isClaudeBackedModel('claude-opus-4-7')).toBe(true);
+	});
+
+	it('is case-insensitive', () => {
+		expect(isClaudeBackedModel('Anthropic/Claude-Opus-4.7')).toBe(true);
+	});
+
+	it('does NOT match OpenAI, Gemini, or other models', () => {
+		expect(isClaudeBackedModel('gpt-4o')).toBe(false);
+		expect(isClaudeBackedModel('openai/gpt-4o')).toBe(false);
+		expect(isClaudeBackedModel('google/gemini-2.5-pro')).toBe(false);
+		expect(isClaudeBackedModel('mistralai/mixtral-8x7b')).toBe(false);
+		expect(isClaudeBackedModel('llama-3.1-70b')).toBe(false);
+	});
+});
+
+describe('applyClaudeCacheBreakpoints', () => {
+	const baseMessages = () => [
+		{ role: 'system' as const, content: 'YOU ARE A HELPFUL ASSISTANT' },
+		{ role: 'user' as const, content: 'hello' },
+	];
+
+	it('returns messages unchanged when caching is disabled', () => {
+		const msgs = baseMessages();
+		const out = applyClaudeCacheBreakpoints(msgs, 'anthropic/claude-haiku-4.5', false);
+		expect(out).toEqual(msgs);
+	});
+
+	it('returns messages unchanged for non-Claude models even with caching enabled', () => {
+		const msgs = baseMessages();
+		const out = applyClaudeCacheBreakpoints(msgs, 'openai/gpt-4o', true);
+		expect(out).toEqual(msgs);
+	});
+
+	it('converts the system string content to a content array with cache_control on Claude routes', () => {
+		const msgs = baseMessages();
+		const out = applyClaudeCacheBreakpoints(msgs, 'anthropic/claude-haiku-4.5', true);
+		const sys = out[0];
+		expect(sys.role).toBe('system');
+		expect(Array.isArray(sys.content)).toBe(true);
+		const parts = sys.content as Array<{ type: string; text: string; cache_control?: unknown }>;
+		expect(parts[0].type).toBe('text');
+		expect(parts[0].text).toBe('YOU ARE A HELPFUL ASSISTANT');
+		expect(parts[0].cache_control).toEqual({ type: 'ephemeral' });
+	});
+
+	it('does not mutate the input messages array', () => {
+		const msgs = baseMessages();
+		const snapshot = JSON.parse(JSON.stringify(msgs));
+		applyClaudeCacheBreakpoints(msgs, 'anthropic/claude-haiku-4.5', true);
+		expect(msgs).toEqual(snapshot);
+	});
+
+	it('leaves a system message that is already an array shape intact and tags its last part', () => {
+		const msgs = [
+			{
+				role: 'system' as const,
+				content: [
+					{ type: 'text' as const, text: 'PART A' },
+					{ type: 'text' as const, text: 'PART B' },
+				],
+			},
+		];
+		const out = applyClaudeCacheBreakpoints(msgs, 'anthropic/claude-haiku-4.5', true);
+		const parts = out[0].content as Array<{ type: string; text: string; cache_control?: unknown }>;
+		expect(parts).toHaveLength(2);
+		expect(parts[0].cache_control).toBeUndefined();
+		expect(parts[1].cache_control).toEqual({ type: 'ephemeral' });
+	});
+
+	it('is a no-op when the message list has no system message', () => {
+		const msgs = [{ role: 'user' as const, content: 'hi' }];
+		const out = applyClaudeCacheBreakpoints(msgs, 'anthropic/claude-haiku-4.5', true);
+		expect(out).toEqual(msgs);
+	});
+});
+
+describe('eventsFromOpenAIChunk', () => {
+	it('emits text-delta for plain content', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk({ choices: [{ delta: { content: 'hello' } }] }, s);
+		expect(out).toEqual([{ type: 'text-delta', textDelta: 'hello' }]);
+	});
+
+	it('strips <think>...</think> blocks from content', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { content: 'a<think>hidden</think>b' } }] },
+			s,
+		);
+		expect(out).toEqual([{ type: 'text-delta', textDelta: 'ab' }]);
+	});
+
+	it('emits no text-delta when content is entirely within a think block', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { content: '<think>just reasoning' } }] },
+			s,
+		);
+		expect(out).toEqual([]);
+	});
+
+	it('drops delta.reasoning_content silently (DeepSeek native channel)', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { reasoning_content: 'this is internal' } }] },
+			s,
+		);
+		expect(out).toEqual([]);
+	});
+
+	it('drops delta.reasoning silently (OpenRouter normalized form)', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { reasoning: 'router reasoning' } }] },
+			s,
+		);
+		expect(out).toEqual([]);
+	});
+
+	it('still emits text-delta when content coexists with reasoning_content', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { content: 'visible', reasoning_content: 'hidden' } }] },
+			s,
+		);
+		expect(out).toEqual([{ type: 'text-delta', textDelta: 'visible' }]);
+	});
+
+	it('emits tool-call-delta for tool_calls', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{ index: 0, id: 'c1', function: { name: 'foo', arguments: '{"x":1}' } },
+							],
+						},
+					},
+				],
+			},
+			s,
+		);
+		expect(out).toEqual([
+			{
+				type: 'tool-call-delta',
+				toolCallDelta: { index: 0, id: 'c1', name: 'foo', argumentsDelta: '{"x":1}' },
+			},
+		]);
+	});
+
+	it('emits usage for chunks carrying usage info', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk(
+			{
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 50,
+					prompt_tokens_details: { cached_tokens: 30 },
+				},
+			},
+			s,
+		);
+		expect(out).toEqual([
+			{
+				type: 'usage',
+				usage: { promptTokens: 100, completionTokens: 50, cachedReadTokens: 30 },
+			},
+		]);
+	});
+
+	it('emits finish_reason as a finish event', () => {
+		const s = createThinkStripper();
+		const out = eventsFromOpenAIChunk({ choices: [{ finish_reason: 'stop' }] }, s);
+		expect(out).toEqual([{ type: 'finish', finishReason: 'stop' }]);
+	});
+
+	it('reassembles think tags that span multiple chunks', () => {
+		const s = createThinkStripper();
+		const c1 = eventsFromOpenAIChunk({ choices: [{ delta: { content: 'a<thi' } }] }, s);
+		const c2 = eventsFromOpenAIChunk(
+			{ choices: [{ delta: { content: 'nk>hidden</think>b' } }] },
+			s,
+		);
+		const visible = [...c1, ...c2]
+			.filter((e): e is { type: 'text-delta'; textDelta: string } => e.type === 'text-delta')
+			.map((e) => e.textDelta)
+			.join('');
+		expect(visible).toBe('ab');
+	});
+});
+
+describe('flushStripperEvents', () => {
+	it('emits a final text-delta for a residual partial open tag (treated as visible)', () => {
+		const s = createThinkStripper();
+		eventsFromOpenAIChunk({ choices: [{ delta: { content: 'keep<thi' } }] }, s);
+		const out = flushStripperEvents(s);
+		expect(out).toEqual([{ type: 'text-delta', textDelta: '<thi' }]);
+	});
+
+	it('emits nothing when the stripper has no residual buffer', () => {
+		const s = createThinkStripper();
+		eventsFromOpenAIChunk({ choices: [{ delta: { content: 'all done' } }] }, s);
+		const out = flushStripperEvents(s);
+		expect(out).toEqual([]);
+	});
+
+	it('drops residual reasoning (unclosed think block at end-of-stream)', () => {
+		const s = createThinkStripper();
+		eventsFromOpenAIChunk({ choices: [{ delta: { content: '<think>truncated' } }] }, s);
+		const out = flushStripperEvents(s);
+		expect(out).toEqual([]);
 	});
 });
 

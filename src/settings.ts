@@ -1,5 +1,6 @@
-import { DEFAULT_MODEL, DEFAULT_MODEL_LIST, friendlyModelName } from './models';
+import { DEFAULT_MODEL, friendlyModelName } from './models';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
+import type { ApiKeyStore } from './api-key-store';
 
 export interface SmartAideSettings {
 	endpoints: Endpoint[];
@@ -62,13 +63,17 @@ export const DEFAULT_SYSTEM_PROMPT = [
 ].join('\n');
 
 export function defaultOpenRouterEndpoint(apiKey = '', models?: string[]): Endpoint {
-	return {
+	// No pre-seeded model list — /models discovery is authoritative once a key
+	// is set. An explicit models arg is honored (used by the legacy migration
+	// path to preserve a user-curated list from a previous install).
+	const endpoint: Endpoint = {
 		id: OPENROUTER_ID,
 		name: 'OpenRouter',
 		baseURL: 'https://openrouter.ai/api/v1',
 		apiKey,
-		models: models && models.length > 0 ? models : [...DEFAULT_MODEL_LIST],
 	};
+	if (models && models.length > 0) endpoint.models = models;
+	return endpoint;
 }
 
 export const DEFAULT_SETTINGS: SmartAideSettings = {
@@ -138,6 +143,42 @@ function sanitizeFavorites(raw: unknown): ModelRef[] {
 		out.push({ endpointId: ref.endpointId, slug: ref.slug });
 	}
 	return out;
+}
+
+/**
+ * Populate `endpoint.apiKey` from the per-device key store. Falls back to the
+ * value already in `endpoint.apiKey` (which is how legacy data.json keys reach
+ * the store on first load after upgrade — captureApiKeysToStore writes them in
+ * the same load cycle, and stripApiKeysForPersistence blanks the data.json
+ * copy on the next save).
+ */
+export function hydrateApiKeysFromStore(
+	settings: SmartAideSettings,
+	store: ApiKeyStore,
+): SmartAideSettings {
+	return {
+		...settings,
+		endpoints: settings.endpoints.map((e) => ({
+			...e,
+			apiKey: store.has(e.id) ? store.get(e.id) : e.apiKey,
+		})),
+	};
+}
+
+/** Mirror every endpoint's current `apiKey` into the per-device key store. */
+export function captureApiKeysToStore(settings: SmartAideSettings, store: ApiKeyStore): void {
+	for (const e of settings.endpoints) {
+		store.set(e.id, e.apiKey ?? '');
+	}
+}
+
+/** Deep-copy of settings with `apiKey` blanked on every endpoint. Use this as
+ * the payload for `saveData` so the synced `data.json` never carries secrets. */
+export function stripApiKeysForPersistence(settings: SmartAideSettings): SmartAideSettings {
+	return {
+		...settings,
+		endpoints: settings.endpoints.map((e) => ({ ...e, apiKey: '' })),
+	};
 }
 
 export function findEndpoint(settings: SmartAideSettings, id: string): Endpoint | undefined {

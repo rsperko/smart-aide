@@ -154,7 +154,12 @@ export class BrowseAllPickerModal extends FuzzySuggestModal<BrowseRow> {
 		super(app);
 		this.multiEndpoint = endpoints.length > 1;
 		this.favoriteKeys = new Set(favorites.map((f) => `${f.endpointId}::${f.slug}`));
-		this.setPlaceholder('Browse all models — type to filter, ★ to favorite');
+		const isEmpty = buildBrowseAllPickerItems(endpoints, favorites).length === 0;
+		this.setPlaceholder(
+			isEmpty
+				? 'No models yet — add a key in Providers, then tap Refresh to discover models.'
+				: 'Browse all models — type to filter, ★ to favorite',
+		);
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
 			{ command: '↵', purpose: 'pick' },

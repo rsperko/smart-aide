@@ -1,6 +1,8 @@
 import { arrayBufferToBase64, dataUrlFor } from '../image-helpers';
+import { fetchWithRetry } from './retry';
 import { streamSplit } from './sse';
 import { assembleStream } from './stream-runner';
+import { createThinkStripper, type ThinkStripper } from './think-strip';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock, Role } from '../types';
 import type {
 	AssembledTurn,
@@ -28,8 +30,10 @@ interface OpenAIToolCall {
 	function: { name: string; arguments: string };
 }
 
+type CacheControl = { type: 'ephemeral' };
+
 type OpenAIContentPart =
-	| { type: 'text'; text: string }
+	| { type: 'text'; text: string; cache_control?: CacheControl }
 	| { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
 
 interface OpenAIMessage {
@@ -166,11 +170,125 @@ async function renderMessages(
 	return messages;
 }
 
+/**
+ * Heuristic: is this OpenAI-compat slug going to be routed to a Claude model
+ * by the upstream gateway (OpenRouter, AWS Bedrock proxy, etc.)? If so, the
+ * gateway will forward Anthropic `cache_control` markers — adding them is a
+ * 90% cost reduction on cached tokens for long-running chats. For non-Claude
+ * routes, sending the field is unsafe (OpenAI direct rejects it), so we gate.
+ */
+export function isClaudeBackedModel(slug: string): boolean {
+	return /(?:^|\/)claude/i.test(slug) || /^anthropic\//i.test(slug);
+}
+
+/**
+ * Add Anthropic `cache_control` to the system message when the route is
+ * Claude-backed. One breakpoint on the last system text part covers the whole
+ * system prefix. No-op for non-Claude routes or when caching is disabled.
+ */
+export function applyClaudeCacheBreakpoints(
+	messages: OpenAIMessage[],
+	model: string,
+	enable: boolean,
+): OpenAIMessage[] {
+	if (!enable || !isClaudeBackedModel(model)) return messages;
+	const out = messages.map((m) => ({ ...m }));
+	const sysIdx = out.findIndex((m) => m.role === 'system');
+	if (sysIdx < 0) return out;
+	const sys = out[sysIdx];
+	if (typeof sys.content === 'string') {
+		out[sysIdx] = {
+			...sys,
+			content: [{ type: 'text', text: sys.content, cache_control: { type: 'ephemeral' } }],
+		};
+	} else if (Array.isArray(sys.content) && sys.content.length > 0) {
+		const parts = sys.content.map((p) => ({ ...p }));
+		const lastText = [...parts].reverse().find((p) => p.type === 'text');
+		if (lastText) {
+			(lastText as { cache_control?: CacheControl }).cache_control = { type: 'ephemeral' };
+		}
+		out[sysIdx] = { ...sys, content: parts };
+	}
+	return out;
+}
+
+/**
+ * Convert one parsed OpenAI-compat SSE chunk into provider-neutral StreamEvents.
+ *
+ * Reasoning handling:
+ * - `delta.content` runs through the think-stripper so `<think>...</think>`
+ *   blocks emitted inline (Qwen-thinking, Ollama gpt-oss, DeepSeek-V3 with
+ *   thinking enabled, etc.) do not leak into the rendered assistant text or
+ *   the persisted assistant message (which would be re-sent next turn and
+ *   trigger provider 400s on some endpoints).
+ * - `delta.reasoning_content` (DeepSeek native) and `delta.reasoning`
+ *   (OpenRouter normalized form for o1, R1, Qwen-thinking via the router) are
+ *   silently dropped. We never echo them back on the next turn — DeepSeek
+ *   explicitly says reasoning content must not be re-sent.
+ */
+export function eventsFromOpenAIChunk(chunk: any, stripper: ThinkStripper): StreamEvent[] {
+	const events: StreamEvent[] = [];
+
+	if (chunk.usage) {
+		events.push({
+			type: 'usage',
+			usage: {
+				promptTokens: chunk.usage.prompt_tokens ?? 0,
+				completionTokens: chunk.usage.completion_tokens ?? 0,
+				cachedReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+			},
+		});
+	}
+
+	const choice = chunk.choices?.[0];
+	if (!choice) return events;
+
+	const delta = choice.delta;
+	if (typeof delta?.content === 'string' && delta.content.length > 0) {
+		const { visible } = stripper.push(delta.content);
+		if (visible) events.push({ type: 'text-delta', textDelta: visible });
+	}
+
+	if (delta?.tool_calls) {
+		for (const tc of delta.tool_calls) {
+			events.push({
+				type: 'tool-call-delta',
+				toolCallDelta: {
+					index: tc.index ?? 0,
+					id: tc.id,
+					name: tc.function?.name,
+					argumentsDelta: tc.function?.arguments,
+				},
+			});
+		}
+	}
+
+	if (choice.finish_reason) {
+		events.push({ type: 'finish', finishReason: choice.finish_reason });
+	}
+
+	return events;
+}
+
+/**
+ * End-of-stream flush. A residual partial open tag (e.g. `<thi` with no closing
+ * `<think>` ever arriving) is emitted as visible text — better to render the
+ * literal characters than silently swallow them. A residual unclosed reasoning
+ * block is dropped (treating it as reasoning, consistent with the rest of the
+ * pipeline).
+ */
+export function flushStripperEvents(stripper: ThinkStripper): StreamEvent[] {
+	const { visible } = stripper.flush();
+	if (!visible) return [];
+	return [{ type: 'text-delta', textDelta: visible }];
+}
+
 async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): AsyncGenerator<StreamEvent> {
-	const messages = await renderMessages(req.chain, req.systemPrompt, resolveImage, req.pinnedPreamble);
+	const rendered = await renderMessages(req.chain, req.systemPrompt, resolveImage, req.pinnedPreamble);
+	const messages = applyClaudeCacheBreakpoints(rendered, req.model, req.enablePromptCaching ?? false);
 	const tools = toolsToOpenAI(req.tools);
 	const url = `${trimBase(req.endpoint.baseURL)}/chat/completions`;
-	const res = await fetch(url, {
+	const res = await fetchWithRetry(url, {
 		method: 'POST',
 		headers: buildHeaders(req.endpoint),
 		body: JSON.stringify({
@@ -194,11 +312,12 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 		return;
 	}
 
+	const stripper = createThinkStripper();
 	for await (const raw of streamSplit(res.body, '\n')) {
 		const line = raw.trim();
 		if (!line || !line.startsWith('data:')) continue;
 		const data = line.slice(5).trim();
-		if (data === '[DONE]') return;
+		if (data === '[DONE]') break;
 
 		let chunk: any;
 		try {
@@ -207,43 +326,9 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 			continue;
 		}
 
-		if (chunk.usage) {
-			yield {
-				type: 'usage',
-				usage: {
-					promptTokens: chunk.usage.prompt_tokens ?? 0,
-					completionTokens: chunk.usage.completion_tokens ?? 0,
-					cachedReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
-				},
-			};
-		}
-
-		const choice = chunk.choices?.[0];
-		if (!choice) continue;
-
-		const delta = choice.delta;
-		if (delta?.content) {
-			yield { type: 'text-delta', textDelta: delta.content };
-		}
-
-		if (delta?.tool_calls) {
-			for (const tc of delta.tool_calls) {
-				yield {
-					type: 'tool-call-delta',
-					toolCallDelta: {
-						index: tc.index ?? 0,
-						id: tc.id,
-						name: tc.function?.name,
-						argumentsDelta: tc.function?.arguments,
-					},
-				};
-			}
-		}
-
-		if (choice.finish_reason) {
-			yield { type: 'finish', finishReason: choice.finish_reason };
-		}
+		for (const ev of eventsFromOpenAIChunk(chunk, stripper)) yield ev;
 	}
+	for (const ev of flushStripperEvents(stripper)) yield ev;
 }
 
 function runTurn(
@@ -312,4 +397,8 @@ export const __testing = {
 	renderMessages,
 	toolsToOpenAI,
 	buildHeaders,
+	applyClaudeCacheBreakpoints,
+	isClaudeBackedModel,
+	eventsFromOpenAIChunk,
+	flushStripperEvents,
 };

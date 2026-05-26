@@ -86,6 +86,7 @@ export async function runAssistantLoop(
 			const provider = providerFor(endpoint);
 
 			let assembled;
+			let partialText = '';
 			try {
 				assembled = await provider.runTurn(
 					{
@@ -103,7 +104,10 @@ export async function runAssistantLoop(
 					},
 					(path) => host.storage.resolveImageBytes(path),
 					{
-						onText: (delta) => renderer.onText(delta),
+						onText: (delta) => {
+							partialText += delta;
+							renderer.onText(delta);
+						},
 						onToolCallProgress: (index, partial) => renderer.onToolProgress(index, partial),
 						onUsage: (u) => {
 							host.recordTurnUsage(u);
@@ -112,11 +116,32 @@ export async function runAssistantLoop(
 					},
 				);
 			} catch (e) {
-				if ((e as Error).name === 'AbortError') {
+				const isAbort = (e as Error).name === 'AbortError';
+				const msg = (e as Error).message || String(e);
+				// User-initiated abort isn't data loss — we drop the partial. A real
+				// stream error after partial text IS data loss; persist what we got
+				// plus an error marker so the chain stays valid for the next turn.
+				if (!isAbort && partialText) {
+					const partialEntry = host.storage.makeMessageEntry(
+						{ role: 'assistant', content: partialText },
+						host.session.leafId,
+					);
+					await host.storage.appendEntry(host.session, partialEntry);
+				}
+				if (!isAbort) {
+					const errEntry = host.storage.makeCustomEntry(
+						'turn-error',
+						{ message: msg, partial: Boolean(partialText) },
+						host.session.leafId,
+					);
+					await host.storage.appendEntry(host.session, errEntry);
+				}
+				if (isAbort) {
 					renderer.error('aborted', 'Stopped.');
 				} else {
-					renderer.error('error', `Chat error: ${(e as Error).message}`);
+					renderer.error('error', `Chat error: ${msg}`);
 				}
+				host.rerenderStream();
 				break;
 			}
 

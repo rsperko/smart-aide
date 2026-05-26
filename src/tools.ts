@@ -125,6 +125,8 @@ Each hit carries in: "filename" | "alias" | "heading" | "tag" | "linkDisplayText
 
 Use the user's exact remembered phrase. Don't paraphrase.
 
+Folders in Obsidian's Excluded files setting are skipped — unless pathPrefix points at one (explicit > default).
+
 Examples:
 - "find my weekly review notes" → query="weekly review"
 - "where I wrote 'eventual consistency'" → query="\\"eventual consistency\\"" (quotes force body scan)
@@ -187,9 +189,9 @@ Heading hits AND content hits include startLine + endLine + heading — pass the
 		const sinceMs = sinceDays !== undefined ? Date.now() - sinceDays * 86_400_000 : 0;
 
 		let files = ctx.app.vault.getMarkdownFiles();
-		if (pathPrefix) {
-			const prefix = normalizePathPrefix(pathPrefix);
-			files = files.filter((f) => matchesPathPrefix(f.path, prefix));
+		const normalizedPrefix = pathPrefix ? normalizePathPrefix(pathPrefix) : '';
+		if (normalizedPrefix) {
+			files = files.filter((f) => matchesPathPrefix(f.path, normalizedPrefix));
 		}
 		if (sinceDays !== undefined) files = files.filter((f) => f.stat.mtime >= sinceMs);
 		if (tag) {
@@ -199,6 +201,17 @@ Heading hits AND content hits include startLine + endLine + heading — pass the
 				const tags = (getAllTags(cache) ?? []).map((t) => t.toLowerCase());
 				return tags.includes(tag);
 			});
+		}
+
+		// Honor Obsidian's vault-wide "Excluded files" setting unless the user's
+		// pathPrefix points at (or under) an excluded root — explicit > default.
+		const ignoreFilters = getUserIgnoreFilters(ctx.app);
+		if (ignoreFilters.length > 0) {
+			const prefixOverrides =
+				normalizedPrefix && isUserIgnored(ignoreFilters, normalizedPrefix);
+			if (!prefixOverrides) {
+				files = files.filter((f) => !isUserIgnored(ignoreFilters, f.path));
+			}
 		}
 
 		const buckets = new Map<string, FileBucket>();
@@ -812,9 +825,17 @@ const listRecent: Tool = {
 		const pathPrefix = strArg(args.pathPrefix);
 		const limit = clamp(intArg(args.limit) ?? 10, 1, 50);
 		let files = ctx.app.vault.getMarkdownFiles();
-		if (pathPrefix) {
-			const prefix = normalizePathPrefix(pathPrefix);
-			files = files.filter((f) => matchesPathPrefix(f.path, prefix));
+		const normalizedPrefix = pathPrefix ? normalizePathPrefix(pathPrefix) : '';
+		if (normalizedPrefix) {
+			files = files.filter((f) => matchesPathPrefix(f.path, normalizedPrefix));
+		}
+		const ignoreFilters = getUserIgnoreFilters(ctx.app);
+		if (ignoreFilters.length > 0) {
+			const prefixOverrides =
+				normalizedPrefix && isUserIgnored(ignoreFilters, normalizedPrefix);
+			if (!prefixOverrides) {
+				files = files.filter((f) => !isUserIgnored(ignoreFilters, f.path));
+			}
 		}
 		files.sort((a, b) => b.stat.mtime - a.stat.mtime);
 		const results = files.slice(0, limit).map((f) => ({
@@ -841,8 +862,10 @@ const getBacklinks: Tool = {
 		if (!rawPath) return JSON.stringify({ error: 'path is required' });
 		const target = normalizePath(rawPath);
 		const links = ctx.app.metadataCache.resolvedLinks;
+		const ignoreFilters = getUserIgnoreFilters(ctx.app);
 		const backlinks: { path: string; count: number }[] = [];
 		for (const [source, targets] of Object.entries(links)) {
+			if (ignoreFilters.length > 0 && isUserIgnored(ignoreFilters, source)) continue;
 			const count = (targets as Record<string, number>)[target];
 			if (count > 0) backlinks.push({ path: source, count });
 		}
@@ -1181,6 +1204,51 @@ export function matchesPathPrefix(path: string, prefix: string): boolean {
 	if (!prefix) return true;
 	if (path === prefix) return true;
 	return path.startsWith(prefix + '/');
+}
+
+// Obsidian's vault-wide "Excluded files" list (Settings → Files and links →
+// Excluded files). Not in obsidian.d.ts; lives at app.vault.config.userIgnoreFilters.
+// Accepts four entry shapes:
+//   "Archive"             — bare folder name, segment-prefix match
+//   "Archive/"            — folder with trailing slash, same semantics
+//   "Archive/**"          — recursive glob, same semantics
+//   "/regex/"             — slash-wrapped JS regex against the full path
+export function getUserIgnoreFilters(app: App): string[] {
+	const raw: unknown = (app as unknown as { vault: { config?: { userIgnoreFilters?: unknown } } })
+		.vault.config?.userIgnoreFilters;
+	if (!Array.isArray(raw)) return [];
+	const out: string[] = [];
+	for (const item of raw) {
+		if (typeof item === 'string' && item.length > 0) out.push(item);
+	}
+	return out;
+}
+
+export function matchesIgnoreFilter(filter: string, path: string): boolean {
+	if (!filter) return false;
+	if (filter.length >= 2 && filter.startsWith('/') && filter.endsWith('/')) {
+		try {
+			return new RegExp(filter.slice(1, -1)).test(path);
+		} catch {
+			return false;
+		}
+	}
+	if (filter.endsWith('/**')) {
+		const root = filter.slice(0, -3);
+		return root ? matchesPathPrefix(path, root) : false;
+	}
+	if (filter.endsWith('/')) {
+		const root = filter.slice(0, -1);
+		return root ? matchesPathPrefix(path, root) : false;
+	}
+	return matchesPathPrefix(path, filter);
+}
+
+export function isUserIgnored(filters: string[], path: string): boolean {
+	for (const f of filters) {
+		if (matchesIgnoreFilter(f, path)) return true;
+	}
+	return false;
 }
 
 /**

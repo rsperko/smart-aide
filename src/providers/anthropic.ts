@@ -1,4 +1,5 @@
 import { arrayBufferToBase64 } from '../image-helpers';
+import { fetchWithRetry } from './retry';
 import { streamSplit } from './sse';
 import { assembleStream } from './stream-runner';
 import type { DiscoveredModel, Endpoint, Entry, ImageBlock } from '../types';
@@ -239,7 +240,7 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 	if (tools.length) body.tools = tools;
 
 	const url = `${trimBase(req.endpoint.baseURL)}/v1/messages`;
-	const res = await fetch(url, {
+	const res = await fetchWithRetry(url, {
 		method: 'POST',
 		headers: buildHeaders(req.endpoint),
 		body: JSON.stringify(body),

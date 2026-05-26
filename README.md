@@ -13,6 +13,7 @@ AI chat for your Obsidian vault — desktop and iPhone. Tool-mediated search and
 - **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Skills can also be **user-invocable**: add `user-invocable: true` to the frontmatter and type `/<name>` in the composer to summon it directly. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
 - **Vault context via AGENTS.md.** Drop an `AGENTS.md` at `<vault>/Meta/AGENTS.md` to tell the agent about your vault — folder layout, tag conventions, projects, paths to leave alone. The body is appended to the system prompt. Standard cross-tool format ([agents.md](https://agents.md/)) so the same file works with other agent tools.
 - **Pi session format.** Chat history is JSONL in `<vault>/Meta/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
+- **Honors your Obsidian settings.** Folders in **Settings → Files and links → Excluded files** are skipped by search, recent-files, and backlinks. Attachments go to your configured attachment folder. See [docs/settings.md](docs/settings.md#how-smart-aide-uses-obsidians-configuration) for the full list.
 
 ## Install (BRAT)
 
@@ -26,6 +27,18 @@ Updates flow through BRAT's "Check for updates."
 ## Quick start
 
 After install, open Smart Aide from the right sidebar (chat-bubble icon) or via the command palette (`Smart Aide: New chat`). Type a question about your vault and hit Enter. Click the chat title at the top to switch between conversations; long-press / right-click to rename. The picker shows a small × on each row for delete (two-click confirm to prevent oops).
+
+## Configuration
+
+Full settings reference: **[docs/settings.md](docs/settings.md)**.
+
+Highlights worth knowing before you start:
+
+- **Providers** — Add an OpenAI-compatible endpoint (OpenRouter / OpenAI / Anthropic / Gemini / local). API keys are stored per-device, outside the synced `data.json`.
+- **Chat models** — Star models in **Browse all** to favorite them. The default chat model and title model are picked from your favorites.
+- **Vault data** — One vault-relative folder (default `Meta`) holds chats, skills, plugin internals, and the optional vault-context AGENTS.md.
+- **Safety** — Writes show a diff approval card by default. The "auto-approve writes" toggle is opt-in and visibly flags the chat with a ⚠ chip while on.
+- **Honors Obsidian's Excluded files setting** — folders you add at Settings → Files and links → Excluded files are skipped by search, recent-files, and backlinks. The model still finds them when you point at them explicitly (e.g. "what's in my archive about X").
 
 ## Skills
 

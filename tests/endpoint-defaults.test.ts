@@ -33,23 +33,10 @@ describe('default model lists are non-empty and slug-shaped', () => {
 });
 
 describe('ENDPOINT_TEMPLATES source-of-truth', () => {
-	it('each non-OpenRouter, non-Custom template carries a non-empty models array', () => {
+	it('no template pre-seeds the models array (discovery is authoritative)', () => {
 		for (const t of ENDPOINT_TEMPLATES) {
-			if (t.name === 'OpenRouter' || t.name === 'Custom') continue;
-			expect(t.models, t.name).toBeDefined();
-			expect(t.models!.length, t.name).toBeGreaterThan(0);
+			expect(t.models, t.name).toBeUndefined();
 		}
-	});
-
-	it('templates use the shared DEFAULT_MODELS_* constants (single source of truth)', () => {
-		const openai = ENDPOINT_TEMPLATES.find((t) => t.name === 'OpenAI')!;
-		const anthropicNative = ENDPOINT_TEMPLATES.find((t) => t.name === 'Anthropic (native)')!;
-		const gemini = ENDPOINT_TEMPLATES.find((t) => t.name === 'Gemini (native)')!;
-		const anthropicCompat = ENDPOINT_TEMPLATES.find((t) => t.name === 'Anthropic (compat)')!;
-		expect(openai.models).toEqual(DEFAULT_MODELS_OPENAI);
-		expect(anthropicNative.models).toEqual(DEFAULT_MODELS_ANTHROPIC);
-		expect(gemini.models).toEqual(DEFAULT_MODELS_GEMINI);
-		expect(anthropicCompat.models).toEqual(DEFAULT_MODELS_ANTHROPIC);
 	});
 
 	it('protocol field is set only on native templates', () => {

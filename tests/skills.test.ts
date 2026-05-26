@@ -60,6 +60,18 @@ describe('parseSkillContent', () => {
 		expect(skill!.userInvocable).toBe(true);
 	});
 
+	it('defaults disable-model-invocation to false when absent', () => {
+		const md = '---\nname: x\ndescription: d\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.disableModelInvocation).toBe(false);
+	});
+
+	it('reads disable-model-invocation: true (case-insensitive)', () => {
+		const md = '---\nname: x\ndescription: d\ndisable-model-invocation: TRUE\n---\nbody';
+		const skill = parseSkillContent(md, 'a.md');
+		expect(skill!.disableModelInvocation).toBe(true);
+	});
+
 	it('reads flow-style allowed-tools', () => {
 		const md =
 			'---\nname: x\ndescription: d\nuser-invocable: true\nallowed-tools: [read_note, write_note]\n---\nbody';
@@ -280,6 +292,75 @@ describe('SkillRegistry', () => {
 		const registry = new SkillRegistry(app, 'Missing/dir');
 		await registry.load();
 		expect(registry.all()).toEqual([]);
+	});
+
+	it('manifestText omits skills with disable-model-invocation: true', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const auto = vault.addFile(
+			'Meta/skills/auto.md',
+			'---\nname: auto\ndescription: model can load this\n---\nbody',
+		);
+		const userOnly = vault.addFile(
+			'Meta/skills/polish-editor.md',
+			'---\nname: polish-editor\ndescription: user-only\nuser-invocable: true\ndisable-model-invocation: true\n---\nbody',
+		);
+		attachToFolder(folder, auto);
+		attachToFolder(folder, userOnly);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		const text = registry.manifestText();
+		expect(text).toContain('auto: model can load this');
+		expect(text).not.toContain('polish-editor');
+	});
+
+	it('loadable() refuses skills with disable-model-invocation: true', async () => {
+		// Defense in depth — even if the model guesses the name (it shouldn't,
+		// because the manifest hides it), load_skill must still refuse so
+		// user-only skills cannot be back-doored.
+		const folder = vault.addFolder('Meta/skills');
+		const userOnly = vault.addFile(
+			'Meta/skills/polish-editor.md',
+			'---\nname: polish-editor\ndescription: user-only\nuser-invocable: true\ndisable-model-invocation: true\n---\nbody',
+		);
+		attachToFolder(folder, userOnly);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		expect(registry.loadable('polish-editor')).toBeNull();
+		// getByName + userInvocableSkills still find it — user-path unchanged.
+		expect(registry.getByName('polish-editor')?.name).toBe('polish-editor');
+		expect(registry.userInvocableSkills().map((s) => s.name)).toEqual(['polish-editor']);
+	});
+
+	it('modelInvocableSkills excludes disable-model-invocation AND mobile-hidden skills on mobile', async () => {
+		const folder = vault.addFolder('Meta/skills');
+		const auto = vault.addFile(
+			'Meta/skills/auto.md',
+			'---\nname: auto\ndescription: d\n---\nbody',
+		);
+		const userOnly = vault.addFile(
+			'Meta/skills/polish.md',
+			'---\nname: polish\ndescription: d\ndisable-model-invocation: true\n---\nbody',
+		);
+		const desktop = vault.addFile(
+			'Meta/skills/desk.md',
+			'---\nname: desk\ndescription: d\nmobile: false\n---\nbody',
+		);
+		attachToFolder(folder, auto);
+		attachToFolder(folder, userOnly);
+		attachToFolder(folder, desktop);
+
+		const registry = new SkillRegistry(app, 'Meta/skills');
+		await registry.load();
+
+		Platform.isMobile = false;
+		expect(registry.modelInvocableSkills().map((s) => s.name).sort()).toEqual(['auto', 'desk']);
+
+		Platform.isMobile = true;
+		expect(registry.modelInvocableSkills().map((s) => s.name)).toEqual(['auto']);
 	});
 
 	it('userInvocableSkills returns only skills with user-invocable: true', async () => {

@@ -9,6 +9,11 @@ import {
 import { skillsDirFor } from './settings';
 import type { SectionContext } from './settings-section';
 
+export const SKILLS_TRUST_NOTE =
+	'Skill bodies are trusted prompt content — they can redirect the model, ' +
+	'restrict tools, or carry hidden instructions. Review any skill you install ' +
+	'from outside this vault before loading it.';
+
 export function renderSkills(root: HTMLElement, ctx: SectionContext): void {
 	const renderGen = ctx.currentRenderGen();
 	const heading = new Setting(root).setName('Skills').setHeading();
@@ -18,6 +23,11 @@ export function renderSkills(root: HTMLElement, ctx: SectionContext): void {
 		cls: 'setting-item-description vk-section-blurb',
 		text:
 			'Skills are markdown files with YAML frontmatter (name + description). Their descriptions are injected into the system prompt; the model loads a body on demand via load_skill(name) when a request matches. Same path on desktop and mobile — both read from the vault.',
+	});
+
+	root.createDiv({
+		cls: 'vk-skills-trust-note',
+		text: SKILLS_TRUST_NOTE,
 	});
 
 	const count = ctx.plugin.skills.all().length;

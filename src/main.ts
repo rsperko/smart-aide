@@ -1,17 +1,31 @@
 import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
-import { chatsDirFor, migrateSettings, skillsDirFor, SmartAideSettings } from './settings';
+import {
+	captureApiKeysToStore,
+	chatsDirFor,
+	hydrateApiKeysFromStore,
+	migrateSettings,
+	skillsDirFor,
+	SmartAideSettings,
+	stripApiKeysForPersistence,
+} from './settings';
 import { SmartAideSettingsTab } from './settings-tab';
 import { SkillRegistry } from './skills';
 import { AgentsMdRegistry } from './agents-md';
 import { ChatPickerModal } from './modal-chat-picker';
+import {
+	API_KEY_STORE_PREFIX,
+	ApiKeyStore,
+	createLocalStorageKeyStore,
+} from './api-key-store';
 
 export default class SmartAidePlugin extends Plugin {
 	settings!: SmartAideSettings;
 	storage!: ChatStorage;
 	skills!: SkillRegistry;
 	agents!: AgentsMdRegistry;
+	keyStore!: ApiKeyStore;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -142,12 +156,21 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
+		if (!this.keyStore) this.keyStore = createLocalStorageKeyStore(API_KEY_STORE_PREFIX);
 		const raw = (await this.loadData()) as Record<string, unknown> | null;
-		this.settings = migrateSettings(raw);
+		const migrated = migrateSettings(raw);
+		// Hydrate first (store overrides data.json), then capture so any legacy
+		// data.json key seeds the store on first load after upgrade.
+		this.settings = hydrateApiKeysFromStore(migrated, this.keyStore);
+		captureApiKeysToStore(this.settings, this.keyStore);
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		// Keys live in the per-device store, never in data.json — Obsidian Sync
+		// covers the plugins folder by default, and we don't want one device's
+		// data.json clobbering another device's keys.
+		captureApiKeysToStore(this.settings, this.keyStore);
+		await this.saveData(stripApiKeysForPersistence(this.settings));
 	}
 
 	refreshDangerChips(): void {

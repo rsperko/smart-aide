@@ -38,7 +38,7 @@ function makeCtx(): ToolContext {
 function makeSkillRegistryStub(): SkillRegistry {
 	return {
 		loadable: () => null,
-		visibleOnThisPlatform: () => [],
+		modelInvocableSkills: () => [],
 	} as unknown as SkillRegistry;
 }
 
@@ -232,7 +232,7 @@ describe('runOneToolCall', () => {
 		const skill = { name: 'daily', body: 'do daily things', userInvocable: false } as unknown;
 		const skills = {
 			loadable: (n: string) => (n === 'daily' ? skill : null),
-			visibleOnThisPlatform: () => [skill],
+			modelInvocableSkills: () => [skill],
 		} as unknown as SkillRegistry;
 		const pending: { name: string; body: string }[] = [];
 		const out = await runOneToolCall(
@@ -250,7 +250,7 @@ describe('runOneToolCall', () => {
 		const skill = { name: 'daily', body: 'do daily things', userInvocable: false } as unknown;
 		const skills = {
 			loadable: (n: string) => (n === 'daily' ? skill : null),
-			visibleOnThisPlatform: () => [skill],
+			modelInvocableSkills: () => [skill],
 		} as unknown as SkillRegistry;
 		const pending: { name: string; body: string }[] = [];
 		const out = await runOneToolCall(
@@ -268,7 +268,7 @@ describe('runOneToolCall', () => {
 		const known = { name: 'meeting-notes', body: '', userInvocable: false } as unknown;
 		const skills = {
 			loadable: () => null,
-			visibleOnThisPlatform: () => [known],
+			modelInvocableSkills: () => [known],
 		} as unknown as SkillRegistry;
 		const pending: { name: string; body: string }[] = [];
 		const out = await runOneToolCall(

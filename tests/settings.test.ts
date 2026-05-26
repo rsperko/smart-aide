@@ -202,24 +202,25 @@ describe('derived meta paths', () => {
 });
 
 describe('defaultOpenRouterEndpoint', () => {
-	it('returns OpenRouter shape with default model list when none provided', () => {
+	it('returns OpenRouter shape with no pre-seeded model list', () => {
 		const e = defaultOpenRouterEndpoint();
 		expect(e.id).toBe(OPENROUTER_ID);
 		expect(e.name).toBe('OpenRouter');
 		expect(e.baseURL).toBe('https://openrouter.ai/api/v1');
 		expect(e.apiKey).toBe('');
-		expect((e.models ?? []).length).toBeGreaterThan(0);
+		// Discovery is authoritative; templates no longer seed `models`.
+		expect(e.models).toBeUndefined();
 	});
 
-	it('uses the provided models list when non-empty', () => {
+	it('uses the provided models list when non-empty (legacy-migration path)', () => {
 		const e = defaultOpenRouterEndpoint('key', ['only/one']);
 		expect(e.apiKey).toBe('key');
 		expect(e.models).toEqual(['only/one']);
 	});
 
-	it('falls back to defaults when models is empty array', () => {
+	it('leaves models unset when the provided list is empty', () => {
 		const e = defaultOpenRouterEndpoint('key', []);
-		expect((e.models ?? []).length).toBeGreaterThan(0);
+		expect(e.models).toBeUndefined();
 	});
 });
 

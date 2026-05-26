@@ -8,8 +8,11 @@ import {
 	emptyHint,
 	findSectionIndex,
 	findWordMatchesNormalized,
+	getUserIgnoreFilters,
+	isUserIgnored,
 	LOAD_SKILL_NAME,
 	LOAD_SKILL_TOOL_DEF,
+	matchesIgnoreFilter,
 	matchesPathPrefix,
 	normalizeForMatch,
 	normalizePathPrefix,
@@ -1692,5 +1695,230 @@ describe('search_vault — tool description', () => {
 		expect(desc).toContain('autoBody');
 		expect(desc).toContain('fuzzyFallback');
 		expect(desc).toContain('matchedSurfaces');
+	});
+
+	it('documents that Obsidian Excluded files are skipped', () => {
+		const tool = TOOLS.find((t) => t.name === 'search_vault')!;
+		expect(tool.description.toLowerCase()).toContain('excluded files');
+	});
+});
+
+// ---------- userIgnoreFilters (Obsidian Settings → Files and links → Excluded files) ----------
+
+describe('matchesIgnoreFilter', () => {
+	it('bare name matches the folder and its descendants on segment boundaries', () => {
+		expect(matchesIgnoreFilter('Archive', 'Archive')).toBe(true);
+		expect(matchesIgnoreFilter('Archive', 'Archive/foo.md')).toBe(true);
+		expect(matchesIgnoreFilter('Archive', 'Archive/Sub/foo.md')).toBe(true);
+		// Segment boundary — Archived is a different folder.
+		expect(matchesIgnoreFilter('Archive', 'Archived/foo.md')).toBe(false);
+		// Different roots don't match.
+		expect(matchesIgnoreFilter('Archive', 'Notes/Archive-talk.md')).toBe(false);
+	});
+
+	it('trailing-slash form matches a folder and its descendants', () => {
+		expect(matchesIgnoreFilter('Archive/', 'Archive')).toBe(true);
+		expect(matchesIgnoreFilter('Archive/', 'Archive/foo.md')).toBe(true);
+		expect(matchesIgnoreFilter('Archive/', 'Archived/foo.md')).toBe(false);
+	});
+
+	it('glob form (Archive/**) matches recursively', () => {
+		expect(matchesIgnoreFilter('Archive/**', 'Archive')).toBe(true);
+		expect(matchesIgnoreFilter('Archive/**', 'Archive/foo.md')).toBe(true);
+		expect(matchesIgnoreFilter('Archive/**', 'Archive/Sub/foo.md')).toBe(true);
+		expect(matchesIgnoreFilter('Archive/**', 'Archived/foo.md')).toBe(false);
+	});
+
+	it('regex form (/.../) honors arbitrary JS regex against the full path', () => {
+		expect(matchesIgnoreFilter('/^Archive\\/.*\\.md$/', 'Archive/foo.md')).toBe(true);
+		expect(matchesIgnoreFilter('/^Archive\\/.*\\.md$/', 'Notes/foo.md')).toBe(false);
+		// Malformed regex doesn't crash, just doesn't match.
+		expect(matchesIgnoreFilter('/[unterminated/', 'anything')).toBe(false);
+	});
+
+	it('exact file path matches that file only', () => {
+		expect(matchesIgnoreFilter('Notes/secret.md', 'Notes/secret.md')).toBe(true);
+		expect(matchesIgnoreFilter('Notes/secret.md', 'Notes/secret-other.md')).toBe(false);
+	});
+
+	it('empty filter never matches', () => {
+		expect(matchesIgnoreFilter('', 'anything')).toBe(false);
+	});
+});
+
+describe('getUserIgnoreFilters', () => {
+	it('returns an empty list when the field is absent', () => {
+		const app = new App();
+		expect(getUserIgnoreFilters(app)).toEqual([]);
+	});
+
+	it('reads app.vault.config.userIgnoreFilters when present', () => {
+		const app = new App();
+		(app.vault as unknown as { config: { userIgnoreFilters: unknown[] } }).config = {
+			userIgnoreFilters: ['Archive/', 'Templates/**', '', 42, null],
+		};
+		// Strings only, empty strings dropped.
+		expect(getUserIgnoreFilters(app)).toEqual(['Archive/', 'Templates/**']);
+	});
+});
+
+describe('isUserIgnored', () => {
+	it('returns true if any filter matches', () => {
+		expect(isUserIgnored(['Archive/', 'Templates/**'], 'Templates/daily.md')).toBe(true);
+		expect(isUserIgnored(['Archive/', 'Templates/**'], 'Notes/foo.md')).toBe(false);
+	});
+});
+
+// ---------- ignore-filter integration into search_vault / list_recent / get_backlinks ----------
+
+function appWithIgnoreFilters(filters: string[]): App {
+	const app = new App();
+	(app.vault as unknown as { config: { userIgnoreFilters: string[] } }).config = {
+		userIgnoreFilters: filters,
+	};
+	return app;
+}
+
+describe('search_vault — userIgnoreFilters integration', () => {
+	it('skips files matching an Excluded Files entry by default', async () => {
+		const archived = Object.assign(new TFile(), {
+			path: 'Archive/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const live = Object.assign(new TFile(), {
+			path: 'Notes/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.vault.getMarkdownFiles = () => [archived, live];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'old' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].path).toBe('Notes/old.md');
+	});
+
+	it('defers exclusion when pathPrefix points at the excluded root', async () => {
+		const archived = Object.assign(new TFile(), {
+			path: 'Archive/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const live = Object.assign(new TFile(), {
+			path: 'Notes/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.vault.getMarkdownFiles = () => [archived, live];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'old', pathPrefix: 'Archive' },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		// pathPrefix at the excluded root overrides — Archive/old.md is visible,
+		// Notes/old.md is filtered out by the pathPrefix itself.
+		expect(parsed.matches).toBe(1);
+		expect(parsed.results[0].path).toBe('Archive/old.md');
+	});
+
+	it('defers exclusion when pathPrefix is a subfolder of the excluded root', async () => {
+		const nested = Object.assign(new TFile(), {
+			path: 'Archive/MOCs/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.vault.getMarkdownFiles = () => [nested];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(
+			TOOLS,
+			'search_vault',
+			{ query: 'old', pathPrefix: 'Archive/MOCs' },
+			app,
+			'Meta',
+		);
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+	});
+
+	it('does nothing when there are no userIgnoreFilters configured', async () => {
+		const archived = Object.assign(new TFile(), {
+			path: 'Archive/old.md',
+			basename: 'old',
+			extension: 'md',
+			stat: { mtime: 100, ctime: 0, size: 10 },
+		});
+		const app = new App(); // no .vault.config
+		app.vault.getMarkdownFiles = () => [archived];
+		app.metadataCache.getFileCache = () => null;
+
+		const out = await dispatchTool(TOOLS, 'search_vault', { query: 'old' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.matches).toBe(1);
+	});
+});
+
+describe('list_recent — userIgnoreFilters integration', () => {
+	it('skips files matching an Excluded Files entry by default', async () => {
+		const archived = Object.assign(new TFile(), { path: 'Archive/a.md', basename: 'a', extension: 'md', stat: { mtime: 200, ctime: 0, size: 0 } });
+		const live = Object.assign(new TFile(), { path: 'Notes/b.md', basename: 'b', extension: 'md', stat: { mtime: 100, ctime: 0, size: 0 } });
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.vault.getMarkdownFiles = () => [archived, live];
+
+		const out = await dispatchTool(TOOLS, 'list_recent', {}, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.count).toBe(1);
+		expect(parsed.results[0].path).toBe('Notes/b.md');
+	});
+
+	it('defers exclusion when pathPrefix points at the excluded root', async () => {
+		const archived = Object.assign(new TFile(), { path: 'Archive/a.md', basename: 'a', extension: 'md', stat: { mtime: 200, ctime: 0, size: 0 } });
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.vault.getMarkdownFiles = () => [archived];
+
+		const out = await dispatchTool(TOOLS, 'list_recent', { pathPrefix: 'Archive' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.count).toBe(1);
+		expect(parsed.results[0].path).toBe('Archive/a.md');
+	});
+});
+
+describe('get_backlinks — userIgnoreFilters integration', () => {
+	it('skips source links from excluded folders', async () => {
+		const app = appWithIgnoreFilters(['Archive/']);
+		app.metadataCache.resolvedLinks = {
+			'Archive/old.md': { 'target.md': 5 },
+			'Notes/live.md': { 'target.md': 1 },
+		};
+		const out = await dispatchTool(TOOLS, 'get_backlinks', { path: 'target.md' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.count).toBe(1);
+		expect(parsed.results[0].path).toBe('Notes/live.md');
+	});
+
+	it('returns archived sources when no filters are configured', async () => {
+		const app = new App();
+		app.metadataCache.resolvedLinks = {
+			'Archive/old.md': { 'target.md': 5 },
+			'Notes/live.md': { 'target.md': 1 },
+		};
+		const out = await dispatchTool(TOOLS, 'get_backlinks', { path: 'target.md' }, app, 'Meta');
+		const parsed = JSON.parse(out);
+		expect(parsed.count).toBe(2);
 	});
 });

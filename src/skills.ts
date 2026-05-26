@@ -8,6 +8,13 @@ export interface Skill {
 	mobile: boolean;
 	/** When true, the user can summon this skill with `/<name>` in the composer. */
 	userInvocable: boolean;
+	/**
+	 * Spec field from the Agent Skills standard. When true, the skill is omitted
+	 * from the model's manifest and load_skill(name) refuses it — the skill
+	 * becomes user-only. Orthogonal to userInvocable: setting both yields the
+	 * "command-like" pattern (only summonable as /name, never auto-loaded).
+	 */
+	disableModelInvocation: boolean;
 	/** When set, the model only sees these tools while the skill is active. null = all tools. */
 	allowedTools: string[] | null;
 }
@@ -77,24 +84,35 @@ export class SkillRegistry {
 		return this.visibleOnThisPlatform().filter((s) => s.userInvocable);
 	}
 
+	/**
+	 * Skills the model is allowed to auto-load via load_skill(name). Excludes
+	 * mobile-hidden skills on mobile AND skills with disable-model-invocation:
+	 * true (the spec field for "user-only"). Used to build both the manifest
+	 * and the recovery list in load_skill error responses.
+	 */
+	modelInvocableSkills(): Skill[] {
+		return this.visibleOnThisPlatform().filter((s) => !s.disableModelInvocation);
+	}
+
 	getByName(name: string): Skill | null {
 		const lower = name.toLowerCase();
 		return this.skills.find((s) => s.name.toLowerCase() === lower) ?? null;
 	}
 
 	/**
-	 * Resolve a skill that the current platform is allowed to load. Mobile-hidden
-	 * skills resolve to null on mobile so the model cannot bypass the manifest by
-	 * guessing a name.
+	 * Resolve a skill that the current platform is allowed to load AND that
+	 * the model is permitted to invoke. Mobile-hidden skills (on mobile) and
+	 * disable-model-invocation skills both resolve to null here, so the model
+	 * cannot bypass the manifest by guessing a name.
 	 */
 	loadable(name: string): Skill | null {
 		const lower = name.toLowerCase();
-		return this.visibleOnThisPlatform().find((s) => s.name.toLowerCase() === lower) ?? null;
+		return this.modelInvocableSkills().find((s) => s.name.toLowerCase() === lower) ?? null;
 	}
 
 	/** One-line manifest of skill descriptions for the system prompt. */
 	manifestText(): string {
-		const visible = this.visibleOnThisPlatform();
+		const visible = this.modelInvocableSkills();
 		if (visible.length === 0) return '';
 		const lines = visible.map((s) => `- ${s.name}: ${s.description}`);
 		return [
@@ -108,6 +126,8 @@ export class SkillRegistry {
  * Minimal frontmatter parser. Supports:
  *   name, description, mobile (scalar)
  *   user-invocable (scalar boolean — surfaces as /name in the composer)
+ *   disable-model-invocation (scalar boolean — Agent Skills spec field;
+ *     hides the skill from the model's manifest and load_skill resolver)
  *   allowed-tools (list — restricts the tool surface while the skill is active)
  *     accepts flow `[a, b, c]` or block `- a\n- b\n` style
  */
@@ -121,8 +141,19 @@ export function parseSkillContent(content: string, path: string): Skill | null {
 	if (!name || !description) return null;
 	const mobile = scalarField(fmText, 'mobile') !== 'false';
 	const userInvocable = scalarField(fmText, 'user-invocable').toLowerCase() === 'true';
+	const disableModelInvocation =
+		scalarField(fmText, 'disable-model-invocation').toLowerCase() === 'true';
 	const allowedTools = listField(fmText, 'allowed-tools');
-	return { name, description, body, path, mobile, userInvocable, allowedTools };
+	return {
+		name,
+		description,
+		body,
+		path,
+		mobile,
+		userInvocable,
+		disableModelInvocation,
+		allowedTools,
+	};
 }
 
 export function scalarField(yaml: string, key: string): string {

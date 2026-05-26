@@ -2529,6 +2529,18 @@ details[open] > .vk-research-summary::after {
 	word-break: break-all;
 }
 
+/* --- Settings: Skills trust note --- */
+
+.vk-skills-trust-note {
+	margin: 6px 0 10px;
+	padding: 8px 10px;
+	border-left: 3px solid var(--text-warning, var(--interactive-accent));
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	border-radius: 4px;
+}
+
 /* --- Settings: Skills summary line --- */
 
 .vk-skills-summary {

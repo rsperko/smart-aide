@@ -7,6 +7,7 @@ import {
 	displayToolName,
 	estimateEntryTokens,
 	estimateTokens,
+	evaluateContextWindow,
 	extractToolCalls,
 	extractToolResults,
 	filterSkillsForSlash,
@@ -386,6 +387,55 @@ describe('sumBreakdown', () => {
 			composer: 64,
 		});
 		expect(total).toBe(127);
+	});
+});
+
+describe('evaluateContextWindow', () => {
+	it('returns ok when context length is unknown (cannot judge)', () => {
+		const r = evaluateContextWindow({ totalTokens: 5_000_000, contextLength: undefined });
+		expect(r.block).toBe(false);
+		expect(r.severity).toBe('ok');
+	});
+
+	it('returns ok when total + reserve is well within the window', () => {
+		const r = evaluateContextWindow({ totalTokens: 10_000, contextLength: 200_000 });
+		expect(r.block).toBe(false);
+		expect(r.severity).toBe('ok');
+	});
+
+	it('returns block=true when total + completionReserve exceeds context length', () => {
+		const r = evaluateContextWindow({
+			totalTokens: 199_000,
+			contextLength: 200_000,
+			completionReserve: 2_000,
+		});
+		expect(r.block).toBe(true);
+		expect(r.severity).toBe('block');
+		expect(r.message).toMatch(/exceeds/i);
+		expect(r.message).toMatch(/200k|200,000/);
+	});
+
+	it('returns block=true at the boundary (sum exactly equals window)', () => {
+		const r = evaluateContextWindow({
+			totalTokens: 199_000,
+			contextLength: 200_000,
+			completionReserve: 1_000,
+		});
+		expect(r.block).toBe(true);
+	});
+
+	it('uses default completionReserve when not provided', () => {
+		// totalTokens 199_500 + default reserve (>500) should exceed 200k.
+		const r = evaluateContextWindow({ totalTokens: 199_500, contextLength: 200_000 });
+		expect(r.block).toBe(true);
+	});
+
+	it('mentions the recovery actions (fork / unpin / switch) in the block message', () => {
+		const r = evaluateContextWindow({
+			totalTokens: 250_000,
+			contextLength: 200_000,
+		});
+		expect(r.message).toMatch(/fork|unpin|switch/i);
 	});
 });
 
@@ -943,7 +993,7 @@ describe('filterTools', () => {
 describe('handleSkillLoadCall', () => {
 	const registry: SkillRegistryLike = {
 		loadable: (name) => (name === 'note-capture' ? { name: 'note-capture', body: 'SKILL BODY' } : null),
-		visibleOnThisPlatform: () => [{ name: 'note-capture' }, { name: 'distill' }],
+		modelInvocableSkills: () => [{ name: 'note-capture' }, { name: 'distill' }],
 	};
 
 	it('queues the skill body in the pending array (never writes to storage) and returns loaded status', () => {
@@ -985,7 +1035,7 @@ describe('handleSkillLoadCall', () => {
 	it('appends successive loads in invocation order so the dispatch loop can drain them after the tool entry', () => {
 		const multi: SkillRegistryLike = {
 			loadable: (name) => ({ name, body: `body:${name}` }),
-			visibleOnThisPlatform: () => [],
+			modelInvocableSkills: () => [],
 		};
 		const pending: { name: string; body: string }[] = [];
 		handleSkillLoadCall({ name: 'a' }, multi, pending, new Set());

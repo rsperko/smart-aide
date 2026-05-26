@@ -163,7 +163,7 @@ function makeHost(opts: {
 		session: opts.session,
 		settings: opts.settings ?? DEFAULT_SETTINGS,
 		storage: opts.storage,
-		skills: { loadable: () => null, visibleOnThisPlatform: () => [] } as unknown as SkillRegistry,
+		skills: { loadable: () => null, modelInvocableSkills: () => [] } as unknown as SkillRegistry,
 		pinned: { buildPreamble: async () => '' } as unknown as PinnedContext,
 		modelRef: opts.modelRef ?? { endpointId: OPENROUTER_ID, slug: 'fake-model' },
 		composeSystemPrompt: () => 'system',
@@ -363,6 +363,69 @@ describe('runAssistantLoop', () => {
 		expect(rec.loopEnds).toBe(1);
 	});
 
+	it('stream errors after partial text: persists the partial assistant text + error marker', async () => {
+		const { storage, session } = await freshSession();
+		currentProvider = makeScriptedProvider([
+			{ text: 'I was thinking abo', throws: new Error('connection reset') },
+		]);
+		const { host, rec } = makeHost({ session, storage });
+
+		await runAssistantLoop(host, null, new AbortController().signal);
+
+		const assistantEntry = session.entries.find(
+			(e) => e.type === 'message' && e.message.role === 'assistant',
+		);
+		expect(assistantEntry, 'partial assistant entry should be persisted').toBeTruthy();
+		const content = (assistantEntry as { message: { content: unknown } }).message.content;
+		const text = typeof content === 'string'
+			? content
+			: (content as Array<{ type: string; text?: string }>).find((b) => b.type === 'text')?.text;
+		expect(text).toBe('I was thinking abo');
+
+		const errEntry = session.entries.find(
+			(e) => e.type === 'custom' && e.customType === 'turn-error',
+		);
+		expect(errEntry, 'a turn-error custom entry should mark the failure').toBeTruthy();
+		const errData = (errEntry as { data: Record<string, unknown> }).data;
+		expect(errData.message).toMatch(/connection reset/);
+
+		expect(rec.calls).toContain('renderer.error:error');
+		expect(rec.loopEnds).toBe(1);
+	});
+
+	it('stream errors with no text streamed yet: no empty assistant entry, only error marker', async () => {
+		const { storage, session } = await freshSession();
+		currentProvider = makeScriptedProvider([{ throws: new Error('http 503') }]);
+		const entriesBefore = session.entries.length;
+		const { host } = makeHost({ session, storage });
+
+		await runAssistantLoop(host, null, new AbortController().signal);
+
+		const assistantEntry = session.entries.find(
+			(e) => e.type === 'message' && e.message.role === 'assistant',
+		);
+		expect(assistantEntry).toBeUndefined();
+		const errEntry = session.entries.find(
+			(e) => e.type === 'custom' && e.customType === 'turn-error',
+		);
+		expect(errEntry).toBeTruthy();
+		expect(session.entries.length).toBe(entriesBefore + 1);
+	});
+
+	it('aborts mid-stream after partial text: does NOT persist (user-initiated stop is not data loss)', async () => {
+		const { storage, session } = await freshSession();
+		const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+		currentProvider = makeScriptedProvider([
+			{ text: 'partial cancelled', throws: abortErr },
+		]);
+		const entriesBefore = session.entries.length;
+		const { host } = makeHost({ session, storage });
+
+		await runAssistantLoop(host, null, new AbortController().signal);
+
+		expect(session.entries.length).toBe(entriesBefore);
+	});
+
 	it('aborts between turns: tool result persisted, next iteration skipped', async () => {
 		const { storage, session } = await freshSession();
 		const ctrl = new AbortController();
@@ -431,7 +494,7 @@ describe('runAssistantLoop', () => {
 			session: sess2,
 			settings: DEFAULT_SETTINGS,
 			storage: s2,
-			skills: { loadable: () => null, visibleOnThisPlatform: () => [] } as unknown as SkillRegistry,
+			skills: { loadable: () => null, modelInvocableSkills: () => [] } as unknown as SkillRegistry,
 			pinned: { buildPreamble: async () => '' } as unknown as PinnedContext,
 			modelRef: { endpointId: OPENROUTER_ID, slug: 'fake' },
 			composeSystemPrompt: () => 'system',

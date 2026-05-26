@@ -176,6 +176,47 @@ export function formatTokenChip(total: number, contextLength: number | undefined
 	return { pct, abs, severity };
 }
 
+export type ContextWindowSeverity = 'ok' | 'block';
+
+export interface ContextWindowVerdict {
+	block: boolean;
+	severity: ContextWindowSeverity;
+	usagePct: number | null;
+	message?: string;
+}
+
+/**
+ * Pre-send guard. The composer chip already warns at 70/90%; this is the hard
+ * block past 100% so we don't ship a request the provider will reject with
+ * a hard error after the user has paid for the round trip.
+ *
+ * Unknown context length → ok (we can't judge). Default completion reserve
+ * matches what providers actually generate (~4k for most modern models —
+ * conservative; better to block a turn the user can split than crash one).
+ */
+export function evaluateContextWindow(opts: {
+	totalTokens: number;
+	contextLength?: number | null;
+	completionReserve?: number;
+}): ContextWindowVerdict {
+	const { totalTokens, contextLength, completionReserve = 4096 } = opts;
+	if (!contextLength || contextLength <= 0) {
+		return { block: false, severity: 'ok', usagePct: null };
+	}
+	const projected = totalTokens + completionReserve;
+	const usagePct = Math.round((totalTokens / contextLength) * 100);
+	if (projected >= contextLength) {
+		const ctxLabel = formatTokens(contextLength).replace(/ tok$/, '');
+		const usedLabel = formatTokens(totalTokens).replace(/ tok$/, '');
+		const message =
+			`Chat exceeds the model's context window ` +
+			`(${usedLabel} + ${completionReserve} reserve > ${ctxLabel}). ` +
+			`Fork from earlier, unpin notes, or switch to a larger model.`;
+		return { block: true, severity: 'block', usagePct, message };
+	}
+	return { block: false, severity: 'ok', usagePct };
+}
+
 /** Rough token estimate: chars / 4. Cheap and consistent across the UI. */
 export function estimateTokens(s: string): number {
 	if (!s) return 0;
@@ -528,7 +569,9 @@ export function filterSkillsForSlash<T extends { name: string }>(
 
 export interface SkillRegistryLike {
 	loadable(name: string): { name: string; body: string } | null | undefined;
-	visibleOnThisPlatform(): { name: string }[];
+	/** Skills the model can auto-load. Used to build the recovery list returned
+	 * when load_skill is called with an unknown / disabled name. */
+	modelInvocableSkills(): { name: string }[];
 }
 
 /**
@@ -578,7 +621,7 @@ export function handleSkillLoadCall(
 	if (!skill) {
 		return JSON.stringify({
 			error: `no skill named '${skillName}'`,
-			available: skills.visibleOnThisPlatform().map((s) => s.name),
+			available: skills.modelInvocableSkills().map((s) => s.name),
 		});
 	}
 	if (alreadyLoaded.has(skill.name) || pendingSkillLoads.some((p) => p.name === skill.name)) {
