@@ -591,11 +591,51 @@ details[open] > .vk-tool-summary::before {
 	line-height: 1.3;
 }
 
-/* ---------- URL pin modal (+ URL button) ---------- */
+/* ---------- Narrow modal width cap (URL pin, Edit with AI) ---------- */
 
-.vk-url-pin-modal .setting-item-description {
-	margin-bottom: 12px;
+/* Obsidian's default modal width is too wide for single-purpose prompts.
+ * Anything that adds `mod-vk-narrow` to the outer .modal gets this cap. */
+.modal.mod-vk-narrow {
+	max-width: 480px;
+	width: auto;
 }
+
+/* Shared field layout for our modals: label above input, input full-width. */
+.vk-modal-field {
+	margin: 12px 0;
+}
+
+.vk-modal-field-label {
+	font-weight: 600;
+	font-size: 0.85em;
+	color: var(--text-muted);
+	margin-bottom: 4px;
+}
+
+.vk-modal-field-input {
+	width: 100%;
+	padding: 8px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	box-sizing: border-box;
+	font-size: 0.95em;
+	font-family: inherit;
+}
+
+.vk-modal-field-input:focus {
+	outline: none;
+	border-color: var(--interactive-accent);
+}
+
+.vk-modal-desc {
+	font-size: 0.85em;
+	color: var(--text-muted);
+	margin-bottom: 4px;
+	line-height: 1.4;
+}
+
+/* ---------- URL pin modal (+ URL button) ---------- */
 
 .vk-url-pin-status {
 	margin-top: 8px;
@@ -609,12 +649,6 @@ details[open] > .vk-tool-summary::before {
 }
 
 /* ---------- Inline edit (Edit with AI) modal ---------- */
-
-.vk-edit-selection-modal .setting-item-description {
-	margin: 8px 0 4px;
-	font-weight: 600;
-	color: var(--text-muted);
-}
 
 .vk-edit-original {
 	margin-bottom: 8px;

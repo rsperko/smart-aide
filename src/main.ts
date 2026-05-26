@@ -167,8 +167,13 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	private openEditSelection(editor: Editor, _view: MarkdownView): void {
-		const selection = editor.getSelection();
-		if (!selection) {
+		// Some editor surfaces (Properties fields, embedded title inputs) return
+		// a non-string from getSelection() despite the public type. Coerce and
+		// trim before deciding whether we have real text — otherwise the modal
+		// renders "[object Object]" as the selection.
+		const raw = editor.getSelection();
+		const selection = typeof raw === 'string' ? raw : String(raw ?? '');
+		if (!selection.trim()) {
 			new Notice('Select some text first.');
 			return;
 		}

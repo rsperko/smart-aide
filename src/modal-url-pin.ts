@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting } from 'obsidian';
+import { App, Modal, Notice } from 'obsidian';
 import { classifyUrl, fetchWebPage, fetchYouTube, type WebExtract, type YouTubeExtract } from './url-extract';
 
 export type UrlPinResult =
@@ -26,23 +26,26 @@ export class UrlPinModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('vk-url-pin-modal');
+		this.contentEl.closest('.modal')?.addClass('mod-vk-narrow');
 
 		contentEl.createDiv({
-			cls: 'setting-item-description',
+			cls: 'vk-modal-desc',
 			text: 'Paste a web page or YouTube URL. The content is fetched once and pinned for the current chat.',
 		});
 
-		new Setting(contentEl).setName('URL').addText((t) => {
-			this.inputEl = t.inputEl;
-			t.setPlaceholder('https://…');
-			t.inputEl.addEventListener('keydown', (ev: KeyboardEvent) => {
-				if (ev.key === 'Enter' && !ev.isComposing) {
-					ev.preventDefault();
-					void this.confirm();
-				} else if (ev.key === 'Escape') {
-					if (!this.busy) this.close();
-				}
-			});
+		const field = contentEl.createDiv({ cls: 'vk-modal-field' });
+		field.createDiv({ cls: 'vk-modal-field-label', text: 'URL' });
+		this.inputEl = field.createEl('input', {
+			cls: 'vk-modal-field-input',
+			attr: { type: 'text', placeholder: 'https://…' },
+		});
+		this.inputEl.addEventListener('keydown', (ev: KeyboardEvent) => {
+			if (ev.key === 'Enter' && !ev.isComposing) {
+				ev.preventDefault();
+				void this.confirm();
+			} else if (ev.key === 'Escape') {
+				if (!this.busy) this.close();
+			}
 		});
 
 		this.statusEl = contentEl.createDiv({ cls: 'vk-url-pin-status' });

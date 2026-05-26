@@ -29,14 +29,21 @@ export class EditSelectionModal extends Modal {
 	private rewrite: string | null = null;
 	private aborter: AbortController | null = null;
 	private lastError: string | null = null;
+	private selection: string;
 
 	constructor(
 		app: App,
 		private plugin: SmartAidePlugin,
-		private selection: string,
+		selection: string,
 		private onAccept: (newText: string) => void,
 	) {
 		super(app);
+		// Defensive coerce. The public `editor.getSelection()` API returns
+		// `string`, but in practice the editor instance passed via editor-menu
+		// from some surfaces (Properties panels, embedded inputs) can return a
+		// non-string. We'd rather see the raw value in the modal than a stringified
+		// "[object Object]" — so coerce explicitly.
+		this.selection = typeof selection === 'string' ? selection : String(selection ?? '');
 	}
 
 	onOpen(): void {
@@ -44,14 +51,15 @@ export class EditSelectionModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('vk-edit-selection-modal');
+		this.contentEl.closest('.modal')?.addClass('mod-vk-narrow');
 
 		const original = contentEl.createDiv({ cls: 'vk-edit-original' });
-		original.createDiv({ cls: 'setting-item-description', text: 'Selection' });
+		original.createDiv({ cls: 'vk-modal-field-label', text: 'Selection' });
 		const originalPre = original.createEl('pre', { cls: 'vk-edit-original-text' });
 		originalPre.setText(this.selection);
 
 		const instr = contentEl.createDiv({ cls: 'vk-edit-instruction' });
-		instr.createDiv({ cls: 'setting-item-description', text: 'Instruction' });
+		instr.createDiv({ cls: 'vk-modal-field-label', text: 'Instruction' });
 		this.inputEl = instr.createEl('textarea', { cls: 'vk-edit-input' });
 		this.inputEl.placeholder = 'Rewrite this in a more formal tone…';
 		this.inputEl.rows = 2;

@@ -309,7 +309,14 @@ export class ChatView extends ItemView {
 		this.registerDomEvent(this.composerEl, 'input', () => this.composer.refreshSendState());
 		this.registerDomEvent(this.composerEl, 'input', () => void this.refreshTokenChip());
 		this.registerDomEvent(this.composerEl, 'input', () => this.composer.updateSlashPopover());
-		this.registerDomEvent(this.composerEl, 'input', () => this.composer.updateUrlPopover());
+		// URL popover only OPENS on a paste; subsequent input events update or
+		// dismiss an already-open popover. Typing a URL character-by-character
+		// won't auto-open it (the + URL button covers the type-from-scratch
+		// case explicitly).
+		this.registerDomEvent(this.composerEl, 'input', (ev: Event) => {
+			const fromPaste = (ev as InputEvent).inputType === 'insertFromPaste';
+			this.composer.updateUrlPopover(fromPaste);
+		});
 
 		// Drag-drop: vault wikilink OR a file (image) from Finder/Explorer / vault attachment
 		this.registerDomEvent(this.composerEl, 'dragover', (ev: DragEvent) => {

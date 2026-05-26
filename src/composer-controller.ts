@@ -383,12 +383,15 @@ export class ComposerController {
 
 	/**
 	 * Recompute whether the cursor is currently at the end of a URL token.
-	 * Called from the composer's `input` handler. Mounts / re-renders the
-	 * inline popover when a candidate appears; closes it otherwise (unless a
-	 * fetch is already in flight — that case keeps the popover visible so the
-	 * user can see status / errors).
+	 * Two callsites:
+	 *   - on paste (allowOpen=true): paste-detect that opens the popover.
+	 *   - on input (allowOpen=false): updates / dismisses an already-open popover
+	 *     as the user keeps typing past the URL. Crucially does NOT open a new
+	 *     popover for URLs being typed character-by-character — that fires on
+	 *     every keystroke and surprised users with premature fetches of
+	 *     half-typed URLs.
 	 */
-	updateUrlPopover(): void {
+	updateUrlPopover(allowOpen = false): void {
 		if (this.urlBusy) return;
 		const candidate = parseUrlCandidate(this.composerEl.value, this.composerEl.selectionStart ?? this.composerEl.value.length);
 		if (!candidate) {
@@ -399,6 +402,7 @@ export class ComposerController {
 			this.closeUrlPopover();
 			return;
 		}
+		if (!this.urlPopover && !allowOpen) return;
 		this.urlCandidate = candidate;
 		this.urlError = null;
 		// Slash and URL popovers are mutually exclusive by their patterns
@@ -526,13 +530,15 @@ export class ComposerController {
 	}
 
 	/**
-	 * Keyboard handling while the URL popover is open. Enter commits, Esc
-	 * dismisses (and leaves the URL in the textarea so the user keeps their
-	 * work). Returns true when the event was consumed.
+	 * Keyboard handling while the URL popover is open. Tab commits (matches
+	 * the slash popover pattern), Esc dismisses (leaves the URL in the
+	 * textarea so the user keeps their work). Enter deliberately falls
+	 * through so it sends the message / inserts a newline — committing on
+	 * Enter accidentally fetched half-typed URLs.
 	 */
 	handleUrlPopoverKey(ev: KeyboardEvent): boolean {
 		if (ev.isComposing) return false;
-		if (ev.key === 'Enter') {
+		if (ev.key === 'Tab') {
 			if (this.urlBusy) {
 				ev.preventDefault();
 				return true;
