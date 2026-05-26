@@ -1,10 +1,11 @@
-import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
 import {
 	captureApiKeysToStore,
 	chatsDirFor,
 	hydrateApiKeysFromStore,
+	memoryFileFor,
 	migrateSettings,
 	skillsDirFor,
 	SmartAideSettings,
@@ -117,6 +118,57 @@ export default class SmartAidePlugin extends Plugin {
 				}
 			}),
 		);
+
+		// File-watch AGENTS.md and memory.md so edits made directly in Obsidian
+		// flow into the next chat turn without requiring a manual Reload. The
+		// path-matching closure reads `this.settings.metaDir` dynamically so a
+		// later metaDir change is handled without re-registering listeners.
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (file instanceof TFile) this.maybeReloadWatchedFile(file.path);
+			}),
+		);
+		this.registerEvent(
+			this.app.vault.on('create', (file) => {
+				if (file instanceof TFile) this.maybeReloadWatchedFile(file.path);
+			}),
+		);
+		this.registerEvent(
+			this.app.vault.on('delete', (file) => {
+				if (file instanceof TFile) this.maybeReloadWatchedFile(file.path);
+			}),
+		);
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				if (file instanceof TFile) this.maybeReloadWatchedFile(file.path);
+				this.maybeReloadWatchedFile(oldPath);
+			}),
+		);
+	}
+
+	/**
+	 * Reload the matching registry when an event fires for AGENTS.md or
+	 * memory.md. No-op for any other path. Each reload triggers an open-view
+	 * projection refresh so the token chip + composed-prompt preview reflect
+	 * the new content immediately.
+	 */
+	private maybeReloadWatchedFile(path: string): void {
+		const meta = this.settings.metaDir;
+		const memoryPath = normalizePath(memoryFileFor(meta));
+		const agentsRootPath = normalizePath('AGENTS.md');
+		const agentsMetaPath = normalizePath(`${meta}/AGENTS.md`);
+
+		if (path === memoryPath) {
+			this.memory.load()
+				.then(() => this.refreshOpenViewProjections())
+				.catch((e) => console.warn('smart-aide: memory reload failed', e));
+			return;
+		}
+		if (path === agentsRootPath || path === agentsMetaPath) {
+			this.agents.load()
+				.then(() => this.refreshOpenViewProjections())
+				.catch((e) => console.warn('smart-aide: AGENTS reload failed', e));
+		}
 	}
 
 	/**
