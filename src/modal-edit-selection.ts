@@ -29,21 +29,14 @@ export class EditSelectionModal extends Modal {
 	private rewrite: string | null = null;
 	private aborter: AbortController | null = null;
 	private lastError: string | null = null;
-	private selection: string;
 
 	constructor(
 		app: App,
 		private plugin: SmartAidePlugin,
-		selection: string,
+		private selection: string,
 		private onAccept: (newText: string) => void,
 	) {
 		super(app);
-		// Defensive coerce. The public `editor.getSelection()` API returns
-		// `string`, but in practice the editor instance passed via editor-menu
-		// from some surfaces (Properties panels, embedded inputs) can return a
-		// non-string. We'd rather see the raw value in the modal than a stringified
-		// "[object Object]" — so coerce explicitly.
-		this.selection = typeof selection === 'string' ? selection : String(selection ?? '');
 	}
 
 	onOpen(): void {

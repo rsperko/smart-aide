@@ -99,7 +99,7 @@ export default class SmartAidePlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('editor-menu', (menu, editor, view) => {
 				if (!(view instanceof MarkdownView)) return;
-				if (!editor.getSelection()) return;
+				if (!readSelectionText(editor)) return;
 				menu.addItem((item) => {
 					item.setTitle('Edit with AI').setIcon('wand').onClick(() => this.openEditSelection(editor, view));
 				});
@@ -167,12 +167,7 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	private openEditSelection(editor: Editor, _view: MarkdownView): void {
-		// Some editor surfaces (Properties fields, embedded title inputs) return
-		// a non-string from getSelection() despite the public type. Coerce and
-		// trim before deciding whether we have real text — otherwise the modal
-		// renders "[object Object]" as the selection.
-		const raw = editor.getSelection();
-		const selection = typeof raw === 'string' ? raw : String(raw ?? '');
+		const selection = readSelectionText(editor);
 		if (!selection.trim()) {
 			new Notice('Select some text first.');
 			return;
@@ -321,5 +316,26 @@ export default class SmartAidePlugin extends Plugin {
 		const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
 		return leaf;
+	}
+}
+
+/**
+ * Read the currently-selected text out of an Obsidian editor. The public
+ * `editor.getSelection()` API is documented to return a string, but in
+ * practice some surfaces return a non-string (the screenshot from issue #4
+ * showed "[object Object]" — `String({})` of an EditorSelection-shaped
+ * object). Falls through to range-based extraction when getSelection lies.
+ */
+function readSelectionText(editor: Editor): string {
+	const direct = (editor as unknown as { getSelection: () => unknown }).getSelection();
+	if (typeof direct === 'string') return direct;
+	try {
+		const from = editor.getCursor('from');
+		const to = editor.getCursor('to');
+		if (from.line === to.line && from.ch === to.ch) return '';
+		const range = editor.getRange(from, to);
+		return typeof range === 'string' ? range : '';
+	} catch {
+		return '';
 	}
 }
