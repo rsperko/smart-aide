@@ -17,8 +17,8 @@ import {
 	pluginHomeFor,
 	isEndpointConnected,
 	isFavoriteRef,
-	migrateSettings,
 	moveFavorite,
+	parseRawSettings,
 	newEndpointId,
 	normalizeMetaDir,
 	pickReplacementModelRef,
@@ -52,9 +52,9 @@ describe('normalizeMetaDir', () => {
 	});
 });
 
-describe('migrateSettings', () => {
-	it('takes the multi-endpoint path when endpoints array is present', () => {
-		const out = migrateSettings({
+describe('parseRawSettings', () => {
+	it('reads endpoints + per-device + vault fields when present', () => {
+		const out = parseRawSettings({
 			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
 			defaultModelRef: { endpointId: 'e1', slug: 'm' },
 			titleModelRef: { endpointId: 'e1', slug: 't' },
@@ -64,49 +64,27 @@ describe('migrateSettings', () => {
 		});
 		expect(out.endpoints[0].id).toBe('e1');
 		expect(out.autoApproveWrites).toBe(true);
-		// metaDir runs through normalizeMetaDir during migration.
 		expect(out.metaDir).toBe('sys');
 		expect(out.systemPrompt).toBe('custom');
 	});
 
-	it('migrates legacy single-key shape into OpenRouter endpoint', () => {
-		const out = migrateSettings({
-			apiKey: 'sk-or-v1-legacy',
-			defaultModel: 'anthropic/claude-haiku-4.5',
-			titleModel: 'openai/gpt-4o-mini',
-		});
-		expect(out.endpoints).toHaveLength(1);
-		expect(out.endpoints[0].id).toBe('openrouter');
-		expect(out.endpoints[0].apiKey).toBe('sk-or-v1-legacy');
-		expect(out.defaultModelRef).toEqual({ endpointId: 'openrouter', slug: 'anthropic/claude-haiku-4.5' });
-		expect(out.titleModelRef).toEqual({ endpointId: 'openrouter', slug: 'openai/gpt-4o-mini' });
-	});
-
-	it('handles a fully empty input by giving defaults', () => {
-		const out = migrateSettings(null);
-		expect(out.endpoints).toHaveLength(1);
+	it('returns an empty endpoints array when none are present (fresh device)', () => {
+		const out = parseRawSettings(null);
+		expect(out.endpoints).toEqual([]);
 		expect(out.metaDir).toBe(DEFAULT_META_DIR);
 	});
 
 	it('defaults hasSeenMentionTip to false when missing', () => {
-		// Legacy path (no endpoints key) — should default to false so the user
-		// sees the tip on first @ use after upgrade.
-		expect(migrateSettings({ apiKey: 'k' }).hasSeenMentionTip).toBe(false);
-		// Multi-endpoint path with no hasSeenMentionTip field — same default.
+		expect(parseRawSettings(null).hasSeenMentionTip).toBe(false);
 		expect(
-			migrateSettings({
+			parseRawSettings({
 				endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
-				defaultModelRef: { endpointId: 'e1', slug: 'm' },
 			}).hasSeenMentionTip,
 		).toBe(false);
 	});
 
-	it('preserves hasSeenMentionTip=true through migration when set', () => {
-		const out = migrateSettings({
-			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
-			defaultModelRef: { endpointId: 'e1', slug: 'm' },
-			hasSeenMentionTip: true,
-		});
+	it('preserves hasSeenMentionTip=true when set', () => {
+		const out = parseRawSettings({ hasSeenMentionTip: true });
 		expect(out.hasSeenMentionTip).toBe(true);
 	});
 });
@@ -223,7 +201,7 @@ describe('defaultOpenRouterEndpoint', () => {
 		expect(e.models).toBeUndefined();
 	});
 
-	it('uses the provided models list when non-empty (legacy-migration path)', () => {
+	it('uses the provided models list when non-empty', () => {
 		const e = defaultOpenRouterEndpoint('key', ['only/one']);
 		expect(e.apiKey).toBe('key');
 		expect(e.models).toEqual(['only/one']);
@@ -420,24 +398,14 @@ describe('previewSystemPrompt', () => {
 	});
 });
 
-describe('favoriteModels migration', () => {
-	it('defaults to empty array on multi-endpoint shape without favoriteModels', () => {
-		const out = migrateSettings({
-			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
-			defaultModelRef: { endpointId: 'e1', slug: 'm' },
-		});
+describe('favoriteModels parsing', () => {
+	it('defaults to empty array when no favoriteModels field is present', () => {
+		const out = parseRawSettings({});
 		expect(out.favoriteModels).toEqual([]);
 	});
 
-	it('defaults to empty array on legacy shape', () => {
-		const out = migrateSettings({ apiKey: 'k' });
-		expect(out.favoriteModels).toEqual([]);
-	});
-
-	it('preserves valid ModelRef favorites through migration', () => {
-		const out = migrateSettings({
-			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
-			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+	it('preserves valid ModelRef favorites', () => {
+		const out = parseRawSettings({
 			favoriteModels: [
 				{ endpointId: 'e1', slug: 'a' },
 				{ endpointId: 'e2', slug: 'b' },
@@ -450,9 +418,7 @@ describe('favoriteModels migration', () => {
 	});
 
 	it('drops malformed favorite entries and de-dups identical refs', () => {
-		const out = migrateSettings({
-			endpoints: [{ id: 'e1', name: 'X', baseURL: 'u', apiKey: 'k' }],
-			defaultModelRef: { endpointId: 'e1', slug: 'm' },
+		const out = parseRawSettings({
 			favoriteModels: [
 				{ endpointId: 'e1', slug: 'a' },
 				'not-a-ref',

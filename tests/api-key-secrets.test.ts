@@ -22,13 +22,13 @@ describe('hydrateApiKeysFromStore', () => {
 		expect(out.endpoints[0].apiKey).toBe('NEW');
 	});
 
-	it('preserves endpoint.apiKey when the store has no entry (acts as one-shot migration source)', () => {
+	it('resolves to empty string when the store has no entry', () => {
 		const settings = settingsWith([
-			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: 'FROM_DATA_JSON' },
+			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: 'IGNORED_DATA_JSON' },
 		]);
 		const store = createInMemoryKeyStore();
 		const out = hydrateApiKeysFromStore(settings, store);
-		expect(out.endpoints[0].apiKey).toBe('FROM_DATA_JSON');
+		expect(out.endpoints[0].apiKey).toBe('');
 	});
 
 	it('returns a new settings object (does not mutate input)', () => {
@@ -112,35 +112,35 @@ describe('stripApiKeysForPersistence', () => {
 	});
 });
 
-describe('migration round-trip', () => {
-	it('typical first-load-after-upgrade: hydrate finds nothing → keeps data.json key → capture moves to store → strip clears for next save', () => {
-		const settings = settingsWith([
-			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: 'LEGACY' },
-		]);
-		const store = createInMemoryKeyStore();
-
-		const hydrated = hydrateApiKeysFromStore(settings, store);
-		expect(hydrated.endpoints[0].apiKey).toBe('LEGACY');
-
-		captureApiKeysToStore(hydrated, store);
-		expect(store.get('e1')).toBe('LEGACY');
-
-		const persistable = stripApiKeysForPersistence(hydrated);
-		expect(persistable.endpoints[0].apiKey).toBe('');
-	});
-
-	it('second-device load: data.json has empty key (synced from device A) → hydrate finds nothing → endpoint stays empty', () => {
+describe('store-only round-trip', () => {
+	it('fresh device: store empty → endpoint key blank; user adds key → capture writes it → strip blanks data.json copy', () => {
 		const settings = settingsWith([
 			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: '' },
 		]);
 		const store = createInMemoryKeyStore();
-		const hydrated = hydrateApiKeysFromStore(settings, store);
-		expect(hydrated.endpoints[0].apiKey).toBe('');
+
+		// Initial hydrate against an empty store: endpoint stays empty.
+		expect(hydrateApiKeysFromStore(settings, store).endpoints[0].apiKey).toBe('');
+
+		// User enters a key locally; capture pushes it into the store.
+		const withKey = settingsWith([
+			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: 'LOCAL-KEY' },
+		]);
+		captureApiKeysToStore(withKey, store);
+		expect(store.get('e1')).toBe('LOCAL-KEY');
+
+		// Next hydrate pulls the key from the store.
+		expect(hydrateApiKeysFromStore(settings, store).endpoints[0].apiKey).toBe('LOCAL-KEY');
+
+		// Save path strips key out of data.json copy.
+		expect(stripApiKeysForPersistence(withKey).endpoints[0].apiKey).toBe('');
 	});
 
-	it('second-device after user enters a key locally: store has key → hydrate populates it; the synced data.json with empty key cannot clobber', () => {
+	it('synced data.json cannot clobber a locally-set key: store wins', () => {
+		// data.json arrives from another device with some leftover key string.
+		// The store has the local user's actual key — that's what wins.
 		const settings = settingsWith([
-			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: '' },
+			{ id: 'e1', name: 'A', baseURL: 'http://x', apiKey: 'IGNORED' },
 		]);
 		const store = createInMemoryKeyStore({ e1: 'LOCAL-KEY' });
 		const hydrated = hydrateApiKeysFromStore(settings, store);

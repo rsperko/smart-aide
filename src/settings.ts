@@ -103,50 +103,29 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 };
 
 /**
- * Migrate legacy settings (single OpenRouter key + flat model list) into the
- * multi-endpoint schema. Idempotent.
+ * Build the in-memory `SmartAideSettings` from whatever shape `data.json`
+ * carries. data.json now only holds vault-scoped fields (metaDir,
+ * systemPrompt, hasSeenMentionTip); per-device fields come from the device
+ * store and keys come from the api-key store. Unknown / missing values fall
+ * through to defaults.
  */
-export function migrateSettings(raw: Record<string, unknown> | null | undefined): SmartAideSettings {
+export function parseRawSettings(raw: Record<string, unknown> | null | undefined): SmartAideSettings {
 	const r = (raw ?? {}) as Record<string, unknown>;
-
-	if (Array.isArray(r.endpoints)) {
-		// Even an empty endpoints array is a real "this data.json was
-		// written by the per-device split" signal — fresh device after
-		// migration shows an empty providers list and the user re-adds
-		// providers locally. Falling through to the legacy default would
-		// resurrect the OpenRouter scaffold on every load.
-		return {
-			endpoints: r.endpoints as Endpoint[],
-			defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
-			titleModelRef: (r.titleModelRef as ModelRef) ?? (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.titleModelRef,
-			favoriteModels: sanitizeFavorites(r.favoriteModels),
-			systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
-			autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
-			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
-			hasSeenMentionTip: typeof r.hasSeenMentionTip === 'boolean' ? r.hasSeenMentionTip : false,
-			anthropicPromptCaching: typeof r.anthropicPromptCaching === 'boolean' ? r.anthropicPromptCaching : true,
-			costCapPerTurnUsd: sanitizeCap(r.costCapPerTurnUsd),
-		};
-	}
-
-	const legacyKey = typeof r.apiKey === 'string' ? r.apiKey : '';
-	const legacyModels = Array.isArray(r.models) ? (r.models as string[]) : undefined;
-	const legacyDefault = typeof r.defaultModel === 'string' ? r.defaultModel : DEFAULT_MODEL;
-	const legacyTitle = typeof r.titleModel === 'string' ? r.titleModel : legacyDefault;
-
-	const endpoint = defaultOpenRouterEndpoint(legacyKey, legacyModels);
-
 	return {
-		endpoints: [endpoint],
-		defaultModelRef: { endpointId: OPENROUTER_ID, slug: legacyDefault },
-		titleModelRef: { endpointId: OPENROUTER_ID, slug: legacyTitle },
-		favoriteModels: [],
+		endpoints: Array.isArray(r.endpoints) ? (r.endpoints as Endpoint[]) : [],
+		defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
+		titleModelRef:
+			(r.titleModelRef as ModelRef) ??
+			(r.defaultModelRef as ModelRef) ??
+			DEFAULT_SETTINGS.titleModelRef,
+		favoriteModels: sanitizeFavorites(r.favoriteModels),
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
-		autoApproveWrites: false,
-		metaDir: DEFAULT_META_DIR,
-		hasSeenMentionTip: false,
-		anthropicPromptCaching: true,
-		costCapPerTurnUsd: 0,
+		autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
+		metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
+		hasSeenMentionTip: typeof r.hasSeenMentionTip === 'boolean' ? r.hasSeenMentionTip : false,
+		anthropicPromptCaching:
+			typeof r.anthropicPromptCaching === 'boolean' ? r.anthropicPromptCaching : true,
+		costCapPerTurnUsd: sanitizeCap(r.costCapPerTurnUsd),
 	};
 }
 
@@ -173,11 +152,9 @@ function sanitizeFavorites(raw: unknown): ModelRef[] {
 }
 
 /**
- * Populate `endpoint.apiKey` from the per-device key store. Falls back to the
- * value already in `endpoint.apiKey` (which is how legacy data.json keys reach
- * the store on first load after upgrade — captureApiKeysToStore writes them in
- * the same load cycle, and stripApiKeysForPersistence blanks the data.json
- * copy on the next save).
+ * Populate `endpoint.apiKey` from the per-device key store. Missing entries
+ * resolve to an empty string — the empty-state UI prompts the user to add a
+ * key. Keys never come from data.json: they live only in the local store.
  */
 export function hydrateApiKeysFromStore(
 	settings: SmartAideSettings,
@@ -185,10 +162,7 @@ export function hydrateApiKeysFromStore(
 ): SmartAideSettings {
 	return {
 		...settings,
-		endpoints: settings.endpoints.map((e) => ({
-			...e,
-			apiKey: store.has(e.id) ? store.get(e.id) : e.apiKey,
-		})),
+		endpoints: settings.endpoints.map((e) => ({ ...e, apiKey: store.get(e.id) })),
 	};
 }
 
@@ -209,35 +183,39 @@ export function stripApiKeysForPersistence(settings: SmartAideSettings): SmartAi
 }
 
 /**
- * Replace per-device fields in `settings` with whatever's in the device store,
- * IF the store is populated. On a fresh device (store empty) the data.json
- * values are kept as a one-time migration seed — `captureDeviceSettingsToStore`
- * is then called to copy those values into the store, and the next save will
- * strip them from data.json. Subsequent loads ignore data.json for these
- * fields entirely.
+ * Replace per-device fields in `settings` with whatever's in the device store.
+ * Missing fields fall back to defaults — never to data.json, since data.json
+ * no longer carries these values. A fresh device sees an empty providers list
+ * and the empty-state UI prompts the user to add one.
  */
 export function hydrateDeviceSettingsFromStore(
 	settings: SmartAideSettings,
 	store: DeviceSettingsStore,
 ): SmartAideSettings {
-	if (!store.has()) return settings;
 	const stored = store.get();
-	if (!stored) return settings;
+	if (!stored) {
+		return {
+			...settings,
+			endpoints: [],
+			favoriteModels: [],
+			defaultModelRef: { ...DEFAULT_SETTINGS.defaultModelRef },
+			titleModelRef: { ...DEFAULT_SETTINGS.titleModelRef },
+			autoApproveWrites: false,
+			costCapPerTurnUsd: 0,
+			anthropicPromptCaching: true,
+		};
+	}
 	return {
 		...settings,
-		endpoints: Array.isArray(stored.endpoints) ? stored.endpoints : settings.endpoints,
+		endpoints: Array.isArray(stored.endpoints) ? stored.endpoints : [],
 		favoriteModels: sanitizeFavorites(stored.favoriteModels),
-		defaultModelRef: stored.defaultModelRef ?? settings.defaultModelRef,
-		titleModelRef: stored.titleModelRef ?? settings.titleModelRef,
+		defaultModelRef: stored.defaultModelRef ?? DEFAULT_SETTINGS.defaultModelRef,
+		titleModelRef: stored.titleModelRef ?? DEFAULT_SETTINGS.titleModelRef,
 		autoApproveWrites:
-			typeof stored.autoApproveWrites === 'boolean'
-				? stored.autoApproveWrites
-				: settings.autoApproveWrites,
+			typeof stored.autoApproveWrites === 'boolean' ? stored.autoApproveWrites : false,
 		costCapPerTurnUsd: sanitizeCap(stored.costCapPerTurnUsd),
 		anthropicPromptCaching:
-			typeof stored.anthropicPromptCaching === 'boolean'
-				? stored.anthropicPromptCaching
-				: settings.anthropicPromptCaching,
+			typeof stored.anthropicPromptCaching === 'boolean' ? stored.anthropicPromptCaching : true,
 	};
 }
 

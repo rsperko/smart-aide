@@ -8,7 +8,7 @@ import {
 	hydrateApiKeysFromStore,
 	hydrateDeviceSettingsFromStore,
 	memoryFileFor,
-	migrateSettings,
+	parseRawSettings,
 	skillsDirFor,
 	SmartAideSettings,
 	stripApiKeysForPersistence,
@@ -277,16 +277,13 @@ export default class SmartAidePlugin extends Plugin {
 		if (!this.deviceStore)
 			this.deviceStore = createLocalStorageDeviceStore(DEVICE_SETTINGS_STORE_KEY);
 		const raw = (await this.loadData()) as Record<string, unknown> | null;
-		const migrated = migrateSettings(raw);
-		// Hydrate per-device settings (endpoints / favorites / safety toggles)
-		// from localStorage, then merge API keys. On a fresh device the stores
-		// are empty and the data.json values pass through as the one-time
-		// migration seed — which captureDeviceSettingsToStore then snapshots so
-		// the next save can strip them from data.json.
-		const withDevice = hydrateDeviceSettingsFromStore(migrated, this.deviceStore);
+		const parsed = parseRawSettings(raw);
+		// Vault-scoped fields come from data.json (already in `parsed`);
+		// per-device fields come from the device store; API keys come from
+		// the api-key store. Empty stores resolve to defaults — a fresh
+		// device shows the "add a provider" empty state.
+		const withDevice = hydrateDeviceSettingsFromStore(parsed, this.deviceStore);
 		this.settings = hydrateApiKeysFromStore(withDevice, this.keyStore);
-		captureDeviceSettingsToStore(this.settings, this.deviceStore);
-		captureApiKeysToStore(this.settings, this.keyStore);
 	}
 
 	async saveSettings(): Promise<void> {

@@ -22,7 +22,7 @@ function makeRef(endpointId: string, slug: string): ModelRef {
 }
 
 describe('hydrateDeviceSettingsFromStore', () => {
-	it('passes settings through unchanged when the store is empty (migration seed)', () => {
+	it('resolves to per-device defaults when the store is empty (fresh device)', () => {
 		const settings = {
 			...DEFAULT_SETTINGS,
 			endpoints: [makeEndpoint('e1', 'k')],
@@ -32,10 +32,14 @@ describe('hydrateDeviceSettingsFromStore', () => {
 		};
 		const store = createInMemoryDeviceStore();
 		const out = hydrateDeviceSettingsFromStore(settings, store);
-		expect(out.endpoints).toEqual(settings.endpoints);
-		expect(out.favoriteModels).toEqual(settings.favoriteModels);
-		expect(out.autoApproveWrites).toBe(true);
-		expect(out.costCapPerTurnUsd).toBe(0.25);
+		// Even if data.json carried per-device fields (e.g. from a previous
+		// install on this device), the device store is authoritative — empty
+		// store means empty providers, no favorites, safety toggles off.
+		expect(out.endpoints).toEqual([]);
+		expect(out.favoriteModels).toEqual([]);
+		expect(out.autoApproveWrites).toBe(false);
+		expect(out.costCapPerTurnUsd).toBe(0);
+		expect(out.anthropicPromptCaching).toBe(true);
 	});
 
 	it('replaces per-device fields from the store when populated', () => {

@@ -176,7 +176,7 @@ Two surfaces, two purposes.
 | Browser `localStorage` (`vk:apikey:<endpointId>`) | Per-device API key store. Plaintext on disk in Obsidian's app sandbox — same as any browser localStorage. System-keychain integration is deferred. | No — localStorage is per-device by definition (desktop Electron, iOS WKWebView, Android WebView). |
 | Browser `localStorage` (`vk:device-settings`) | Per-device settings blob: providers (endpoints), favorites, default chat / title model, auto-approve writes, cost cap, Anthropic prompt caching toggle. | No — same reason as keys: this is your local setup, not vault content. |
 
-On first run after upgrade from a previous version, all per-device fields that previously lived in `data.json` get migrated into the localStorage store, and `data.json` is blanked on the next save.
+Per-device fields never come from `data.json` — only the localStorage device store. On a fresh device (or fresh install), the store is empty and you see the "add a provider" empty state.
 
 ### What syncs and what doesn't
 
