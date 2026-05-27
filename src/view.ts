@@ -650,6 +650,20 @@ export class ChatView extends ItemView {
 		void this.refreshTokenChip();
 	}
 
+	/**
+	 * Settings changed in a way that may affect the chat view — e.g. an
+	 * endpoint was added so the "Add an API key" empty-state nag should
+	 * disappear, or the default model changed, or the auto-approve chip
+	 * needs to update. Cheap when the stream has rendered content;
+	 * re-renders the empty state when it hasn't.
+	 */
+	refreshAfterSettingsChange(): void {
+		this.refreshDangerChip();
+		this.refreshAttachState();
+		this.refreshModelChip();
+		this.rerenderStream();
+	}
+
 	private openPluginSettings(): void {
 		const setting = (this.app as unknown as {
 			setting?: { open?: () => void; openTabById?: (id: string) => void };

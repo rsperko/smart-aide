@@ -56,7 +56,7 @@ function openAddProviderFlow(ctx: SectionContext): void {
 			? defaultOpenRouterEndpoint('', undefined)
 			: {
 					id,
-					name: template.name === 'Custom' ? 'New endpoint' : template.name,
+					name: template.name === 'Custom' ? 'New provider' : template.name,
 					baseURL: template.baseURL,
 					apiKey: '',
 					...(template.models ? { models: [...template.models] } : {}),

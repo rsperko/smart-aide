@@ -1,4 +1,4 @@
-import { Notice, Setting } from 'obsidian';
+import { Setting } from 'obsidian';
 import { ModelRef } from './types';
 import { BrowseAllPickerModal, FavoritesPickerModal } from './picker-models';
 import {
@@ -193,9 +193,10 @@ function openBrowseAllPicker(ctx: SectionContext): void {
 		ctx.plugin.settings.defaultModelRef,
 		ctx.plugin.settings.favoriteModels,
 		{
-			onPick: () => {
-				new Notice('Tap ★ to favorite. Set defaults from Chat models → Default chat model.');
-			},
+			// Settings context: the whole picker IS the favorites editor, so
+			// row clicks toggle favorite via onToggleFavorite (see mode below).
+			// onPick is unreachable here but kept for the interface.
+			onPick: () => undefined,
 			onToggleFavorite: async (ref, nextFavorite) => {
 				const current = ctx.plugin.settings;
 				const updatedFavorites = nextFavorite
@@ -208,6 +209,7 @@ function openBrowseAllPicker(ctx: SectionContext): void {
 				await ctx.plugin.saveSettings();
 			},
 			onClose: () => ctx.redisplay(),
+			mode: 'manage',
 		},
 	).open();
 }

@@ -90,7 +90,7 @@ export class FavoritesPickerModal extends FuzzySuggestModal<FavoriteEntry> {
 			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-current', text: '· current' });
 		}
 		if (item.orphaned) {
-			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-warn', text: '· endpoint removed' });
+			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-warn', text: '· provider removed' });
 		} else if (item.stale) {
 			main.createSpan({ cls: 'vk-picker-tag vk-picker-tag-warn', text: '· unavailable' });
 		}
@@ -138,10 +138,20 @@ export interface BrowseAllCallbacks {
 	 * Lets the caller refresh state — e.g. re-render the settings tab so the
 	 * favorites list reflects stars toggled while the modal was open. */
 	onClose?: () => void;
+	/**
+	 * `'pick'` (default, used in-chat): row click picks the model and closes
+	 * the modal; the star is a side-action for favoriting.
+	 * `'manage'` (used in Settings → Browse all): the whole picker IS the
+	 * favorites curation surface — row click toggles favorite in place and the
+	 * modal stays open so the user can star several models in one session. The
+	 * star button keeps working as a redundant hit target.
+	 */
+	mode?: 'pick' | 'manage';
 }
 
 export class BrowseAllPickerModal extends FuzzySuggestModal<BrowseRow> {
 	private readonly multiEndpoint: boolean;
+	private readonly mode: 'pick' | 'manage';
 	private favoriteKeys: Set<string>;
 
 	constructor(
@@ -153,19 +163,32 @@ export class BrowseAllPickerModal extends FuzzySuggestModal<BrowseRow> {
 	) {
 		super(app);
 		this.multiEndpoint = endpoints.length > 1;
+		this.mode = callbacks.mode ?? 'pick';
 		this.favoriteKeys = new Set(favorites.map((f) => `${f.endpointId}::${f.slug}`));
 		const isEmpty = buildBrowseAllPickerItems(endpoints, favorites).length === 0;
-		this.setPlaceholder(
-			isEmpty
-				? 'No models yet — add a key in Providers, then tap Refresh to discover models.'
-				: 'Browse all models — type to filter, ★ to favorite',
-		);
-		this.setInstructions([
-			{ command: '↑↓', purpose: 'navigate' },
-			{ command: '↵', purpose: 'pick' },
-			{ command: '★', purpose: 'favorite' },
-			{ command: 'esc', purpose: 'dismiss' },
-		]);
+		if (isEmpty) {
+			this.setPlaceholder(
+				'No models yet — add a key in Providers, then tap Refresh to discover models.',
+			);
+		} else if (this.mode === 'manage') {
+			this.setPlaceholder('Manage favorites — type to filter, tap a row to toggle');
+		} else {
+			this.setPlaceholder('Browse all models — type to filter, ★ to favorite');
+		}
+		if (this.mode === 'manage') {
+			this.setInstructions([
+				{ command: '↑↓', purpose: 'navigate' },
+				{ command: '↵ / tap', purpose: 'toggle favorite' },
+				{ command: 'esc', purpose: 'done' },
+			]);
+		} else {
+			this.setInstructions([
+				{ command: '↑↓', purpose: 'navigate' },
+				{ command: '↵', purpose: 'pick' },
+				{ command: '★', purpose: 'favorite' },
+				{ command: 'esc', purpose: 'dismiss' },
+			]);
+		}
 	}
 
 	getItems(): BrowseRow[] {
@@ -259,7 +282,35 @@ export class BrowseAllPickerModal extends FuzzySuggestModal<BrowseRow> {
 	}
 
 	onChooseItem(row: BrowseRow): void {
+		// In manage mode, selectSuggestion handles row selection and never
+		// reaches onChooseItem (we don't call super). This is the in-chat path.
 		this.callbacks.onPick(row.item.ref);
+	}
+
+	/**
+	 * Override the SuggestModal selection handler so manage mode can toggle
+	 * favorite without closing. In pick mode, defer to the default behavior
+	 * (which fires onChooseItem and closes the modal).
+	 */
+	selectSuggestion(value: FuzzyMatch<BrowseRow>, evt: MouseEvent | KeyboardEvent): void {
+		if (this.mode === 'manage') {
+			void this.toggleFavoriteFromRow(value.item);
+			return;
+		}
+		super.selectSuggestion(value, evt);
+	}
+
+	private async toggleFavoriteFromRow(row: BrowseRow): Promise<void> {
+		const key = `${row.item.ref.endpointId}::${row.item.ref.slug}`;
+		const wasFav = this.favoriteKeys.has(key);
+		const nextFav = !wasFav;
+		if (nextFav) this.favoriteKeys.add(key);
+		else this.favoriteKeys.delete(key);
+		// Force the suggestion list to rebuild against the updated favoriteKeys
+		// so the toggled row's star flips visually — without the close/reopen
+		// pattern that ate taps on mobile in earlier iterations.
+		this.inputEl.dispatchEvent(new Event('input'));
+		await this.callbacks.onToggleFavorite(row.item.ref, nextFav);
 	}
 
 	onClose(): void {

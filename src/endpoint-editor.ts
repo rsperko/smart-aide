@@ -45,13 +45,13 @@ export function renderEndpointEditor(
 		}, 1500);
 	};
 
-	// Sub-page header: back button + endpoint name as the page title
+	// Sub-page header: back button + provider name as the page title
 	const header = container.createDiv({ cls: 'vk-subpage-header' });
 	const backBtn = header.createEl('button', { cls: 'vk-back-btn' });
-	backBtn.setText('← Endpoints');
+	backBtn.setText('← Providers');
 	backBtn.addEventListener('click', () => ctx.onBack());
 
-	new Setting(container).setName(endpoint.name || 'Endpoint').setHeading();
+	new Setting(container).setName(endpoint.name || 'Provider').setHeading();
 
 	new Setting(container).setName('Name').addText((t) =>
 		t.setValue(endpoint.name).onChange((v) => {
@@ -259,7 +259,7 @@ export function renderEndpointEditor(
 		manualHost.createDiv({ cls: 'vk-endpoint-section-summary', text: `Manual model slugs${manualCount ? ` (${manualCount})` : ''}` });
 		manualHost.createDiv({
 			cls: 'setting-item-description',
-			text: "This endpoint didn't return any models from /models. List the slugs you want available here, one per line.",
+			text: "This provider didn't return any models from /models. List the slugs you want available here, one per line.",
 		});
 		renderManualListInto(manualHost, endpoint, ctx);
 
@@ -273,7 +273,7 @@ export function renderEndpointEditor(
 
 	// Delete (two-click confirm)
 	const deleteContainer = container.createDiv({ cls: 'vk-subpage-footer' });
-	const deleteBtn = deleteContainer.createEl('button', { cls: 'mod-warning', text: 'Delete endpoint' });
+	const deleteBtn = deleteContainer.createEl('button', { cls: 'mod-warning', text: 'Delete provider' });
 	let confirming = false;
 	let resetTimer: number | undefined;
 	deleteBtn.addEventListener('click', () => {
@@ -282,7 +282,7 @@ export function renderEndpointEditor(
 			deleteBtn.setText('Click again to confirm');
 			resetTimer = window.setTimeout(() => {
 				confirming = false;
-				deleteBtn.setText('Delete endpoint');
+				deleteBtn.setText('Delete provider');
 			}, 3000);
 			return;
 		}
@@ -349,7 +349,7 @@ function renderManualListInto(host: HTMLElement, endpoint: Endpoint, ctx: Endpoi
 		});
 	} else {
 		resetBtn.setAttribute('disabled', 'true');
-		resetBtn.title = 'No bundled defaults for this endpoint — set models manually.';
+		resetBtn.title = 'No bundled defaults for this provider — set models manually.';
 	}
 }
 

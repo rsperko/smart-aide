@@ -279,6 +279,16 @@ export default class SmartAidePlugin extends Plugin {
 		// data.json clobbering another device's keys.
 		captureApiKeysToStore(this.settings, this.keyStore);
 		await this.saveData(stripApiKeysForPersistence(this.settings));
+		// Open chat views can have stale empty-state ("Add an API key…") or
+		// model-chip / attach state after an endpoint or model change.
+		this.refreshOpenChatViews();
+	}
+
+	private refreshOpenChatViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE)) {
+			const view = leaf.view as ChatView;
+			view.refreshAfterSettingsChange?.();
+		}
 	}
 
 	refreshDangerChips(): void {

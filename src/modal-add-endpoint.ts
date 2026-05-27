@@ -78,7 +78,7 @@ export class AddEndpointModal extends Modal {
 	}
 
 	onOpen(): void {
-		this.titleEl.setText('Add endpoint');
+		this.titleEl.setText('Add provider');
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('vk-add-endpoint-modal');
