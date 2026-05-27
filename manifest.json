@@ -1,9 +1,9 @@
 {
   "id": "smart-aide",
   "name": "Smart Aide",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "minAppVersion": "1.5.0",
-  "description": "Chat with your vault using any OpenAI-compatible model. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
+  "description": "Chat with your vault using OpenRouter, OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "author": "rsperko",
   "authorUrl": "https://github.com/rsperko/smart-aide",
   "isDesktopOnly": false

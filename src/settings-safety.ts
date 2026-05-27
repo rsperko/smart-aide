@@ -25,4 +25,25 @@ export function renderSafety(root: HTMLElement, ctx: SectionContext): void {
 				ctx.plugin.refreshDangerChips();
 			}),
 		);
+
+	new Setting(root)
+		.setName('Cost cap per turn (USD)')
+		.setDesc(
+			'Block send when the next-turn projected cost exceeds this value. ' +
+			'Compared against the same projection shown in the token chip popover. ' +
+			'Endpoints without pricing (LM Studio, custom gateways) never trip the cap. ' +
+			'0 = off.',
+		)
+		.addText((t) => {
+			t.inputEl.type = 'number';
+			t.inputEl.min = '0';
+			t.inputEl.step = '0.01';
+			t.inputEl.placeholder = '0';
+			t.setValue(String(ctx.plugin.settings.costCapPerTurnUsd ?? 0));
+			t.onChange(async (raw) => {
+				const n = Number(raw);
+				ctx.plugin.settings.costCapPerTurnUsd = Number.isFinite(n) && n > 0 ? n : 0;
+				await ctx.plugin.saveSettings();
+			});
+		});
 }

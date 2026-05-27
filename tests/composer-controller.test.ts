@@ -68,6 +68,7 @@ function makeHost(overrides: Partial<ComposerHost> = {}): ComposerHost {
 		refreshTokenChip: () => undefined,
 		rerenderStream: () => undefined,
 		isStreaming: () => false,
+		activeModelSupportsImages: () => true,
 		registerDomEvent: () => undefined,
 		...overrides,
 	};

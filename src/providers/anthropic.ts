@@ -382,6 +382,7 @@ async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise
 			id: String(m.id ?? ''),
 			name: typeof m.display_name === 'string' ? m.display_name : undefined,
 			supportsTools: true,
+			supportsImages: true,
 		}))
 		.filter((m) => m.id);
 }

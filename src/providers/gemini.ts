@@ -350,6 +350,7 @@ async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise
 				contextLength: inputTokenLimit,
 				// Gemini /models doesn't surface pricing; leave undefined so the token chip hides cost.
 				supportsTools: true,
+				supportsImages: true,
 			};
 		})
 		.filter((m): m is DiscoveredModel => m !== null);

@@ -11,6 +11,7 @@ const {
 	isClaudeBackedModel,
 	eventsFromOpenAIChunk,
 	flushStripperEvents,
+	detectSupportsImages,
 } = __testing;
 
 function endpoint(over: Partial<{
@@ -476,5 +477,39 @@ describe('openai-compat toolsToOpenAI', () => {
 				},
 			},
 		]);
+	});
+});
+
+describe('openai-compat detectSupportsImages', () => {
+	it('returns true when supports_vision is true', () => {
+		expect(detectSupportsImages({ supports_vision: true })).toBe(true);
+	});
+
+	it('returns false when supports_vision is false (explicit text-only signal)', () => {
+		expect(detectSupportsImages({ supports_vision: false })).toBe(false);
+	});
+
+	it('falls back to architecture.input_modalities (OpenRouter shape)', () => {
+		expect(detectSupportsImages({ architecture: { input_modalities: ['text', 'image'] } })).toBe(true);
+		expect(detectSupportsImages({ architecture: { input_modalities: ['text'] } })).toBe(false);
+	});
+
+	it('falls back to architecture.modality string', () => {
+		expect(detectSupportsImages({ architecture: { modality: 'text+image->text' } })).toBe(true);
+		expect(detectSupportsImages({ architecture: { modality: 'text->text' } })).toBe(false);
+	});
+
+	it('returns undefined when nothing indicates capability (so callers default to allow)', () => {
+		expect(detectSupportsImages({})).toBeUndefined();
+		expect(detectSupportsImages({ architecture: {} })).toBeUndefined();
+	});
+
+	it('prefers vision flag over architecture when both present', () => {
+		expect(
+			detectSupportsImages({
+				vision: false,
+				architecture: { input_modalities: ['text', 'image'] },
+			}),
+		).toBe(false);
 	});
 });

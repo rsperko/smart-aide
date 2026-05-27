@@ -43,6 +43,24 @@ export interface ChatSession {
 	entries: Entry[];
 	leafId: string | null;
 	title: string;
+	/** Mtime baseline. Captured on load (or on first append for a newly-created
+	 * chat). If TFile.stat.mtime ever climbs above this, an external writer —
+	 * Obsidian Sync, another device, manual file edit — has touched the chat
+	 * and our next append would race or stomp. 0 = file doesn't exist yet. */
+	loadedMtime: number;
+}
+
+/**
+ * Thrown when an external writer (Obsidian Sync, another device) modified the
+ * chat file since we loaded it. Callers should refuse to append and offer the
+ * user a Reload / New chat path. The chat-storage layer is intentionally
+ * conservative — anything past our baseline mtime trips it.
+ */
+export class SyncConflictError extends Error {
+	constructor(public path: string) {
+		super(`Chat file modified externally: ${path}`);
+		this.name = 'SyncConflictError';
+	}
 }
 
 export class ChatStorage {
@@ -71,7 +89,7 @@ export class ChatStorage {
 		};
 		// File creation is deferred to the first appendEntry. Otherwise every "New chat"
 		// tap creates a file even if the user never sends a message, polluting the picker.
-		return { path, header, entries: [], leafId: null, title: 'New chat' };
+		return { path, header, entries: [], leafId: null, title: 'New chat', loadedMtime: 0 };
 	}
 
 	async loadChat(path: string): Promise<ChatSession> {
@@ -86,7 +104,7 @@ export class ChatStorage {
 		const leafId = computeLeaf(entries);
 		const title = findTitle(entries) ?? deriveTitleFromMessages(entries) ?? 'New chat';
 
-		return { path, header, entries, leafId, title };
+		return { path, header, entries, leafId, title, loadedMtime: file.stat.mtime };
 	}
 
 	async deleteChat(path: string): Promise<void> {
@@ -96,18 +114,42 @@ export class ChatStorage {
 
 	async appendEntry(session: ChatSession, entry: Entry): Promise<void> {
 		const file = this.vault.getFileByPath(session.path);
-		if (!file) {
+		if (file) {
+			// External-writer guard: if the file's mtime has climbed above the
+			// baseline captured at load (or last successful append), another
+			// device/sync has touched it. Refuse the append rather than race.
+			if (session.loadedMtime > 0 && file.stat.mtime > session.loadedMtime) {
+				throw new SyncConflictError(session.path);
+			}
+			await this.vault.append(file, JSON.stringify(entry) + '\n');
+		} else {
 			// First persisted entry — create the session file with header + any entries
 			// queued in memory (e.g., the initial model_change) + this entry, all at once.
 			const lines = [JSON.stringify(session.header)];
 			for (const queued of session.entries) lines.push(JSON.stringify(queued));
 			lines.push(JSON.stringify(entry));
 			await this.vault.create(session.path, lines.join('\n') + '\n');
-		} else {
-			await this.vault.append(file, JSON.stringify(entry) + '\n');
 		}
 		session.entries.push(entry);
 		session.leafId = entry.id;
+		// Re-baseline against the file we just wrote so subsequent appends in this
+		// session aren't flagged as conflicts against our own mtime bump.
+		const refreshed = this.vault.getFileByPath(session.path);
+		session.loadedMtime = refreshed?.stat.mtime ?? Date.now();
+	}
+
+	/**
+	 * Cheap pre-flight: throw SyncConflictError if the chat file looks
+	 * externally modified, without doing any writes. Useful before mutating
+	 * composer state (clearing the textarea, consuming pending images) so the
+	 * user's draft survives the catch.
+	 */
+	checkAppendable(session: ChatSession): void {
+		if (session.loadedMtime <= 0) return;
+		const file = this.vault.getFileByPath(session.path);
+		if (file && file.stat.mtime > session.loadedMtime) {
+			throw new SyncConflictError(session.path);
+		}
 	}
 
 	/**

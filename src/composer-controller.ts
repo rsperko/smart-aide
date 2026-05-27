@@ -18,6 +18,13 @@ export interface ComposerHost {
 	refreshTokenChip(): void;
 	rerenderStream(): void;
 	isStreaming(): boolean;
+	/** True when a sync conflict or similar blocking state is active — send is
+	 * refused until the user resolves it (e.g. reloads the chat). */
+	isSendBlocked?(): boolean;
+	/** True when the active model accepts image inputs (or we don't know — local
+	 * servers often don't expose a vision flag, so undefined permits the attach
+	 * and lets the provider reject if it must). */
+	activeModelSupportsImages(): boolean;
 	registerDomEvent<K extends keyof HTMLElementEventMap>(
 		el: HTMLElement,
 		type: K,
@@ -105,7 +112,8 @@ export class ComposerController {
 
 	refreshSendState(): void {
 		const empty = this.composerEl.value.trim().length === 0 && this.pending.length === 0;
-		this.sendBtn.disabled = empty || this.host.isStreaming();
+		const blocked = this.host.isSendBlocked?.() ?? false;
+		this.sendBtn.disabled = empty || this.host.isStreaming() || blocked;
 	}
 
 	insertAtCursor(text: string): void {
@@ -123,6 +131,10 @@ export class ComposerController {
 	// ---------- attachments ----------
 
 	async handleDroppedFiles(files: FileList): Promise<void> {
+		if (!this.host.activeModelSupportsImages()) {
+			new Notice("This model doesn't accept images. Pick a vision-capable model to attach.");
+			return;
+		}
 		for (let i = 0; i < files.length; i++) {
 			const f = files[i];
 			if (!f.type.startsWith('image/')) {
@@ -146,6 +158,10 @@ export class ComposerController {
 	}
 
 	async attachVaultImage(path: string): Promise<void> {
+		if (!this.host.activeModelSupportsImages()) {
+			new Notice("This model doesn't accept images. Pick a vision-capable model to attach.");
+			return;
+		}
 		const file = this.host.app.vault.getFileByPath(path);
 		if (!file) {
 			new Notice(`Not found: ${path}`);

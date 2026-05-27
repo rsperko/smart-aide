@@ -14,6 +14,7 @@ import {
 	filterTools,
 	formatArgsInline,
 	formatArgValue,
+	evaluateCostCap,
 	formatCostUsd,
 	formatTokenChip,
 	formatTokens,
@@ -702,6 +703,41 @@ describe('formatCostUsd', () => {
 	it('handles partial pricing (only prompt or only completion)', () => {
 		// $5/M completion × 200k = $1.00; prompt cost ignored when promptPrice undefined.
 		expect(formatCostUsd(1000, 200_000, { completionPrice: 5 })).toBe('$1.00');
+	});
+});
+
+describe('evaluateCostCap', () => {
+	it('returns no verdict when the cap is 0 or negative (feature off)', () => {
+		const meta = { promptPrice: 3, completionPrice: 15 };
+		expect(evaluateCostCap({ totalTokens: 100_000, meta, capUsd: 0 }).block).toBe(false);
+		expect(evaluateCostCap({ totalTokens: 100_000, meta, capUsd: -5 }).block).toBe(false);
+	});
+
+	it('returns no verdict when pricing is unknown (LM Studio / custom gateways)', () => {
+		expect(evaluateCostCap({ totalTokens: 100_000, meta: undefined, capUsd: 0.10 }).block).toBe(false);
+		expect(evaluateCostCap({ totalTokens: 100_000, meta: {}, capUsd: 0.10 }).block).toBe(false);
+	});
+
+	it('blocks when the projected next-turn cost exceeds the cap', () => {
+		// 1M prompt at $3/M + 500-tok completion at $15/M ≈ $3.0075 — well over $0.10.
+		const v = evaluateCostCap({
+			totalTokens: 1_000_000,
+			meta: { promptPrice: 3, completionPrice: 15 },
+			capUsd: 0.10,
+		});
+		expect(v.block).toBe(true);
+		expect(v.projectedUsd).toBeGreaterThan(0.10);
+		expect(v.message).toMatch(/over your \$0\.10 cap/);
+	});
+
+	it('allows when the projection is under the cap', () => {
+		const v = evaluateCostCap({
+			totalTokens: 10_000,
+			meta: { promptPrice: 3, completionPrice: 15 },
+			capUsd: 1.00,
+		});
+		expect(v.block).toBe(false);
+		expect(v.projectedUsd).toBeLessThan(1.00);
 	});
 });
 

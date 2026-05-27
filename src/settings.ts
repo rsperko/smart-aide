@@ -17,6 +17,8 @@ export interface SmartAideSettings {
 	hasSeenMentionTip: boolean;
 	/** Apply cache_control to system + tools when calling Anthropic-native endpoints. */
 	anthropicPromptCaching: boolean;
+	/** Block send when the next-turn projected cost exceeds this USD value. 0 = off. */
+	costCapPerTurnUsd: number;
 }
 
 export const DEFAULT_META_DIR = 'Meta';
@@ -96,6 +98,7 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 	metaDir: DEFAULT_META_DIR,
 	hasSeenMentionTip: false,
 	anthropicPromptCaching: true,
+	costCapPerTurnUsd: 0,
 };
 
 /**
@@ -116,6 +119,7 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 			metaDir: typeof r.metaDir === 'string' ? normalizeMetaDir(r.metaDir) : DEFAULT_META_DIR,
 			hasSeenMentionTip: typeof r.hasSeenMentionTip === 'boolean' ? r.hasSeenMentionTip : false,
 			anthropicPromptCaching: typeof r.anthropicPromptCaching === 'boolean' ? r.anthropicPromptCaching : true,
+			costCapPerTurnUsd: sanitizeCap(r.costCapPerTurnUsd),
 		};
 	}
 
@@ -136,7 +140,14 @@ export function migrateSettings(raw: Record<string, unknown> | null | undefined)
 		metaDir: DEFAULT_META_DIR,
 		hasSeenMentionTip: false,
 		anthropicPromptCaching: true,
+		costCapPerTurnUsd: 0,
 	};
+}
+
+function sanitizeCap(raw: unknown): number {
+	const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+	if (!Number.isFinite(n) || n < 0) return 0;
+	return n;
 }
 
 function sanitizeFavorites(raw: unknown): ModelRef[] {

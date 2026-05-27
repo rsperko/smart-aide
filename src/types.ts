@@ -110,6 +110,11 @@ export interface DiscoveredModel {
 	promptPrice?: number;
 	completionPrice?: number;
 	supportsTools?: boolean;
+	/** True when the endpoint signals the model accepts image inputs. False when
+	 * it explicitly doesn't. Undefined when the endpoint doesn't expose it — the
+	 * UI treats undefined as "allow" so local servers without a vision flag
+	 * (LM Studio, Ollama, vanilla OpenAI-compat) aren't penalized. */
+	supportsImages?: boolean;
 }
 
 export interface ModelRef {

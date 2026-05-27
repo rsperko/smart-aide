@@ -6,13 +6,15 @@ AI chat for your Obsidian vault — desktop and iPhone. Tool-mediated search and
 
 - **Conversational vault retrieval.** Ask "where did I write about X?" — Smart Aide searches your vault, reads the relevant section, and answers with a citation card that jumps to the exact heading on click.
 - **No embeddings, no index.** Uses Obsidian's MetadataCache + fuzzy search + targeted reads. Works identically on iPhone and desktop; nothing to build, nothing to keep in sync.
-- **Bring your own model, any provider.** Plug in any OpenAI-compatible endpoint — OpenRouter (default), OpenAI direct, Anthropic compat, local servers (LM Studio / Ollama / oMLX), or your own gateway. Pick the model per chat; the picker shows context window, cost ($/M tokens), and tool support inline.
+- **Bring your own model, any provider.** Plug in OpenRouter (default), OpenAI, native Anthropic (`/v1/messages` with prompt caching), native Gemini (`/v1beta/models/*:streamGenerateContent`), or any OpenAI-compatible endpoint — local servers (LM Studio / Ollama / oMLX) and custom gateways work the same way. Pick the model per chat; the picker shows context window, cost ($/M tokens), and tool support inline.
 - **Writes with diff approval.** `write_note`, `append_to_note`, `delete_note` surface a diff card before they touch the vault. Approval state is persisted in the chat history. Optional **dangerous mode** in settings auto-approves writes (deletes always still confirm).
+- **Cost cap per turn.** Optional USD cap in Settings → Safety. When set, Smart Aide refuses to send a turn whose projected cost would exceed it (using the same projection shown in the token chip), so a runaway reasoning model can't surprise you. Endpoints without pricing (LM Studio, custom gateways) are exempt. Off by default.
+- **Sync-conflict banner.** If Obsidian Sync (or another device) modifies the active chat file between your turns, the next send shows a banner instead of racing the write: "Another device updated this chat — Reload / New chat." Your draft and pending images survive the banner.
 - **Edit and fork.** Tap (or hover) the pencil on any of your past messages to edit it. Send forks the conversation from that point — the branch and everything downstream are hidden, the new turn becomes the leaf. The original branch stays in the JSONL file.
-- **Image attach.** Paperclip in the composer toolbar (file picker — iOS surfaces Take Photo / Photo Library / Choose File), clipboard paste, or drag-drop from Finder / vault attachments. Images are saved into Obsidian's configured attachment folder and inlined to the model as base64 multi-part content; the chat JSONL only stores the path, so history stays small. JPEG / PNG / GIF / WebP.
+- **Image attach.** Paperclip in the composer toolbar (file picker — iOS surfaces Take Photo / Photo Library / Choose File), clipboard paste, or drag-drop from Finder / vault attachments. Images are saved into Obsidian's configured attachment folder and inlined to the model as base64 multi-part content; the chat JSONL only stores the path, so history stays small. JPEG / PNG / GIF / WebP. The paperclip auto-disables (with a tooltip) when the active model says it doesn't accept images, so you can't quietly send an attachment to a text-only model.
 - **Skills.** Drop a markdown file into `<vault>/Meta/skills/` (configurable) — its frontmatter `description` gets injected into the system prompt, and when a user request matches it the model calls `load_skill(name)` to pull the body on demand. Skills can also be **user-invocable**: add `user-invocable: true` to the frontmatter and type `/<name>` in the composer to summon it directly. Same folder on desktop and mobile. See the [Skills section below](#skills) for the format.
 - **Vault context via AGENTS.md.** Drop an `AGENTS.md` at `<vault>/Meta/AGENTS.md` to tell the agent about your vault — folder layout, tag conventions, projects, paths to leave alone. The body is appended to the system prompt. Standard cross-tool format ([agents.md](https://agents.md/)) so the same file works with other agent tools.
-- **Pi session format.** Chat history is JSONL in `<vault>/Meta/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
+- **Pi session format.** Chat history is JSONL in `<vault>/Meta/Smart Aide/chats/`, branch-aware via `parentId`. Interops with the `session-manager` tooling.
 - **Honors your Obsidian settings.** Folders in **Settings → Files and links → Excluded files** are skipped by search, recent-files, and backlinks. Attachments go to your configured attachment folder. See [docs/settings.md](docs/settings.md#how-smart-aide-uses-obsidians-configuration) for the full list.
 
 ## Install (BRAT)
@@ -34,10 +36,10 @@ Full settings reference: **[docs/settings.md](docs/settings.md)**.
 
 Highlights worth knowing before you start:
 
-- **Providers** — Add an OpenAI-compatible endpoint (OpenRouter / OpenAI / Anthropic / Gemini / local). API keys are stored per-device, outside the synced `data.json`.
+- **Providers** — Add an endpoint: OpenRouter / OpenAI / native Anthropic / native Gemini / OpenAI-compatible local server or custom gateway. API keys are stored per-device in localStorage, not in the synced `data.json` — so a second device starts with no keys and you re-paste once.
 - **Chat models** — Star models in **Browse all** to favorite them. The default chat model and title model are picked from your favorites.
-- **Vault data** — One vault-relative folder (default `Meta`) holds chats, skills, plugin internals, and the optional vault-context AGENTS.md.
-- **Safety** — Writes show a diff approval card by default. The "auto-approve writes" toggle is opt-in and visibly flags the chat with a ⚠ chip while on.
+- **Vault data** — One vault-relative folder (default `Meta`) holds skills and AGENTS.md at the root, with chats / memory / plugin internals under a `Smart Aide/` subfolder.
+- **Safety** — Writes show a diff approval card by default. The "auto-approve writes" toggle is opt-in and visibly flags the chat with a ⚠ chip while on. The "cost cap per turn" setting blocks send when the projected cost would exceed it (off by default).
 - **Honors Obsidian's Excluded files setting** — folders you add at Settings → Files and links → Excluded files are skipped by search, recent-files, and backlinks. The model still finds them when you point at them explicitly (e.g. "what's in my archive about X").
 
 ## Skills
@@ -46,7 +48,7 @@ Skills let you teach Smart Aide repeatable workflows without bloating every chat
 
 ### Where they live
 
-Default: `<vault>/Meta/skills/`. The parent folder (`Meta`) is configurable in Settings → Storage; a common alternative is `sys`. Skills and chats live under the same meta folder.
+Default: `<vault>/Meta/skills/`. The parent folder (`Meta`) is configurable in Settings → Vault data; a common alternative is `sys`. Skills and AGENTS.md sit at the meta root; chats / memory / plugin internals nest under `<meta>/Smart Aide/`.
 
 The same folder is used on desktop and mobile — there is no `~/.agents/skills/` fallback. If you also use Pi or Claude Code with skills at `~/.agents/skills/`, symlink them yourself:
 
@@ -128,7 +130,7 @@ Now `/daily` (or `/daily-note`) in the composer runs the workflow with only `rea
 
 ### Reload
 
-When you edit a skill file, run **Settings → Skills → Reload** (or restart the plugin). The registry caches the manifest at load time.
+When you edit a skill file inside Obsidian, the vault watcher reloads the registry automatically. If you edit the file from outside Obsidian, run **Settings → Vault data → Reload skills, AGENTS.md & memory** (or restart the plugin).
 
 ### Mobile note
 
@@ -161,7 +163,7 @@ Plain Markdown with any headings you like. A useful starter outline:
 - Don't modify daily notes from prior days
 ```
 
-Edits picked up via **Settings → Skills & AGENTS.md → Reload** (or restart the plugin). Note: this is the *vault* AGENTS.md, not a code-repo AGENTS.md — if you symlink from a project repo, you'll get crossed wires.
+Edits inside Obsidian are picked up automatically by the vault watcher; for edits made outside Obsidian, use **Settings → Vault data → Reload skills, AGENTS.md & memory** (or restart the plugin). Note: this is the *vault* AGENTS.md, not a code-repo AGENTS.md — if you symlink from a project repo, you'll get crossed wires.
 
 ## Mobile
 

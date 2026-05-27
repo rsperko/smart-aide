@@ -1,7 +1,7 @@
 {
   "name": "smart-aide",
-  "version": "0.3.18",
-  "description": "Chat with your Obsidian vault using any OpenAI-compatible model. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
+  "version": "0.3.19",
+  "description": "Chat with your Obsidian vault using OpenRouter, OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

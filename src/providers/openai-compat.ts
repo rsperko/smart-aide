@@ -366,9 +366,27 @@ async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise
 				promptPrice: priceToPerMillion(promptRaw),
 				completionPrice: priceToPerMillion(completionRaw),
 				supportsTools: typeof supportsTools === 'boolean' ? supportsTools : undefined,
+				supportsImages: detectSupportsImages(m),
 			};
 		})
 		.filter((m) => m.id);
+}
+
+/**
+ * Detect image-input support from an OpenAI-compatible /models row. OpenRouter
+ * surfaces `architecture.input_modalities`; other providers use ad-hoc fields.
+ * Returns undefined when the endpoint says nothing — the UI treats that as
+ * "allow" so local servers without a vision flag aren't penalized.
+ */
+function detectSupportsImages(m: Record<string, any>): boolean | undefined {
+	if (typeof m.supports_vision === 'boolean') return m.supports_vision;
+	if (typeof m.vision === 'boolean') return m.vision;
+	const archModalities = m.architecture?.input_modalities;
+	if (Array.isArray(archModalities)) return archModalities.includes('image');
+	if (typeof m.architecture?.modality === 'string') {
+		return m.architecture.modality.toLowerCase().includes('image');
+	}
+	return undefined;
 }
 
 function numberOrUndef(v: unknown): number | undefined {
@@ -401,4 +419,5 @@ export const __testing = {
 	isClaudeBackedModel,
 	eventsFromOpenAIChunk,
 	flushStripperEvents,
+	detectSupportsImages,
 };

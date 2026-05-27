@@ -15,7 +15,7 @@ No editable settings here. The Overview is read-only navigation.
 
 ## Providers
 
-A provider is one OpenAI-compatible endpoint. You can configure as many as you want — each chat picks a model from one provider via a `ModelRef = { endpointId, slug }` pair, so the same model name on different providers stays unambiguous.
+A provider is one chat endpoint — OpenRouter, OpenAI, native Anthropic (`/v1/messages`), native Gemini (`/v1beta/models/*:streamGenerateContent`), or any OpenAI-compatible service (local servers, custom gateways). You can configure as many as you want — each chat picks a model from one provider via a `ModelRef = { endpointId, slug }` pair, so the same model name on different providers stays unambiguous.
 
 Click **Edit** on a row to open the endpoint editor (a sub-page, not a modal). Click **+ Add provider** at the bottom to pick a template (OpenRouter, OpenAI, Anthropic, Gemini, Custom).
 
@@ -50,17 +50,18 @@ The single place Smart Aide stores its content in your vault.
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| Meta folder | Vault-relative path. Chats, skills, plugin internals, and the optional vault-context `AGENTS.md` all live under this folder. Changing it does **not** move existing files — Smart Aide just starts reading and writing in the new location. | `Meta` |
-| Reload skills & AGENTS.md | Re-scans the skills directory and re-reads the AGENTS.md files. Run this after editing a skill file or AGENTS.md. | — |
+| Meta folder | Vault-relative path. Chats, skills, plugin internals, AGENTS.md, and memory all live under this folder (cross-tool standards at the meta root, plugin-only state under a `Smart Aide/` subfolder). Changing it does **not** move existing files — Smart Aide just starts reading and writing in the new location. | `Meta` |
+| Reload skills, AGENTS.md & memory | Re-scans the skills directory and re-reads the AGENTS.md and memory files. Run this after editing any of them. (Edits made inside Obsidian also flow through automatically via the vault watcher; the button is the manual escape hatch.) | — |
 
-The four derived paths shown under the Meta folder field are not editable — they always follow the meta folder:
+The derived paths shown under the Meta folder field are not editable — they always follow the meta folder. Cross-tool standards (skills, AGENTS.md) sit directly under the meta folder so they can be symlinked from `~/.agents/`; plugin-only state nests under `Smart Aide/` so the file tree visibly distinguishes plugin storage from your own notes.
 
 | Label | Path | Purpose |
 | --- | --- | --- |
-| Chats | `<meta>/chats/` | One JSONL per chat. Pi session v3 format. |
-| Skills | `<meta>/skills/` | Skill files. One per skill, or a folder with a `SKILL.md`. |
-| Plugin internals | `<meta>/.smart-aide/` | Cache / state. Off-limits to the read and write tools. |
-| Vault context | `<meta>/AGENTS.md` | Optional. Inner vault-context file, appended to the system prompt. |
+| Skills | `<meta>/skills/` | Skill files. One per skill, or a folder with a `SKILL.md`. Cross-tool standard. |
+| Vault context | `<meta>/AGENTS.md` | Optional. Inner vault-context file, appended to the system prompt. Cross-tool standard. |
+| Chats | `<meta>/Smart Aide/chats/` | One JSONL per chat. Pi session v3 format. |
+| Memory | `<meta>/Smart Aide/memory.md` | Optional. Model-curated facts the user told the assistant across chats. Append-only via `save_memory`; prune by editing the file directly. |
+| Plugin internals | `<meta>/Smart Aide/.internals/` | Cache / state. Off-limits to the read and write tools. |
 
 > [!note]
 > A second AGENTS.md can live at `<vault>/AGENTS.md` (the cross-tool standard location). Both are read if present; root first, then meta — see [AGENTS.md cross-tool standard](#agentsmd-cross-tool-standard).
@@ -87,9 +88,16 @@ Bundled skills you can install with one click. Each row shows the skill name, a 
 | Setting | Description | Default |
 | --- | --- | --- |
 | Auto-approve writes (dangerous) | Skips the diff approval card for `write_note` and `append_to_note`. Deletes still require explicit approval regardless. While on, a ⚠ chip appears in the chat's top bar so the state stays visible. | Off |
+| Cost cap per turn (USD) | Block send when the next-turn projected cost exceeds this value. The check uses the same projection shown in the token chip popover (system + AGENTS.md + memory + skills + pinned + history + composer × the model's per-million pricing, plus a 500-token completion estimate), so what the chip shows is what trips the cap. Endpoints without pricing (LM Studio, custom gateways) never trip the cap. 0 = off. | 0 |
 
 > [!warning]
 > Auto-approve writes can drift your vault without you noticing — the model can rewrite, append to, or replace notes on its own. Turn it on only when you trust the current skill, model, and prompt. The ⚠ chip is your reminder.
+
+### Sync-conflict banner
+
+Smart Aide tracks the mtime of the active chat file at load and after every successful write. If Obsidian Sync (or another device, or a manual edit) modifies the file between turns, the next send shows a red banner above the composer instead of writing: "Another device updated this chat. Reload to see the latest, or start a new chat." Reload picks up the other device's writes; New chat starts fresh. The user's draft and pending images are preserved across the banner — the pre-flight check fires before any composer state is cleared.
+
+This is a guard against the Obsidian Sync collision pattern other Obsidian AI plugins hit (Copilot #884, Smart Composer #479): two devices appending to the same chat file race and one device's turn disappears. The banner is the visible escape hatch.
 
 ## Advanced
 
@@ -131,6 +139,8 @@ When you attach an image (paperclip, drag-drop, or paste), Smart Aide saves it v
 
 The chat JSONL stores the path, not the bytes; bytes are re-read at send time and inlined to the model as base64.
 
+**Vision-capability gating**: the paperclip disables (with an explanatory tooltip) when the active model's `/models` response says it doesn't accept image inputs — OpenRouter's `architecture.input_modalities`, OpenAI-compat `supports_vision`, etc. Anthropic + Gemini are hardcoded as vision-capable. Local servers that don't expose a vision flag are treated as allow (the provider rejects if it actually can't). Paste / drag-drop / vault-image drops all hit the same gate.
+
 ### AGENTS.md cross-tool standard
 
 > [!note]
@@ -154,21 +164,21 @@ Avoid surprise: these Obsidian core settings have no effect on Smart Aide.
 
 - **Daily notes folder / Periodic Notes** — Smart Aide reads your notes via path-prefix and search, not via the daily-notes concept. The model figures out today's daily-note path from context (your AGENTS.md is the right place to document it).
 - **Templates folder** — Smart Aide doesn't apply Obsidian templates. Skills are the equivalent: a skill body is template + instructions in one file.
-- **Hidden files / dotfile handling** — Smart Aide blocks `.obsidian/`, `<meta>/.smart-aide/`, and `<meta>/chats/` directly through its own path guard, independent of Obsidian's hidden-files config.
+- **Hidden files / dotfile handling** — Smart Aide blocks `.obsidian/` and the entire `<meta>/Smart Aide/` subtree (chats, memory.md, `.internals/`) directly through its own path guard, independent of Obsidian's hidden-files config. Cross-tool standards at the meta root (`<meta>/skills/`, `<meta>/AGENTS.md`) are *not* blocked — the model can still call `read_note` on a skill or AGENTS.md when the user references one.
 
 ## Where settings are stored
 
-Two files, two purposes.
+Two surfaces, two purposes.
 
-| File | Contents | Synced via Obsidian Sync? |
+| Surface | Contents | Synced across devices? |
 | --- | --- | --- |
-| `<vault>/.obsidian/plugins/smart-aide/data.json` | All settings *except* API keys. Endpoints with `apiKey: ""` blanked on write. | Yes. |
-| `<vault>/.obsidian/plugins/smart-aide/api-keys.json` | Per-device API key store. Plaintext today; system-keychain integration is deferred. | No — `.obsidian/` sync filters this out per-device on purpose. |
+| `<vault>/.obsidian/plugins/smart-aide/data.json` | All settings *except* API keys. Endpoints with `apiKey: ""` blanked on write. | Yes — Obsidian Sync covers it (and Git, if you commit `.obsidian/`). |
+| Browser `localStorage` (`vk:apikey:<endpointId>`) | Per-device API key store. Plaintext on disk in Obsidian's app sandbox — same as any browser localStorage. System-keychain integration is deferred. | No — localStorage is per-device by definition (desktop Electron, iOS WKWebView, Android WebView). |
 
-On first run after upgrade from a legacy single-key install, keys present in `data.json` are migrated into the key store and the `data.json` copy is blanked on the next save.
+On first run after upgrade from a legacy single-key install, keys present in `data.json` are migrated into the localStorage store and the `data.json` copy is blanked on the next save.
 
-> [!warning]
-> If you share a vault via Git, gitignore `.obsidian/plugins/smart-aide/api-keys.json`. The plugin keeps it per-device, but Git doesn't know that.
+> [!note]
+> Keys never sync across devices. After install on a second device (or a fresh BRAT update on the same device's other vault), open Settings → Providers and re-paste your keys. This is deliberate — earlier designs that synced encrypted keys via `data.json` hit cross-device clobber bugs (Copilot #1350, Smart Composer #286) where one device's keys overwrote another's.
 
 ## Cross-references
 

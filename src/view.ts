@@ -1,6 +1,6 @@
 import { ItemView, MarkdownRenderChild, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, parseLinktext, setIcon } from 'obsidian';
 import { TOOLS } from './tools';
-import { ChatSession } from './storage';
+import { ChatSession, SyncConflictError } from './storage';
 import { friendlyModelName } from './models';
 import { BrowseAllPickerModal, FavoritesPickerModal } from './picker-models';
 import { NotePickerModal } from './picker-notes';
@@ -18,6 +18,7 @@ import {
 	estimateEntryTokens,
 	estimateTokens,
 	evaluateContextWindow,
+	evaluateCostCap,
 	formatTokens,
 	formatUsageTooltip,
 	groupChainIntoBursts,
@@ -73,8 +74,11 @@ export class ChatView extends ItemView {
 	private contextRowEl!: HTMLDivElement;
 	private composerEl!: HTMLTextAreaElement;
 	private sendBtn!: HTMLButtonElement;
+	private attachBtn!: HTMLButtonElement;
 	private dangerChip: HTMLButtonElement | null = null;
 	private attachmentRowEl!: HTMLDivElement;
+	private syncConflictBannerEl!: HTMLDivElement;
+	private syncConflict = false;
 	private composer!: ComposerController;
 	// Per-entry token estimates. Entries are immutable once persisted (Pi format),
 	// so we cache by id and skip re-walking message content on every rerender.
@@ -130,6 +134,7 @@ export class ChatView extends ItemView {
 	async newChat(): Promise<void> {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.createChat();
+		this.clearSyncConflict();
 		this.tokenPopoverCtl?.resetCumulative();
 		this.historyTokenByEntry.clear();
 		this.pinned.clear();
@@ -156,6 +161,7 @@ export class ChatView extends ItemView {
 	async loadChat(path: string): Promise<void> {
 		this.abort?.abort();
 		this.session = await this.plugin.storage.loadChat(path);
+		this.clearSyncConflict();
 		// Walk the active branch (leaf → root) so a model_change on a dead branch
 		// can't become the visible model. contextChain returns chronological order.
 		const chain = this.plugin.storage.contextChain(this.session);
@@ -164,6 +170,7 @@ export class ChatView extends ItemView {
 			if (e.type === 'model_change') {
 				this.modelRef = { endpointId: e.provider, slug: e.modelId };
 				if (this.modelChip) this.refreshModelChip();
+				this.refreshAttachState();
 				break;
 			}
 		}
@@ -257,6 +264,13 @@ export class ChatView extends ItemView {
 
 		// Composer (sticky bottom, holds textarea + toolbar)
 		const composerWrap = root.createDiv({ cls: 'vk-composer' });
+
+		// Sync-conflict banner sits above the input card and is hidden by default.
+		// Shown when an append is refused because another device modified the chat
+		// file (Obsidian Sync collision). Blocks send until the user reloads or
+		// starts a new chat.
+		this.syncConflictBannerEl = composerWrap.createDiv({ cls: 'vk-sync-banner' });
+		this.syncConflictBannerEl.hide();
 
 		// Single bordered card that visually unifies pills, textarea, and toolbar —
 		// the pinned context appears *inside* the input box (Copilot/Smart Compose
@@ -388,21 +402,22 @@ export class ChatView extends ItemView {
 		toolbar.createDiv({ cls: 'vk-spacer' });
 
 		// File picker button (paperclip). Works desktop + mobile.
-		const attachBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-attach', attr: { type: 'button' } });
-		setIcon(attachBtn, 'paperclip');
-		attachBtn.setAttribute('aria-label', 'Attach image');
+		this.attachBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-attach', attr: { type: 'button' } });
+		setIcon(this.attachBtn, 'paperclip');
+		this.attachBtn.setAttribute('aria-label', 'Attach image');
 		const filePicker = composerWrap.createEl('input', {
 			cls: 'vk-hidden',
 			type: 'file',
 			attr: { accept: 'image/jpeg,image/png,image/gif,image/webp', multiple: 'multiple' },
 		});
-		this.registerDomEvent(attachBtn, 'click', () => filePicker.click());
+		this.registerDomEvent(this.attachBtn, 'click', () => filePicker.click());
 		this.registerDomEvent(filePicker, 'change', () => {
 			if (filePicker.files && filePicker.files.length > 0) {
 				void this.composer.handleDroppedFiles(filePicker.files);
 			}
 			filePicker.value = '';
 		});
+		this.refreshAttachState();
 
 		this.stopBtn = toolbar.createEl('button', { cls: 'vk-icon-btn vk-stop' });
 		setIcon(this.stopBtn, 'square');
@@ -427,6 +442,8 @@ export class ChatView extends ItemView {
 				refreshTokenChip: () => void this.refreshTokenChip(),
 				rerenderStream: () => this.rerenderStream(),
 				isStreaming: () => this.abort !== null,
+				isSendBlocked: () => this.syncConflict,
+				activeModelSupportsImages: () => this.activeModelSupportsImages(),
 				registerDomEvent: (el, type, cb) => this.registerDomEvent(el, type, cb),
 			},
 			this.composerEl,
@@ -497,6 +514,7 @@ export class ChatView extends ItemView {
 		if (newRef.endpointId === this.modelRef.endpointId && newRef.slug === this.modelRef.slug) return;
 		this.modelRef = newRef;
 		this.refreshModelChip();
+		this.refreshAttachState();
 		// Context window and pricing change with the model — refresh the chip.
 		void this.refreshTokenChip();
 
@@ -512,6 +530,69 @@ export class ChatView extends ItemView {
 
 	private refreshTokenChip(): Promise<void> {
 		return this.tokenPopoverCtl ? this.tokenPopoverCtl.refreshChip() : Promise.resolve();
+	}
+
+	/**
+	 * Look up the active model's discovered metadata. Returns undefined when the
+	 * endpoint is gone (e.g. user removed it) or the slug isn't in its model
+	 * list — callers treat that as "no metadata, allow."
+	 */
+	private activeModelMeta(): import('./types').DiscoveredModel | undefined {
+		const endpoint = findEndpoint(this.plugin.settings, this.modelRef.endpointId);
+		return endpoint?.discoveredModels?.find((m) => m.id === this.modelRef.slug);
+	}
+
+	private activeModelSupportsImages(): boolean {
+		// Only block when the endpoint explicitly says false. Undefined = allow
+		// so local servers without a vision flag aren't penalized.
+		return this.activeModelMeta()?.supportsImages !== false;
+	}
+
+	private refreshAttachState(): void {
+		if (!this.attachBtn) return;
+		const supports = this.activeModelSupportsImages();
+		this.attachBtn.disabled = !supports;
+		this.attachBtn.title = supports
+			? 'Attach image'
+			: "This model doesn't accept images. Pick a vision-capable model to attach.";
+	}
+
+	private showSyncConflictBanner(): void {
+		this.syncConflict = true;
+		const el = this.syncConflictBannerEl;
+		if (!el) return;
+		el.empty();
+		el.show();
+		const message = el.createDiv({ cls: 'vk-sync-banner-message' });
+		message.createSpan({ cls: 'vk-sync-banner-icon', text: '⚠' });
+		message.createSpan({
+			cls: 'vk-sync-banner-text',
+			text: 'Another device updated this chat. Reload to see the latest, or start a new chat — sending now would race with the other writer.',
+		});
+		const actions = el.createDiv({ cls: 'vk-sync-banner-actions' });
+		const reload = actions.createEl('button', {
+			cls: 'mod-cta vk-sync-banner-btn',
+			text: 'Reload chat',
+		});
+		this.registerDomEvent(reload, 'click', () => {
+			const path = this.session?.path;
+			if (path) void this.loadChat(path);
+		});
+		const fresh = actions.createEl('button', {
+			cls: 'vk-sync-banner-btn',
+			text: 'New chat',
+		});
+		this.registerDomEvent(fresh, 'click', () => void this.newChat());
+		this.composer?.refreshSendState();
+	}
+
+	private clearSyncConflict(): void {
+		this.syncConflict = false;
+		if (this.syncConflictBannerEl) {
+			this.syncConflictBannerEl.empty();
+			this.syncConflictBannerEl.hide();
+		}
+		this.composer?.refreshSendState();
 	}
 
 	private invalidateBreakdownCache(): void {
@@ -1022,6 +1103,10 @@ export class ChatView extends ItemView {
 
 	private async send(): Promise<void> {
 		if (!this.session) return;
+		if (this.syncConflict) {
+			new Notice('Reload the chat or start a new one before sending.', 6000);
+			return;
+		}
 		const resolved = resolveModelRefStrict(this.plugin.settings, this.modelRef);
 		if (!resolved) {
 			new Notice('That endpoint was removed. Pick a model to continue this chat.');
@@ -1032,18 +1117,44 @@ export class ChatView extends ItemView {
 		const rawText = this.composerEl.value.trim();
 		if (!rawText && this.composer.pendingImages.length === 0) return;
 
+		// Pre-flight conflict guard — runs before we mutate composer state so the
+		// user's draft and pending images survive a Reload click.
+		try {
+			this.plugin.storage.checkAppendable(this.session);
+		} catch (e) {
+			if (e instanceof SyncConflictError) {
+				this.showSyncConflictBanner();
+				return;
+			}
+			throw e;
+		}
+
 		const modelMeta = endpoint.discoveredModels?.find((m) => m.id === slug);
-		if (modelMeta?.contextLength) {
+		const cap = this.plugin.settings.costCapPerTurnUsd;
+		if (modelMeta?.contextLength || cap > 0) {
 			const projection = await this.computeContextProjection();
 			const composerTokens = estimateTokens(this.composerEl.value);
 			const totalTokens = sumBreakdown({ ...projection, composer: composerTokens });
-			const verdict = evaluateContextWindow({
-				totalTokens,
-				contextLength: modelMeta.contextLength,
-			});
-			if (verdict.block) {
-				new Notice(verdict.message!, 8000);
-				return;
+			if (modelMeta?.contextLength) {
+				const verdict = evaluateContextWindow({
+					totalTokens,
+					contextLength: modelMeta.contextLength,
+				});
+				if (verdict.block) {
+					new Notice(verdict.message!, 8000);
+					return;
+				}
+			}
+			if (cap > 0) {
+				const costVerdict = evaluateCostCap({
+					totalTokens,
+					meta: modelMeta,
+					capUsd: cap,
+				});
+				if (costVerdict.block) {
+					new Notice(costVerdict.message!, 8000);
+					return;
+				}
 			}
 		}
 
@@ -1139,7 +1250,15 @@ export class ChatView extends ItemView {
 		const session = this.session;
 		if (!session) return;
 		this.abort = new AbortController();
-		await runAssistantLoop(this.makeLoopHost(session), allowedTools, this.abort.signal);
+		try {
+			await runAssistantLoop(this.makeLoopHost(session), allowedTools, this.abort.signal);
+		} catch (e) {
+			if (e instanceof SyncConflictError) {
+				this.showSyncConflictBanner();
+				return;
+			}
+			throw e;
+		}
 	}
 
 	private makeLoopHost(session: ChatSession): LoopHost {

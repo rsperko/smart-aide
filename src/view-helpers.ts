@@ -315,6 +315,59 @@ export function formatCostUsd(
 	return `$${total.toFixed(2)}`;
 }
 
+/** Raw-number cost projection (USD). Returns null when no pricing is known so
+ * callers can skip the cap rather than block on missing data. */
+export function projectTurnCostUsd(
+	promptTokens: number,
+	completionTokens: number,
+	meta: { promptPrice?: number; completionPrice?: number } | undefined,
+): number | null {
+	if (!meta || (meta.promptPrice === undefined && meta.completionPrice === undefined)) return null;
+	const pp = meta.promptPrice ?? 0;
+	const cp = meta.completionPrice ?? 0;
+	return (pp * promptTokens + cp * completionTokens) / 1_000_000;
+}
+
+export interface CostCapVerdict {
+	block: boolean;
+	projectedUsd: number | null;
+	message?: string;
+}
+
+/**
+ * Pre-send guard: block when the projected next-turn cost exceeds the user's
+ * cap. Cap of 0 (default) disables the check. Unknown pricing returns no
+ * verdict — providers without exposed pricing (LM Studio, custom gateways) can
+ * never trip the cap.
+ *
+ * Uses the same 500-token completion estimate the popover shows so the
+ * displayed projection lines up with when the cap fires.
+ */
+export function evaluateCostCap(opts: {
+	totalTokens: number;
+	meta: { promptPrice?: number; completionPrice?: number } | undefined;
+	capUsd: number;
+	completionEstimate?: number;
+}): CostCapVerdict {
+	const { totalTokens, meta, capUsd, completionEstimate = 500 } = opts;
+	if (!capUsd || capUsd <= 0) {
+		return { block: false, projectedUsd: null };
+	}
+	const projected = projectTurnCostUsd(totalTokens, completionEstimate, meta);
+	if (projected === null) {
+		return { block: false, projectedUsd: null };
+	}
+	if (projected <= capUsd) {
+		return { block: false, projectedUsd: projected };
+	}
+	const projStr = projected < 0.01 ? '<$0.01' : `$${projected.toFixed(2)}`;
+	const capStr = `$${capUsd.toFixed(2)}`;
+	const message =
+		`Next turn projected at ${projStr} — over your ${capStr} cap. ` +
+		`Raise the cap in Settings → Safety, unpin notes, or switch to a cheaper model.`;
+	return { block: true, projectedUsd: projected, message };
+}
+
 export function messageText(m: AgentMessage, sep = ''): string {
 	if (typeof m.content === 'string') return m.content;
 	return m.content

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	ChatStorage,
+	SyncConflictError,
 	computeLeaf,
 	deriveTitleFromMessages,
 	findTitle,
@@ -259,6 +260,39 @@ describe('ChatStorage', () => {
 		const removed = await storage.cleanupEmptyChats();
 		expect(removed).toBe(0);
 		expect(vault.files.has(session.path)).toBe(true);
+	});
+
+	it('flags an external mtime bump as a SyncConflictError on appendEntry', async () => {
+		const session = await storage.createChat();
+		const first = storage.makeMessageEntry({ role: 'user', content: 'hello' }, null);
+		await storage.appendEntry(session, first);
+
+		// Simulate another device writing to the same chat file (Obsidian Sync,
+		// other client, manual edit) — bump mtime past our captured baseline.
+		const entry = vault.files.get(session.path)!;
+		entry.mtime = session.loadedMtime + 5000;
+
+		const second = storage.makeMessageEntry({ role: 'user', content: 'again' }, first.id);
+		await expect(storage.appendEntry(session, second)).rejects.toBeInstanceOf(SyncConflictError);
+	});
+
+	it('checkAppendable throws after an external mtime bump and is silent otherwise', async () => {
+		const session = await storage.createChat();
+		const first = storage.makeMessageEntry({ role: 'user', content: 'hello' }, null);
+		await storage.appendEntry(session, first);
+
+		// Fresh session — no conflict.
+		expect(() => storage.checkAppendable(session)).not.toThrow();
+
+		// External bump — conflict.
+		vault.files.get(session.path)!.mtime = session.loadedMtime + 1000;
+		expect(() => storage.checkAppendable(session)).toThrow(SyncConflictError);
+	});
+
+	it('checkAppendable is a no-op for a never-saved session (lazy file creation)', async () => {
+		const session = await storage.createChat();
+		// File not yet created → loadedMtime === 0 → check is a no-op.
+		expect(() => storage.checkAppendable(session)).not.toThrow();
 	});
 
 	it('resolveImageBytes returns the bytes for an existing image and null for missing', async () => {
