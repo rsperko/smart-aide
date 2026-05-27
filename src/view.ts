@@ -8,7 +8,7 @@ import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext, type Pin } from './context-pins';
 import { UrlPinModal } from './modal-url-pin';
-import { findEndpoint, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict } from './settings';
+import { findEndpoint, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict, sameRef } from './settings';
 import {
 	Burst,
 	ScreenWakeLock,
@@ -660,8 +660,35 @@ export class ChatView extends ItemView {
 	refreshAfterSettingsChange(): void {
 		this.refreshDangerChip();
 		this.refreshAttachState();
+		this.adoptDefaultIfPristine();
 		this.refreshModelChip();
 		this.rerenderStream();
+	}
+
+	/**
+	 * If the active chat is pristine — never had a user message and the user
+	 * hasn't manually switched models on it — adopt whatever the current
+	 * default model is. Covers the case where the user lands in a freshly
+	 * created chat with the stale "openrouter / claude-haiku-4.5" sentinel,
+	 * then goes to settings, adds providers + favorites, and `rebindDefaults`
+	 * flips the default to a real favorite. Without this hook the chat would
+	 * still show Haiku until the user manually picked a new model.
+	 */
+	private adoptDefaultIfPristine(): void {
+		if (!this.session) return;
+		if (this.session.entries.length !== 1) return;
+		if (this.session.entries[0].type !== 'model_change') return;
+		const newDefault = this.plugin.settings.defaultModelRef;
+		if (sameRef(this.modelRef, newDefault)) return;
+		this.modelRef = { ...newDefault };
+		const queued = this.session.entries[0];
+		const updated = this.plugin.storage.makeModelChangeEntry(
+			newDefault.endpointId,
+			newDefault.slug,
+			queued.parentId,
+		);
+		this.session.entries[0] = updated;
+		this.session.leafId = updated.id;
 	}
 
 	private openPluginSettings(): void {

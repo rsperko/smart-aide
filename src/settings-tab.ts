@@ -1,6 +1,6 @@
 import { App, PluginSettingTab } from 'obsidian';
 import { renderEndpointEditor } from './endpoint-editor';
-import { findEndpoint, pickReplacementModelRef } from './settings';
+import { findEndpoint, removeEndpoint } from './settings';
 import type { SectionContext, SectionId } from './settings-section';
 import { renderOverview } from './settings-overview';
 import { renderProviders } from './settings-providers';
@@ -41,15 +41,7 @@ export class SmartAideSettingsTab extends PluginSettingTab {
 					this.display();
 				},
 				onDelete: async () => {
-					if (this.plugin.settings.endpoints.length <= 1) return;
-					const removedId = endpoint.id;
-					this.plugin.settings.endpoints = this.plugin.settings.endpoints.filter((e) => e !== endpoint);
-					if (this.plugin.settings.defaultModelRef.endpointId === removedId) {
-						this.plugin.settings.defaultModelRef = pickReplacementModelRef(this.plugin.settings);
-					}
-					if (this.plugin.settings.titleModelRef.endpointId === removedId) {
-						this.plugin.settings.titleModelRef = this.plugin.settings.defaultModelRef;
-					}
+					this.plugin.settings = removeEndpoint(this.plugin.settings, endpoint.id);
 					await this.plugin.saveSettings();
 					this.editingEndpointId = null;
 					this.display();

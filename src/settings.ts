@@ -349,6 +349,29 @@ export function pickReplacementModelRef(settings: SmartAideSettings): ModelRef {
 	return { endpointId: fallback?.id ?? OPENROUTER_ID, slug };
 }
 
+/**
+ * Remove an endpoint and clean up everything that referenced it:
+ * - Drop favorites pointing at that endpoint (they're unusable now).
+ * - If the default / title model ref pointed at it, rebind — prefer a
+ *   remaining favorite, fall back to whatever endpoint still exists.
+ */
+export function removeEndpoint(settings: SmartAideSettings, id: string): SmartAideSettings {
+	const endpoints = settings.endpoints.filter((e) => e.id !== id);
+	const favoriteModels = settings.favoriteModels.filter((f) => f.endpointId !== id);
+	let next: SmartAideSettings = { ...settings, endpoints, favoriteModels };
+	if (next.defaultModelRef.endpointId === id) {
+		next = {
+			...next,
+			defaultModelRef:
+				favoriteModels.length > 0 ? { ...favoriteModels[0] } : pickReplacementModelRef(next),
+		};
+	}
+	if (next.titleModelRef.endpointId === id) {
+		next = { ...next, titleModelRef: { ...next.defaultModelRef } };
+	}
+	return next;
+}
+
 export function describeModelRef(settings: SmartAideSettings, ref: ModelRef): string {
 	const endpoint = findEndpoint(settings, ref.endpointId);
 	const friendly = friendlyModelName(ref.slug);

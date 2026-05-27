@@ -19,6 +19,7 @@ import {
 	isFavoriteRef,
 	moveFavorite,
 	parseRawSettings,
+	removeEndpoint,
 	newEndpointId,
 	normalizeMetaDir,
 	pickReplacementModelRef,
@@ -210,6 +211,79 @@ describe('defaultOpenRouterEndpoint', () => {
 	it('leaves models unset when the provided list is empty', () => {
 		const e = defaultOpenRouterEndpoint('key', []);
 		expect(e.models).toBeUndefined();
+	});
+});
+
+describe('removeEndpoint', () => {
+	const baseEndpoint = (id: string): Endpoint => ({
+		id,
+		name: id,
+		baseURL: `https://${id}.example.com`,
+		apiKey: '',
+	});
+
+	it('drops the matching endpoint and its favorites', () => {
+		const settings: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [baseEndpoint('e1'), baseEndpoint('e2')],
+			favoriteModels: [
+				{ endpointId: 'e1', slug: 'a' },
+				{ endpointId: 'e2', slug: 'b' },
+				{ endpointId: 'e1', slug: 'c' },
+			],
+			defaultModelRef: { endpointId: 'e2', slug: 'b' },
+			titleModelRef: { endpointId: 'e2', slug: 'b' },
+		};
+		const out = removeEndpoint(settings, 'e1');
+		expect(out.endpoints.map((e) => e.id)).toEqual(['e2']);
+		expect(out.favoriteModels).toEqual([{ endpointId: 'e2', slug: 'b' }]);
+		// Default + title were already pointing at e2 — left unchanged.
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e2', slug: 'b' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'e2', slug: 'b' });
+	});
+
+	it('rebinds defaultModelRef to a surviving favorite when the deleted endpoint owned the default', () => {
+		const settings: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [baseEndpoint('e1'), baseEndpoint('e2')],
+			favoriteModels: [
+				{ endpointId: 'e2', slug: 'survivor' },
+			],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'a' },
+		};
+		const out = removeEndpoint(settings, 'e1');
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e2', slug: 'survivor' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'e2', slug: 'survivor' });
+	});
+
+	it('falls back to pickReplacementModelRef when no favorites survive and the default endpoint was deleted', () => {
+		const settings: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [
+				baseEndpoint('e1'),
+				{ ...baseEndpoint('e2'), models: ['only-e2-slug'] },
+			],
+			favoriteModels: [{ endpointId: 'e1', slug: 'a' }],
+			defaultModelRef: { endpointId: 'e1', slug: 'a' },
+			titleModelRef: { endpointId: 'e1', slug: 'a' },
+		};
+		const out = removeEndpoint(settings, 'e1');
+		expect(out.favoriteModels).toEqual([]);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'e2', slug: 'only-e2-slug' });
+	});
+
+	it('allows deleting the last endpoint and leaves the default ref pointing at the OpenRouter fallback', () => {
+		const settings: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [baseEndpoint('only')],
+			favoriteModels: [{ endpointId: 'only', slug: 'a' }],
+			defaultModelRef: { endpointId: 'only', slug: 'a' },
+		};
+		const out = removeEndpoint(settings, 'only');
+		expect(out.endpoints).toEqual([]);
+		expect(out.favoriteModels).toEqual([]);
+		expect(out.defaultModelRef.endpointId).toBe(OPENROUTER_ID);
 	});
 });
 
