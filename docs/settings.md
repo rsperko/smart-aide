@@ -172,13 +172,30 @@ Two surfaces, two purposes.
 
 | Surface | Contents | Synced across devices? |
 | --- | --- | --- |
-| `<vault>/.obsidian/plugins/smart-aide/data.json` | All settings *except* API keys. Endpoints with `apiKey: ""` blanked on write. | Yes — Obsidian Sync covers it (and Git, if you commit `.obsidian/`). |
+| `<vault>/.obsidian/plugins/smart-aide/data.json` | Vault-scoped settings only: `metaDir`, `systemPrompt`, `hasSeenMentionTip`. Per-device fields blanked on every write. | Yes — Obsidian Sync covers it (and Git, if you commit `.obsidian/`). |
 | Browser `localStorage` (`vk:apikey:<endpointId>`) | Per-device API key store. Plaintext on disk in Obsidian's app sandbox — same as any browser localStorage. System-keychain integration is deferred. | No — localStorage is per-device by definition (desktop Electron, iOS WKWebView, Android WebView). |
+| Browser `localStorage` (`vk:device-settings`) | Per-device settings blob: providers (endpoints), favorites, default chat / title model, auto-approve writes, cost cap, Anthropic prompt caching toggle. | No — same reason as keys: this is your local setup, not vault content. |
 
-On first run after upgrade from a legacy single-key install, keys present in `data.json` are migrated into the localStorage store and the `data.json` copy is blanked on the next save.
+On first run after upgrade from a previous version, all per-device fields that previously lived in `data.json` get migrated into the localStorage store, and `data.json` is blanked on the next save.
+
+### What syncs and what doesn't
+
+| Lives in | Synced via Obsidian Sync? | Why |
+| --- | --- | --- |
+| Skills (`<meta>/skills/`) | Yes | Vault content — same skills should be available wherever you open the vault. |
+| AGENTS.md, memory.md | Yes | Vault content — written by you / the model in this vault. |
+| Chat history (`<meta>/Smart Aide/chats/`) | Yes | The conversation IS the vault content. Conflict banner guards mid-stream collisions. |
+| `metaDir`, `systemPrompt`, `hasSeenMentionTip` | Yes | Vault-scoped configuration — describes the vault, not the device. |
+| Providers (endpoints) | **No** | Different keys, different models per device. Mobile might use OpenRouter only; desktop might also have a local LM Studio. |
+| Favorite models | **No** | Mobile favorites lean small / cheap; desktop favorites can include large-context models. |
+| Default chat model, title model | **No** | Follow the per-device favorites. |
+| Auto-approve writes | **No** | Safety setting — desktop's "yes I trust this" shouldn't flip on mobile, where you might fat-finger the chat. |
+| Cost cap per turn | **No** | Different budget tolerances per device. |
+| Anthropic prompt caching toggle | **No** | Tied to a specific endpoint setup; follows providers. |
+| API keys | **No** | Per-device for security; this has been the case since 0.3.x. |
 
 > [!note]
-> Keys never sync across devices. After install on a second device (or a fresh BRAT update on the same device's other vault), open Settings → Providers and re-paste your keys. This is deliberate — earlier designs that synced encrypted keys via `data.json` hit cross-device clobber bugs (Copilot #1350, Smart Composer #286) where one device's keys overwrote another's.
+> After install on a second device, open **Settings → Providers** and re-add your providers (with keys) and favorites. This is deliberate — earlier designs that synced encrypted keys via `data.json` hit cross-device clobber bugs (Copilot #1350, Smart Composer #286). Now the same per-device isolation extends to provider list, favorites, defaults, and safety toggles so desktop ≠ mobile by default.
 
 ## Cross-references
 

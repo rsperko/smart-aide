@@ -36,7 +36,7 @@ Full settings reference: **[docs/settings.md](docs/settings.md)**.
 
 Highlights worth knowing before you start:
 
-- **Providers** — Add an endpoint: OpenRouter / OpenAI / native Anthropic / native Gemini / OpenAI-compatible local server or custom gateway. API keys are stored per-device in localStorage, not in the synced `data.json` — so a second device starts with no keys and you re-paste once.
+- **Providers** — Add an endpoint: OpenRouter / OpenAI / native Anthropic / native Gemini / OpenAI-compatible local server or custom gateway. Providers + favorites + the auto-approve and cost-cap toggles all live per-device in localStorage (not in the synced `data.json`) — so mobile and desktop can run independent setups out of the same vault. Skills, AGENTS.md, memory, and chat history still sync via the vault.
 - **Chat models** — Star models in **Browse all** to favorite them. The default chat model and title model are picked from your favorites.
 - **Vault data** — One vault-relative folder (default `Meta`) holds skills and AGENTS.md at the root, with chats / memory / plugin internals under a `Smart Aide/` subfolder.
 - **Safety** — Writes show a diff approval card by default. The "auto-approve writes" toggle is opt-in and visibly flags the chat with a ⚠ chip while on. The "cost cap per turn" setting blocks send when the projected cost would exceed it (off by default).

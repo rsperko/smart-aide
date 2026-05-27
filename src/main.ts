@@ -3,13 +3,16 @@ import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
 import {
 	captureApiKeysToStore,
+	captureDeviceSettingsToStore,
 	chatsDirFor,
 	hydrateApiKeysFromStore,
+	hydrateDeviceSettingsFromStore,
 	memoryFileFor,
 	migrateSettings,
 	skillsDirFor,
 	SmartAideSettings,
 	stripApiKeysForPersistence,
+	stripDeviceSettingsForPersistence,
 } from './settings';
 import { SmartAideSettingsTab } from './settings-tab';
 import { SkillRegistry } from './skills';
@@ -22,6 +25,11 @@ import {
 	ApiKeyStore,
 	createLocalStorageKeyStore,
 } from './api-key-store';
+import {
+	DEVICE_SETTINGS_STORE_KEY,
+	DeviceSettingsStore,
+	createLocalStorageDeviceStore,
+} from './device-settings-store';
 
 export default class SmartAidePlugin extends Plugin {
 	settings!: SmartAideSettings;
@@ -30,6 +38,7 @@ export default class SmartAidePlugin extends Plugin {
 	agents!: AgentsMdRegistry;
 	memory!: MemoryRegistry;
 	keyStore!: ApiKeyStore;
+	deviceStore!: DeviceSettingsStore;
 
 	async onload(): Promise<void> {
 		// One-line load log so the dev console shows which build is actually running.
@@ -265,20 +274,34 @@ export default class SmartAidePlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		if (!this.keyStore) this.keyStore = createLocalStorageKeyStore(API_KEY_STORE_PREFIX);
+		if (!this.deviceStore)
+			this.deviceStore = createLocalStorageDeviceStore(DEVICE_SETTINGS_STORE_KEY);
 		const raw = (await this.loadData()) as Record<string, unknown> | null;
 		const migrated = migrateSettings(raw);
-		// Hydrate first (store overrides data.json), then capture so any legacy
-		// data.json key seeds the store on first load after upgrade.
-		this.settings = hydrateApiKeysFromStore(migrated, this.keyStore);
+		// Hydrate per-device settings (endpoints / favorites / safety toggles)
+		// from localStorage, then merge API keys. On a fresh device the stores
+		// are empty and the data.json values pass through as the one-time
+		// migration seed — which captureDeviceSettingsToStore then snapshots so
+		// the next save can strip them from data.json.
+		const withDevice = hydrateDeviceSettingsFromStore(migrated, this.deviceStore);
+		this.settings = hydrateApiKeysFromStore(withDevice, this.keyStore);
+		captureDeviceSettingsToStore(this.settings, this.deviceStore);
 		captureApiKeysToStore(this.settings, this.keyStore);
 	}
 
 	async saveSettings(): Promise<void> {
-		// Keys live in the per-device store, never in data.json — Obsidian Sync
-		// covers the plugins folder by default, and we don't want one device's
-		// data.json clobbering another device's keys.
+		// Per-device fields (endpoints, favorites, default + title model,
+		// safety toggles) live in localStorage, never in data.json — Obsidian
+		// Sync covers the plugins folder by default, and we don't want one
+		// device's data.json clobbering another device's setup. data.json
+		// retains only vault-scoped settings: metaDir, systemPrompt,
+		// hasSeenMentionTip.
 		captureApiKeysToStore(this.settings, this.keyStore);
-		await this.saveData(stripApiKeysForPersistence(this.settings));
+		captureDeviceSettingsToStore(this.settings, this.deviceStore);
+		const stripped = stripDeviceSettingsForPersistence(
+			stripApiKeysForPersistence(this.settings),
+		);
+		await this.saveData(stripped);
 		// Open chat views can have stale empty-state ("Add an API key…") or
 		// model-chip / attach state after an endpoint or model change.
 		this.refreshOpenChatViews();

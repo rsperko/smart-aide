@@ -1,6 +1,7 @@
 import { DEFAULT_MODEL, friendlyModelName } from './models';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
 import type { ApiKeyStore } from './api-key-store';
+import type { DeviceSettings, DeviceSettingsStore } from './device-settings-store';
 
 export interface SmartAideSettings {
 	endpoints: Endpoint[];
@@ -108,7 +109,12 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
 export function migrateSettings(raw: Record<string, unknown> | null | undefined): SmartAideSettings {
 	const r = (raw ?? {}) as Record<string, unknown>;
 
-	if (Array.isArray(r.endpoints) && r.endpoints.length > 0) {
+	if (Array.isArray(r.endpoints)) {
+		// Even an empty endpoints array is a real "this data.json was
+		// written by the per-device split" signal — fresh device after
+		// migration shows an empty providers list and the user re-adds
+		// providers locally. Falling through to the legacy default would
+		// resurrect the OpenRouter scaffold on every load.
 		return {
 			endpoints: r.endpoints as Endpoint[],
 			defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
@@ -199,6 +205,81 @@ export function stripApiKeysForPersistence(settings: SmartAideSettings): SmartAi
 	return {
 		...settings,
 		endpoints: settings.endpoints.map((e) => ({ ...e, apiKey: '' })),
+	};
+}
+
+/**
+ * Replace per-device fields in `settings` with whatever's in the device store,
+ * IF the store is populated. On a fresh device (store empty) the data.json
+ * values are kept as a one-time migration seed — `captureDeviceSettingsToStore`
+ * is then called to copy those values into the store, and the next save will
+ * strip them from data.json. Subsequent loads ignore data.json for these
+ * fields entirely.
+ */
+export function hydrateDeviceSettingsFromStore(
+	settings: SmartAideSettings,
+	store: DeviceSettingsStore,
+): SmartAideSettings {
+	if (!store.has()) return settings;
+	const stored = store.get();
+	if (!stored) return settings;
+	return {
+		...settings,
+		endpoints: Array.isArray(stored.endpoints) ? stored.endpoints : settings.endpoints,
+		favoriteModels: sanitizeFavorites(stored.favoriteModels),
+		defaultModelRef: stored.defaultModelRef ?? settings.defaultModelRef,
+		titleModelRef: stored.titleModelRef ?? settings.titleModelRef,
+		autoApproveWrites:
+			typeof stored.autoApproveWrites === 'boolean'
+				? stored.autoApproveWrites
+				: settings.autoApproveWrites,
+		costCapPerTurnUsd: sanitizeCap(stored.costCapPerTurnUsd),
+		anthropicPromptCaching:
+			typeof stored.anthropicPromptCaching === 'boolean'
+				? stored.anthropicPromptCaching
+				: settings.anthropicPromptCaching,
+	};
+}
+
+/**
+ * Write the current per-device field values into the store. Called on every
+ * save so the device store stays in sync with the in-memory `settings`. The
+ * stored endpoints have `apiKey` blanked — keys live in the separate
+ * api-key-store.
+ */
+export function captureDeviceSettingsToStore(
+	settings: SmartAideSettings,
+	store: DeviceSettingsStore,
+): void {
+	const snapshot: DeviceSettings = {
+		endpoints: settings.endpoints.map((e) => ({ ...e, apiKey: '' })),
+		favoriteModels: [...settings.favoriteModels],
+		defaultModelRef: { ...settings.defaultModelRef },
+		titleModelRef: { ...settings.titleModelRef },
+		autoApproveWrites: settings.autoApproveWrites,
+		costCapPerTurnUsd: settings.costCapPerTurnUsd,
+		anthropicPromptCaching: settings.anthropicPromptCaching,
+	};
+	store.set(snapshot);
+}
+
+/**
+ * Strip per-device fields from settings before writing to data.json. Endpoints
+ * become an empty array (Array.isArray stays true, so migrateSettings on a
+ * fresh peer device respects "no providers set up yet" rather than resurrecting
+ * the legacy OpenRouter scaffold). Defaults reset to the same sentinel a fresh
+ * install would carry; favorites empty; safety toggles to off / defaults.
+ */
+export function stripDeviceSettingsForPersistence(settings: SmartAideSettings): SmartAideSettings {
+	return {
+		...settings,
+		endpoints: [],
+		favoriteModels: [],
+		defaultModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
+		titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
+		autoApproveWrites: false,
+		costCapPerTurnUsd: 0,
+		anthropicPromptCaching: true,
 	};
 }
 
