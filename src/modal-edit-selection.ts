@@ -1,14 +1,19 @@
-import { App, Modal, Notice } from 'obsidian';
-import { runEditRequest } from './edit-selection';
+import { App, Modal, Notice, setIcon } from 'obsidian';
+import { runEditRequest, type EditRequestInput } from './edit-selection';
 import { lineDiff } from './view-helpers';
+import { describeModelRef, resolveModelRefStrict } from './settings';
+import { FavoritesPickerModal, BrowseAllPickerModal } from './picker-models';
+import { friendlyModelName } from './models';
 import type SmartAidePlugin from './main';
+import type { ModelRef } from './types';
 
 type EditState = 'idle' | 'streaming' | 'done' | 'error';
 
 /**
  * Inline edit modal. Captures the user's instruction, calls the chat model
- * once, shows the proposed rewrite as a unified diff, and (on Accept) hands
- * the rewrite back to the caller for `editor.replaceSelection`.
+ * once (with the surrounding document, AGENTS.md, and memory.md as context),
+ * shows the proposed rewrite as a unified diff, and (on Accept) hands the
+ * rewrite back to the caller for `editor.replaceSelection`.
  *
  * State machine:
  *   idle      → prompt input visible, focus
@@ -16,35 +21,36 @@ type EditState = 'idle' | 'streaming' | 'done' | 'error';
  *   done      → diff visible, Accept / Reject buttons
  *   error     → error message, input unlocked, Retry button
  *
- * Closing the modal aborts any in-flight request. Esc closes from idle/error.
- * Cmd/Ctrl+Enter submits from idle.
+ * The edit model defaults to the chat model but is overridable per-modal
+ * via the model chip in the action bar.
  *
- * Important: we deliberately do NOT name the original-text field `selection`.
- * Obsidian's `Modal` base class has its own `selection: Selection` property
- * (the DOM Selection saved for `shouldRestoreSelection`) and overwrites our
- * value before `onOpen` runs. The 0.3.15 trace caught this red-handed —
- * constructor saw a 61-char string, onOpen saw `{ type: 'object', … }`.
+ * IMPORTANT: do not name the selection field `selection` — Obsidian's
+ * Modal base class has its own `selection: Selection` property and
+ * overwrites ours before `onOpen` runs.
  */
 export class EditSelectionModal extends Modal {
 	private inputEl!: HTMLTextAreaElement;
 	private statusEl!: HTMLElement;
 	private diffEl!: HTMLElement;
 	private actionsEl!: HTMLElement;
+	private modelChipEl!: HTMLButtonElement;
 
 	private state: EditState = 'idle';
 	private rewrite: string | null = null;
 	private aborter: AbortController | null = null;
 	private lastError: string | null = null;
-	private originalText: string = '';
+	private originalText: string;
+	private modelRef: ModelRef;
 
 	constructor(
 		app: App,
 		private plugin: SmartAidePlugin,
-		selection: string,
+		private input: Omit<EditRequestInput, 'instruction'>,
 		private onAccept: (newText: string) => void,
 	) {
 		super(app);
-		this.originalText = typeof selection === 'string' ? selection : String(selection ?? '');
+		this.originalText = input.selection;
+		this.modelRef = { ...plugin.settings.defaultModelRef };
 	}
 
 	onOpen(): void {
@@ -115,6 +121,15 @@ export class EditSelectionModal extends Modal {
 
 	private renderActions(): void {
 		this.actionsEl.empty();
+		// Model chip — always visible. Click to change which model runs the edit.
+		this.modelChipEl = this.actionsEl.createEl('button', {
+			cls: 'vk-edit-model-chip',
+			attr: { type: 'button' },
+		});
+		this.refreshModelChip();
+		this.modelChipEl.addEventListener('click', () => this.openModelPicker());
+		this.modelChipEl.disabled = this.state === 'streaming';
+
 		if (this.state === 'idle' || this.state === 'error') {
 			const cancel = this.actionsEl.createEl('button', { text: 'Cancel' });
 			cancel.addEventListener('click', () => this.close());
@@ -143,17 +158,67 @@ export class EditSelectionModal extends Modal {
 		});
 	}
 
+	private refreshModelChip(): void {
+		this.modelChipEl.empty();
+		const icon = this.modelChipEl.createSpan({ cls: 'vk-edit-model-chip-icon' });
+		setIcon(icon, 'sparkles');
+		this.modelChipEl.createSpan({
+			cls: 'vk-edit-model-chip-label',
+			text: friendlyModelName(this.modelRef.slug),
+		});
+		this.modelChipEl.title = describeModelRef(this.plugin.settings, this.modelRef);
+	}
+
+	private openModelPicker(): void {
+		const settings = this.plugin.settings;
+		const pick = (ref: ModelRef) => {
+			this.modelRef = ref;
+			this.refreshModelChip();
+		};
+		new FavoritesPickerModal(
+			this.app,
+			settings.endpoints,
+			this.modelRef,
+			settings.favoriteModels,
+			pick,
+			() => {
+				new BrowseAllPickerModal(
+					this.app,
+					settings.endpoints,
+					this.modelRef,
+					settings.favoriteModels,
+					{
+						onPick: pick,
+						// Favorites are managed in settings; not toggling them from
+						// inside the edit modal keeps responsibilities separate.
+						onToggleFavorite: () => undefined,
+					},
+				).open();
+			},
+		).open();
+	}
+
 	private async submit(): Promise<void> {
 		const instruction = this.inputEl.value.trim();
 		if (!instruction) {
 			new Notice('Enter an instruction first.');
 			return;
 		}
+		if (!resolveModelRefStrict(this.plugin.settings, this.modelRef)) {
+			new Notice('That endpoint was removed. Pick another model.');
+			this.openModelPicker();
+			return;
+		}
 		this.lastError = null;
 		this.aborter = new AbortController();
 		this.setState('streaming');
 		try {
-			const text = await runEditRequest(this.plugin, this.originalText, instruction, this.aborter.signal);
+			const text = await runEditRequest(
+				this.plugin,
+				this.modelRef,
+				{ ...this.input, instruction },
+				this.aborter.signal,
+			);
 			this.rewrite = text;
 			this.setState('done');
 		} catch (e) {

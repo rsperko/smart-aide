@@ -175,9 +175,24 @@ export default class SmartAidePlugin extends Plugin {
 			new Notice('Select some text first.');
 			return;
 		}
-		new EditSelectionModal(this.app, this, selection, (newText) => {
-			editor.replaceSelection(newText);
-		}).open();
+		const documentText = typeof editor.getValue === 'function' ? editor.getValue() : selection;
+		const from = editor.getCursor('from');
+		const to = editor.getCursor('to');
+		new EditSelectionModal(
+			this.app,
+			this,
+			{
+				selection,
+				documentText: typeof documentText === 'string' ? documentText : selection,
+				from: { line: from.line, ch: from.ch },
+				to: { line: to.line, ch: to.ch },
+				agentsBody: this.agents.text(),
+				memoryBody: this.memory.text(),
+			},
+			(newText) => {
+				editor.replaceSelection(newText);
+			},
+		).open();
 	}
 
 	/**

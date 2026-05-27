@@ -722,6 +722,38 @@ details[open] > .vk-tool-summary::before {
 	line-height: 1.5;
 }
 
+.vk-edit-model-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	font-size: 0.82em;
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	cursor: pointer;
+	margin-right: auto;
+	transition: background-color 0.08s ease;
+}
+
+.vk-edit-model-chip:hover:not(:disabled) {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.vk-edit-model-chip:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.vk-edit-model-chip-icon {
+	display: inline-flex;
+	width: 14px;
+	height: 14px;
+	color: var(--text-muted);
+}
+
 /* Reuse the global vk-diff-{add,remove,context} colour classes alongside
  * vk-edit-diff-line — see the approval-card diff above. */
 
