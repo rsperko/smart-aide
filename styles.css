@@ -600,6 +600,17 @@ details[open] > .vk-tool-summary::before {
 .modal.mod-vk-narrow {
 	width: min(640px, 92vw);
 	max-width: min(640px, 92vw);
+	max-height: calc(100dvh - 32px);
+	display: flex;
+	flex-direction: column;
+}
+
+.modal.mod-vk-narrow .modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	flex: 1 1 auto;
+	overflow-y: auto;
 }
 
 /* Shared field layout for our modals: label above input, input full-width. */
@@ -652,12 +663,30 @@ details[open] > .vk-tool-summary::before {
 
 /* ---------- Inline edit (Edit with AI) modal ---------- */
 
+.vk-edit-selection-modal {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-height: 0;
+	flex: 1 1 auto;
+}
+
+.vk-edit-selection-modal .vk-modal-footer {
+	margin-top: auto;
+	flex-shrink: 0;
+	position: sticky;
+	bottom: 0;
+	background: var(--background-primary);
+	padding-bottom: 4px;
+}
+
 .vk-edit-original {
 	margin-bottom: 8px;
+	flex-shrink: 0;
 }
 
 .vk-edit-original-text {
-	max-height: 140px;
+	max-height: 22dvh;
 	overflow-y: auto;
 	font-size: 0.85em;
 	background: var(--background-secondary);
@@ -670,6 +699,7 @@ details[open] > .vk-tool-summary::before {
 
 .vk-edit-instruction {
 	margin-bottom: 8px;
+	flex-shrink: 0;
 }
 
 .vk-edit-input {
@@ -701,12 +731,13 @@ details[open] > .vk-tool-summary::before {
 }
 
 .vk-edit-diff {
-	max-height: 50dvh;
+	max-height: 40dvh;
 	overflow-y: auto;
 	margin: 8px 0;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 6px;
 	padding: 4px 0;
+	flex-shrink: 1;
 }
 
 .vk-edit-diff:empty {
@@ -764,7 +795,7 @@ details[open] > .vk-tool-summary::before {
 	}
 	.vk-edit-original-text {
 		font-size: 0.8em;
-		max-height: 100px;
+		max-height: 18dvh;
 	}
 }
 

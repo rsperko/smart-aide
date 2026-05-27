@@ -93,6 +93,7 @@ export default class SmartAidePlugin extends Plugin {
 		this.addCommand({
 			id: 'edit-selection',
 			name: 'Edit selection with AI',
+			icon: 'wand-2',
 			editorCallback: (editor: Editor, view: MarkdownView) => this.openEditSelection(editor, view),
 			hotkeys: [{ modifiers: ['Mod'], key: 'k' }],
 		});

@@ -1,4 +1,4 @@
-import { App, Modal, Notice, setIcon } from 'obsidian';
+import { App, Modal, Notice, Platform, setIcon } from 'obsidian';
 import { runEditRequest, type EditRequestInput } from './edit-selection';
 import { lineDiff } from './view-helpers';
 import { describeModelRef, resolveModelRefStrict } from './settings';
@@ -71,10 +71,16 @@ export class EditSelectionModal extends Modal {
 		this.inputEl.placeholder = 'Rewrite this in a more formal tone…';
 		this.inputEl.rows = 2;
 		this.inputEl.addEventListener('keydown', (ev) => {
-			if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && !ev.isComposing) {
-				ev.preventDefault();
-				void this.submit();
-			} else if (ev.key === 'Escape' && (this.state === 'idle' || this.state === 'error')) {
+			if (ev.key === 'Enter' && !ev.isComposing) {
+				const desktopSubmit = ev.metaKey || ev.ctrlKey;
+				const mobileSubmit = Platform.isMobile && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey;
+				if (desktopSubmit || mobileSubmit) {
+					ev.preventDefault();
+					void this.submit();
+					return;
+				}
+			}
+			if (ev.key === 'Escape' && (this.state === 'idle' || this.state === 'error')) {
 				this.close();
 			}
 		});
@@ -99,10 +105,12 @@ export class EditSelectionModal extends Modal {
 			this.statusEl.removeClass('vk-edit-error');
 			this.diffEl.empty();
 			this.inputEl.disabled = true;
+			this.inputEl.blur();
 		} else if (next === 'done') {
 			this.statusEl.setText('');
 			this.statusEl.removeClass('vk-edit-error');
 			this.inputEl.disabled = true;
+			this.inputEl.blur();
 			if (this.rewrite !== null) this.renderDiff(this.rewrite);
 		} else if (next === 'error') {
 			this.statusEl.setText(this.lastError ?? 'Unknown error');
