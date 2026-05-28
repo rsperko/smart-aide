@@ -327,7 +327,9 @@ export function renderEndpointEditor(
 		manualHost.createDiv({ cls: 'vk-endpoint-section-summary', text: `Manual model slugs${manualCount ? ` (${manualCount})` : ''}` });
 		manualHost.createDiv({
 			cls: 'setting-item-description',
-			text: "This provider didn't return any models from /models. List the slugs you want available here, one per line.",
+			text:
+				"This endpoint returned no models from /models. That's normal for some gateways — they mount the chat route (e.g. /v1/messages) but not the metadata route. " +
+				"Type the slugs you want available, one per line (e.g. claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-7).",
 		});
 		renderManualListInto(manualHost, endpoint, ctx);
 

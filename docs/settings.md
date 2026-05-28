@@ -24,14 +24,69 @@ Click **Edit** on a row to open the endpoint editor (a sub-page, not a modal). C
 | Setting | Description | Default |
 | --- | --- | --- |
 | Name | Display label in pickers and the model chip. | Template-derived (e.g. "OpenRouter"). |
-| Base URL | Root URL Smart Aide calls. For OpenAI-compat the path appended is `/chat/completions`; for native Anthropic `/v1/messages`; for native Gemini `/v1beta/models/*:streamGenerateContent`. | Template-derived. |
-| API key | Per-device secret. Stored outside `data.json` so synced vaults don't ship keys. See [Where settings are stored](#where-settings-are-stored). | Empty. |
 | Protocol | `openai-compat`, `anthropic`, or `gemini`. Selected by the template at creation; OpenRouter / OpenAI direct / local servers all use `openai-compat`. | `openai-compat` |
-| Test connection | One-shot probe of `GET {baseURL}/models` (or the native equivalent). Result persists with a timestamp; visible on the provider row. | — |
-| Refresh models | Re-runs discovery. Auto-runs 1.5s after a key is pasted. | — |
-| Manual model list (advanced) | Fallback when discovery is empty or the provider doesn't expose `/models`. One slug per line. | Empty. |
+| API URL | Root URL Smart Aide calls. Field label adapts to the selected protocol ("Anthropic API URL", "Google AI Studio API URL", "OpenAI API URL"). Conventions match the corresponding SDKs — see [URL contract per protocol](#url-contract-per-protocol). A live `Calls: ...` preview below the field shows the exact URL that will be hit. | Template-derived. |
+| API key | Per-device secret. Stored outside `data.json` so synced vaults don't ship keys. See [Where settings are stored](#where-settings-are-stored). | Empty. |
+| Test connection | Validates that **chat will work**, not just that metadata is reachable. Probes both `/v1/models` and the chat route in parallel and reports based on whichever subset of the protocol is actually serving requests. See [Test connection semantics](#test-connection-semantics). | — |
+| Refresh models | Re-runs `/v1/models` discovery on demand. See [Model discovery and caching](#model-discovery-and-caching) for when this runs. | — |
+| Manual model list | Promoted to the top of the editor when discovery returns nothing (common on gateways that passthrough chat but not metadata — see Shopify proxy below). When discovery works, lives under **Advanced** as a power-user override. One slug per line. | Empty. |
 | Custom headers (advanced) | Extra HTTP headers sent on every request. JSON object. Used for self-hosted gateways that require auth headers beyond `Authorization`. | Empty. |
 | Delete | Two-click confirm. Disabled when there's only one endpoint. | — |
+
+### URL contract per protocol
+
+Each protocol's "API URL" field follows the convention of the corresponding vendor's SDK. The plugin appends the protocol's standard suffix internally. The live `Calls: …` preview below the field shows the resolved URL.
+
+| Protocol | What you provide | Convention matches | Plugin appends |
+| --- | --- | --- | --- |
+| `anthropic` | Root URL (e.g. `https://api.anthropic.com` or `https://gateway.example/apis/anthropic`) | Anthropic SDK `base_url`, Claude Code `ANTHROPIC_BASE_URL`, LiteLLM proxy | `/v1/messages` (chat), `/v1/models` (discovery) |
+| `gemini` | Root URL (e.g. `https://generativelanguage.googleapis.com`) | google-genai unified SDK `base_url` | `/v1beta/models/{model}:streamGenerateContent` (chat), `/v1beta/models` (discovery) |
+| `openai-compat` | Root URL **including** `/v1` (e.g. `https://api.openai.com/v1` or `https://openrouter.ai/api/v1`) | OpenAI SDK `base_url`, OpenRouter docs, LiteLLM proxy | `/chat/completions` (chat), `/models` (discovery) |
+
+The `/v1` inconsistency between protocols is an ecosystem-level choice, not a plugin choice. OpenAI's ecosystem put `/v1` on the user side of the boundary; Anthropic's and Google's put it on the SDK side. Smart Aide mirrors each ecosystem's convention so the same baseURL value works in the corresponding SDK without modification.
+
+### Test connection semantics
+
+Test doesn't just answer "can I list models?" — it answers "**will chat work?**" That distinction matters because some gateways mount `/v1/models` at a different path than the chat route. Test would otherwise report a false ✓ when metadata happens to be reachable but the chat route is blocked.
+
+For Anthropic-native endpoints, Test probes both `/v1/models` and `/v1/messages` in parallel:
+
+| `/v1/models` | `/v1/messages` | Result |
+| --- | --- | --- |
+| 200 | 200 | ✓ `N models` |
+| any | 200 | ✓ `messages endpoint reachable` |
+| 200 | blocked | ✗ `chat blocked at /v1/messages …` (with the upstream's actual reason) |
+| both fail | both fail | ✗ `HTTP <messages-status>` |
+
+The messages probe sends a 1-token request (`max_tokens: 1`, single-character prompt) using either the first manually-typed slug or a broadly-valid fallback (`claude-haiku-4-5`). It deliberately does **not** use a discovered slug, because discovered slugs can be stale relative to the current baseURL.
+
+For OpenAI-compat and Gemini-native, Test currently runs only the metadata probe — those protocols don't show the gateway-mount-divergence pattern that motivates the dual probe.
+
+### Model discovery and caching
+
+Smart Aide calls `/v1/models` (or its protocol-specific equivalent) **only on explicit user actions**:
+
+1. **API key edit** in the endpoint editor — fires 1.5s after the last keystroke (debounced). Cancels itself if you keep typing or change the URL / protocol before the timer fires.
+2. **Test connection** button click.
+3. **Refresh** icon click on the Models row.
+
+There is no background refresh, no schedule, no "refresh on Obsidian start," no TTL. Once `/v1/models` returns successfully, the result is stored in `endpoint.discoveredModels` (under `vk:device-settings` in localStorage) and persists indefinitely across Obsidian restarts. The Models row shows a freshness label (`"N discovered · refreshed 3 days ago"`); when you want fresh data, click Refresh.
+
+The discovered list is **cleared** in only a few situations:
+
+- The protocol dropdown changes (different wire shape — the previous list is no longer meaningful).
+- A successful discovery overwrites the list with a new result.
+- The user explicitly wipes localStorage.
+
+This policy matches the cadence at which model catalogs actually change — vendors ship new models on a months-or-quarters cadence, so silent daily refreshes wouldn't catch anything users miss by clicking Refresh once a month.
+
+#### Gateways that don't expose `/v1/models`
+
+Some Anthropic-compatible gateways serve `/v1/messages` but not `/v1/models`. Examples: the Shopify AI proxy at `https://proxy-shopify-ai.local.shop.dev/apis/anthropic` mounts only chat routes under `/apis/anthropic/`; metadata lives at the host root in a different shape (universal catalog, OpenAI-shape) and isn't appropriate to pull into an Anthropic-protocol endpoint.
+
+The plugin handles this by promoting the **Manual model slugs** section from Advanced to the top of the endpoint editor with explanatory copy. Type the slugs you want available, one per line. The chat path itself works fine — only model discovery is unavailable.
+
+File a feature request with the gateway's maintainers if you want `/v1/models` support; it's a single-route addition that mirrors the existing chat-route pattern.
 
 ## Chat models
 
