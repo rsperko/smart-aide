@@ -39,7 +39,7 @@ export const ENDPOINT_TEMPLATES: EndpointTemplate[] = [
 	},
 	{
 		name: 'Gemini (native)',
-		baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+		baseURL: 'https://generativelanguage.googleapis.com',
 		hint: 'Gemini direct — long context, implicit caching, native multimodal',
 		protocol: 'gemini',
 	},
