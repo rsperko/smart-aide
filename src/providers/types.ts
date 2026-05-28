@@ -85,11 +85,23 @@ export interface StreamCallbacks {
 	onUsage?: (u: TurnUsage) => void;
 }
 
+/** Cheap result from a connection probe — what the Test row shows. */
+export interface TestProbeResult {
+	message: string;
+}
+
 export interface Provider {
 	readonly capabilities: ProviderCapabilities;
 	streamTurn(req: TurnRequest, resolveImage: ImageResolver): AsyncGenerator<StreamEvent>;
 	runTurn(req: TurnRequest, resolveImage: ImageResolver, cb?: StreamCallbacks): Promise<AssembledTurn>;
 	discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise<DiscoveredModel[]>;
+	/**
+	 * Cheap liveness probe of the URL + key. Optional — when undefined, callers
+	 * fall back to discoverModels. Override when the protocol's chat surface is
+	 * mandatory but the metadata endpoint (/models, etc.) is not — many
+	 * Anthropic-compatible gateways serve /v1/messages without /v1/models.
+	 */
+	testConnection?(endpoint: Endpoint, signal?: AbortSignal): Promise<TestProbeResult>;
 }
 
 /** Re-export Tool so provider implementations have one import path. */

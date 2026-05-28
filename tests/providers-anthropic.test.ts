@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __testing } from '../src/providers/anthropic';
-import type { CustomMessageEntry, MessageEntry } from '../src/types';
+import type { CustomMessageEntry, Endpoint, MessageEntry } from '../src/types';
 
-const { renderMessages, buildSystem, buildTools, buildHeaders } = __testing;
+const { renderMessages, buildSystem, buildTools, buildHeaders, testConnection } = __testing;
 
 function user(id: string, parentId: string | null, content: string | MessageEntry['message']['content']): MessageEntry {
 	return {
@@ -220,5 +220,129 @@ describe('anthropic buildHeaders', () => {
 	it('includes x-api-key when apiKey is set', () => {
 		const h = buildHeaders(ep('sk-ant-secret'));
 		expect(h['x-api-key']).toBe('sk-ant-secret');
+	});
+});
+
+/**
+ * testConnection is the only provider method that hits the network in two
+ * places (— GET /v1/models, then fallback POST /v1/messages), so the tests
+ * mock `fetch` and assert the URL each call lands on plus the message the
+ * Test row will render.
+ */
+describe('anthropic testConnection', () => {
+	const ep = (overrides: Partial<Endpoint> = {}): Endpoint => ({
+		id: 'e1',
+		name: 'Anthropic',
+		baseURL: 'https://example.test/api',
+		apiKey: 'k',
+		...overrides,
+	});
+
+	let fetchMock: ReturnType<typeof vi.fn>;
+	const originalFetch = globalThis.fetch;
+
+	beforeEach(() => {
+		fetchMock = vi.fn();
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+	});
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	function respond(
+		status: number,
+		body: unknown,
+	): Response {
+		const payload = typeof body === 'string' ? body : JSON.stringify(body);
+		return {
+			ok: status >= 200 && status < 300,
+			status,
+			json: async () => (typeof body === 'string' ? JSON.parse(body) : body),
+			text: async () => payload,
+		} as unknown as Response;
+	}
+
+	it('returns the discovered model count when /v1/models works', async () => {
+		fetchMock.mockResolvedValueOnce(
+			respond(200, { data: [{ id: 'claude-haiku-4-5' }, { id: 'claude-sonnet-4-6' }, { id: 'claude-opus-4-7' }] }),
+		);
+		const result = await testConnection(ep());
+		expect(result.message).toBe('3 models');
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/api/v1/models');
+	});
+
+	it('falls back to a /v1/messages probe when /v1/models 404s and reports reachable', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(200, { content: [{ type: 'text', text: '.' }] }));
+		const result = await testConnection(ep());
+		expect(result.message).toBe('messages endpoint reachable');
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[1][0]).toBe('https://example.test/api/v1/messages');
+		const probeOpts = fetchMock.mock.calls[1][1] as RequestInit;
+		expect(probeOpts.method).toBe('POST');
+		const body = JSON.parse(probeOpts.body as string);
+		expect(body.max_tokens).toBe(1);
+		expect(body.messages).toEqual([{ role: 'user', content: '.' }]);
+	});
+
+	it('treats a non-404 probe failure as URL-ok with the status surfaced (key rejected, model restricted, etc.)', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(401, 'unauthorized'));
+		const result = await testConnection(ep());
+		expect(result.message).toBe('URL ok (probe returned 401)');
+	});
+
+	it('throws HTTP 404 when both /v1/models and /v1/messages 404 (URL is wrong)', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(404, 'no such route'));
+		await expect(testConnection(ep())).rejects.toThrow(/HTTP 404/);
+	});
+
+	it('propagates non-404 /v1/models errors without falling back (auth and server errors are real)', async () => {
+		fetchMock.mockResolvedValueOnce(respond(401, 'bad key'));
+		await expect(testConnection(ep())).rejects.toThrow(/HTTP 401/);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('uses endpoint.models[0] as the probe slug when /v1/models is unavailable', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(200, {}));
+		await testConnection(ep({ models: ['claude-sonnet-4-6', 'claude-opus-4-7'] }));
+		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		expect(body.model).toBe('claude-sonnet-4-6');
+	});
+
+	it('falls back to discoveredModels[0] when models[] is empty', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(200, {}));
+		await testConnection(
+			ep({ discoveredModels: [{ id: 'claude-from-discovery' }] }),
+		);
+		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		expect(body.model).toBe('claude-from-discovery');
+	});
+
+	it('falls back to a hardcoded probe slug when the endpoint has no models at all', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(200, {}));
+		await testConnection(ep());
+		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		expect(body.model).toBe('claude-haiku-4-5');
+	});
+
+	it('trims a trailing slash on baseURL before composing /v1/* paths', async () => {
+		fetchMock
+			.mockResolvedValueOnce(respond(404, 'not found'))
+			.mockResolvedValueOnce(respond(200, {}));
+		await testConnection(ep({ baseURL: 'https://example.test/api/' }));
+		expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/api/v1/models');
+		expect(fetchMock.mock.calls[1][0]).toBe('https://example.test/api/v1/messages');
 	});
 });

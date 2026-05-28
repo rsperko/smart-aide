@@ -10,12 +10,17 @@ import type {
 	ProviderCapabilities,
 	StreamCallbacks,
 	StreamEvent,
+	TestProbeResult,
 	ToolDescriptor,
 	TurnRequest,
 } from './types';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 4096;
+/** Cheapest broadly-available Claude slug. Used as a probe model when the
+ * endpoint has no manual or discovered models to draw from. Valid on direct
+ * Anthropic and on every Anthropic-compatible gateway we've seen. */
+const FALLBACK_PROBE_MODEL = 'claude-haiku-4-5';
 
 const CAPABILITIES: ProviderCapabilities = {
 	supportsCachedPrompt: true,
@@ -387,11 +392,56 @@ async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise
 		.filter((m) => m.id);
 }
 
+/**
+ * Liveness probe for an Anthropic-protocol endpoint.
+ *
+ * Prefers GET /v1/models when the destination implements it (direct
+ * api.anthropic.com, LiteLLM with discovery enabled, etc.) so the user sees
+ * the catalog size. Falls back to a 1-token POST /v1/messages probe when
+ * /v1/models 404s — the pattern used by Anthropic-compatible gateways that
+ * only mount the chat verb (Shopify's /apis/anthropic passthrough, agentgateway,
+ * minimal LLM proxies, etc.).
+ *
+ * Non-404 failures from /v1/models propagate — a 401 there means the key is
+ * bad and the fallback wouldn't fix anything. From the messages probe, any
+ * non-404 response means the URL is wired correctly; downstream issues like
+ * model-restriction 400s or 401s are surfaced via the status code so the user
+ * can act on them.
+ */
+async function testConnection(endpoint: Endpoint, signal?: AbortSignal): Promise<TestProbeResult> {
+	try {
+		const models = await discoverModels(endpoint, signal);
+		return { message: `${models.length} models` };
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		if (!msg.startsWith('HTTP 404')) throw e;
+	}
+	const probeModel = endpoint.models?.[0] ?? endpoint.discoveredModels?.[0]?.id ?? FALLBACK_PROBE_MODEL;
+	const url = `${trimBase(endpoint.baseURL)}/v1/messages`;
+	const res = await fetch(url, {
+		method: 'POST',
+		headers: buildHeaders(endpoint),
+		body: JSON.stringify({
+			model: probeModel,
+			max_tokens: 1,
+			messages: [{ role: 'user', content: '.' }],
+		}),
+		signal,
+	});
+	if (res.status === 404) {
+		throw new Error(`HTTP 404: ${(await res.text()).slice(0, 200)}`);
+	}
+	return res.ok
+		? { message: 'messages endpoint reachable' }
+		: { message: `URL ok (probe returned ${res.status})` };
+}
+
 export const anthropicProvider: Provider = {
 	capabilities: CAPABILITIES,
 	streamTurn,
 	runTurn,
 	discoverModels,
+	testConnection,
 };
 
 /** Exported for tests — wire-shape conversion helpers. */
@@ -400,4 +450,5 @@ export const __testing = {
 	buildSystem,
 	buildTools,
 	buildHeaders,
+	testConnection,
 };

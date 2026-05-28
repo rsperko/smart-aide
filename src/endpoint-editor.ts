@@ -28,8 +28,21 @@ export function renderEndpointEditor(
 			window.clearTimeout(autoDiscoverTimer);
 			autoDiscoverTimer = undefined;
 		}
+		// Capture the config the user just typed. If anything drifts before the
+		// timer fires (URL edit, protocol switch, key paste-then-clear) we bail
+		// rather than overwrite the new state with a stale discovery result.
+		const snapshot = {
+			baseURL: endpoint.baseURL,
+			protocol: endpoint.protocol,
+			apiKey: endpoint.apiKey,
+		};
 		autoDiscoverTimer = window.setTimeout(async () => {
 			autoDiscoverTimer = undefined;
+			if (
+				endpoint.baseURL !== snapshot.baseURL ||
+				endpoint.protocol !== snapshot.protocol ||
+				endpoint.apiKey !== snapshot.apiKey
+			) return;
 			if (!endpoint.apiKey || !endpoint.baseURL) return;
 			try {
 				const models = await providerFor(endpoint).discoverModels(endpoint);
@@ -63,9 +76,9 @@ export function renderEndpointEditor(
 	new Setting(container)
 		.setName('Protocol')
 		.setDesc(
-			'OpenAI-compatible: POSTs /chat/completions (default — works for OpenRouter, OpenAI, local servers, etc.). ' +
-				'Anthropic (native): uses /v1/messages — required for prompt caching. ' +
-				'Gemini (native): uses /v1beta/models/*:streamGenerateContent — long context + implicit caching.',
+			'OpenAI-compatible: POSTs /chat/completions (default — works for OpenRouter, OpenAI, local servers, and any OpenAI-compat gateway). ' +
+				'Anthropic (native): uses /v1/messages — required for prompt caching; also the right pick for Anthropic-compatible gateways. ' +
+				'Gemini (native): Google AI Studio at /v1beta/models/*:streamGenerateContent — long context + implicit caching. Vertex AI is a different protocol and isn\u2019t supported here; use the OpenAI-compat path through a gateway instead.',
 		)
 		.addDropdown((dd) =>
 			dd
@@ -74,9 +87,17 @@ export function renderEndpointEditor(
 				.addOption('gemini', 'Gemini (native)')
 				.setValue(endpoint.protocol ?? 'openai-compat')
 				.onChange((v) => {
-					if (v === 'anthropic') endpoint.protocol = 'anthropic';
-					else if (v === 'gemini') endpoint.protocol = 'gemini';
-					else endpoint.protocol = 'openai-compat';
+					const next: typeof endpoint.protocol =
+						v === 'anthropic' ? 'anthropic' : v === 'gemini' ? 'gemini' : 'openai-compat';
+					if (next !== (endpoint.protocol ?? 'openai-compat')) {
+						// Different protocols speak different wire shapes; a discovery
+						// or test result from the previous protocol is no longer
+						// meaningful and would mislead the user.
+						endpoint.discoveredModels = undefined;
+						endpoint.discoveredAt = undefined;
+						endpoint.lastTest = undefined;
+					}
+					endpoint.protocol = next;
 					void ctx.saveSettings();
 					ctx.onChange();
 				}),
@@ -151,7 +172,7 @@ export function renderEndpointEditor(
 	// Test connection row
 	const testSetting = new Setting(container)
 		.setName('Test connection')
-		.setDesc('Probes /models. Tells you whether the URL + key work.');
+		.setDesc('Probes the endpoint. Tells you whether the URL + key work.');
 
 	const statusEl = testSetting.controlEl.createSpan({ cls: 'vk-test-status' });
 	if (endpoint.lastTest) {
@@ -166,8 +187,11 @@ export function renderEndpointEditor(
 			statusEl.setText('');
 			statusEl.removeClass('vk-test-ok', 'vk-test-bad');
 			try {
-				const models = await providerFor(endpoint).discoverModels(endpoint);
-				const msg = `${models.length} models`;
+				const provider = providerFor(endpoint);
+				const result = provider.testConnection
+					? await provider.testConnection(endpoint)
+					: { message: `${(await provider.discoverModels(endpoint)).length} models` };
+				const msg = result.message;
 				statusEl.setText(`✓ ${msg}`);
 				statusEl.addClass('vk-test-ok');
 				endpoint.lastTest = { ok: true, at: new Date().toISOString(), message: msg };
