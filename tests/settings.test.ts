@@ -4,6 +4,8 @@ import {
 	DEFAULT_SETTINGS,
 	DEFAULT_SYSTEM_PROMPT,
 	OPENROUTER_ID,
+	UNBOUND_MODEL_REF,
+	bindDefaultIfUnbound,
 	chatsDirFor,
 	defaultOpenRouterEndpoint,
 	describeFreshness,
@@ -13,6 +15,7 @@ import {
 	findEndpoint,
 	hasWorkingDiscovery,
 	internalDirFor,
+	isUnboundRef,
 	memoryFileFor,
 	pluginHomeFor,
 	isEndpointConnected,
@@ -29,6 +32,7 @@ import {
 	resolveModelRef,
 	resolveModelRefStrict,
 	sameRef,
+	sanitizeModelRefs,
 	skillsDirFor,
 	toggleFavorite,
 } from '../src/settings';
@@ -143,14 +147,25 @@ describe('resolveModelRef', () => {
 			],
 		} as never;
 		const { endpoint, slug } = resolveModelRef(settings, { endpointId: 'b', slug: 'm' });
-		expect(endpoint.id).toBe('b');
+		expect(endpoint?.id).toBe('b');
 		expect(slug).toBe('m');
 	});
 
 	it('falls back to the first endpoint when the named one is missing', () => {
 		const settings = { endpoints: [{ id: 'a', name: 'A', baseURL: '', apiKey: '' }] } as never;
 		const { endpoint } = resolveModelRef(settings, { endpointId: 'missing', slug: 'm' });
-		expect(endpoint.id).toBe('a');
+		expect(endpoint?.id).toBe('a');
+	});
+
+	it('returns undefined endpoint when settings carry no endpoints at all', () => {
+		// Fresh install before the user adds a provider, or after a wipe.
+		// Callers must handle this (token chip refresh, send path strict gate,
+		// inline-edit guard) — the previous return type lied about it and led to
+		// a TypeError on `endpoint.discoveredModels` in the token chip path.
+		const settings = { endpoints: [] } as never;
+		const { endpoint, slug } = resolveModelRef(settings, { endpointId: 'whatever', slug: 'm' });
+		expect(endpoint).toBeUndefined();
+		expect(slug).toBe('m');
 	});
 });
 
@@ -273,7 +288,7 @@ describe('removeEndpoint', () => {
 		expect(out.defaultModelRef).toEqual({ endpointId: 'e2', slug: 'only-e2-slug' });
 	});
 
-	it('allows deleting the last endpoint and leaves the default ref pointing at the OpenRouter fallback', () => {
+	it('allows deleting the last endpoint and leaves the default ref unbound (sentinel) when no replacement is possible', () => {
 		const settings: SmartAideSettings = {
 			...DEFAULT_SETTINGS,
 			endpoints: [baseEndpoint('only')],
@@ -283,18 +298,25 @@ describe('removeEndpoint', () => {
 		const out = removeEndpoint(settings, 'only');
 		expect(out.endpoints).toEqual([]);
 		expect(out.favoriteModels).toEqual([]);
-		expect(out.defaultModelRef.endpointId).toBe(OPENROUTER_ID);
+		expect(out.defaultModelRef).toEqual({ endpointId: '', slug: '' });
+		expect(out.titleModelRef).toEqual({ endpointId: '', slug: '' });
 	});
 });
 
 describe('findEndpoint', () => {
 	it('returns the endpoint by id', () => {
-		const e = findEndpoint(DEFAULT_SETTINGS, OPENROUTER_ID);
-		expect(e?.id).toBe(OPENROUTER_ID);
+		const settings = {
+			endpoints: [{ id: 'e1', name: 'E1', baseURL: '', apiKey: '' }],
+		} as unknown as SmartAideSettings;
+		expect(findEndpoint(settings, 'e1')?.id).toBe('e1');
 	});
 
 	it('returns undefined when the id does not exist', () => {
 		expect(findEndpoint(DEFAULT_SETTINGS, 'nope')).toBeUndefined();
+	});
+
+	it('returns undefined on DEFAULT_SETTINGS for any id (fresh install seeds no endpoints)', () => {
+		expect(findEndpoint(DEFAULT_SETTINGS, OPENROUTER_ID)).toBeUndefined();
 	});
 });
 
@@ -414,14 +436,19 @@ describe('pickReplacementModelRef', () => {
 				{ id: 'a', name: 'A', baseURL: '', apiKey: '', discoveredModels: [{ id: 'disc' }] },
 			],
 		} as unknown as SmartAideSettings;
-		expect(pickReplacementModelRef(settings).slug).toBe('disc');
+		expect(pickReplacementModelRef(settings)?.slug).toBe('disc');
 	});
 
-	it('falls back to OpenRouter id + DEFAULT_MODEL when no endpoints', () => {
+	it('returns undefined when no endpoints exist (no fabricated fallback)', () => {
 		const settings = { endpoints: [] } as unknown as SmartAideSettings;
-		const out = pickReplacementModelRef(settings);
-		expect(out.endpointId).toBe(OPENROUTER_ID);
-		expect(out.slug).toBeTruthy();
+		expect(pickReplacementModelRef(settings)).toBeUndefined();
+	});
+
+	it('returns undefined when the first endpoint has no manual or discovered models yet', () => {
+		const settings = {
+			endpoints: [{ id: 'a', name: 'A', baseURL: '', apiKey: '' }],
+		} as unknown as SmartAideSettings;
+		expect(pickReplacementModelRef(settings)).toBeUndefined();
 	});
 });
 
@@ -639,5 +666,156 @@ describe('rebindDefaultsToFavorites', () => {
 		const snapshot = JSON.stringify(original);
 		rebindDefaultsToFavorites(original);
 		expect(JSON.stringify(original)).toBe(snapshot);
+	});
+});
+
+describe('isUnboundRef + UNBOUND_MODEL_REF', () => {
+	it('UNBOUND_MODEL_REF has empty endpointId and empty slug', () => {
+		expect(UNBOUND_MODEL_REF).toEqual({ endpointId: '', slug: '' });
+	});
+
+	it('treats both empty endpointId and empty slug as unbound', () => {
+		expect(isUnboundRef({ endpointId: '', slug: '' })).toBe(true);
+		expect(isUnboundRef({ endpointId: 'e1', slug: '' })).toBe(true);
+		expect(isUnboundRef({ endpointId: '', slug: 'm' })).toBe(true);
+	});
+
+	it('treats a fully-populated ref as bound', () => {
+		expect(isUnboundRef({ endpointId: 'e1', slug: 'm' })).toBe(false);
+	});
+
+	it('reports DEFAULT_SETTINGS.defaultModelRef as unbound (fresh install state)', () => {
+		expect(isUnboundRef(DEFAULT_SETTINGS.defaultModelRef)).toBe(true);
+		expect(isUnboundRef(DEFAULT_SETTINGS.titleModelRef)).toBe(true);
+	});
+});
+
+describe('sanitizeModelRefs', () => {
+	const ep = (id: string, models: string[] = []) =>
+		({ id, name: id.toUpperCase(), baseURL: '', apiKey: '', ...(models.length ? { models } : {}) }) as Endpoint;
+
+	it('leaves both refs untouched when they point at existing endpoints', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('a', ['m1']), ep('b', ['m2'])],
+			defaultModelRef: { endpointId: 'a', slug: 'm1' },
+			titleModelRef: { endpointId: 'b', slug: 'm2' },
+		};
+		expect(sanitizeModelRefs(s)).toBe(s);
+	});
+
+	it('rebinds a stale defaultModelRef to a replacement when possible', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('survivor', ['only-slug'])],
+			defaultModelRef: { endpointId: 'deleted', slug: 'stale' },
+			titleModelRef: { endpointId: 'deleted', slug: 'stale' },
+		};
+		const out = sanitizeModelRefs(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'survivor', slug: 'only-slug' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'survivor', slug: 'only-slug' });
+	});
+
+	it('falls back to UNBOUND_MODEL_REF when no replacement is available', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [],
+			defaultModelRef: { endpointId: 'gone', slug: 'haiku' },
+			titleModelRef: { endpointId: 'gone', slug: 'haiku' },
+		};
+		const out = sanitizeModelRefs(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: '', slug: '' });
+		expect(out.titleModelRef).toEqual({ endpointId: '', slug: '' });
+	});
+});
+
+describe('bindDefaultIfUnbound', () => {
+	const ep = (id: string, models: string[] = []) =>
+		({ id, name: id.toUpperCase(), baseURL: '', apiKey: '', ...(models.length ? { models } : {}) }) as Endpoint;
+
+	it('binds defaultModelRef to the first endpoint+model when unbound and a model is available', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('first', ['first-slug', 'other'])],
+			defaultModelRef: { ...UNBOUND_MODEL_REF },
+			titleModelRef: { ...UNBOUND_MODEL_REF },
+		};
+		const out = bindDefaultIfUnbound(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'first', slug: 'first-slug' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'first', slug: 'first-slug' });
+	});
+
+	it('leaves an already-bound default alone', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('a', ['m1']), ep('b', ['m2'])],
+			defaultModelRef: { endpointId: 'b', slug: 'm2' },
+			titleModelRef: { endpointId: 'b', slug: 'm2' },
+		};
+		expect(bindDefaultIfUnbound(s)).toBe(s);
+	});
+
+	it('stays unbound when no endpoint has known models yet (waits for discovery)', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('a')],
+			defaultModelRef: { ...UNBOUND_MODEL_REF },
+			titleModelRef: { ...UNBOUND_MODEL_REF },
+		};
+		expect(bindDefaultIfUnbound(s)).toBe(s);
+	});
+
+	it('only rebinds titleModelRef if it was also unbound (does not stomp a deliberate title model)', () => {
+		const s: SmartAideSettings = {
+			...DEFAULT_SETTINGS,
+			endpoints: [ep('a', ['m1'])],
+			defaultModelRef: { ...UNBOUND_MODEL_REF },
+			titleModelRef: { endpointId: 'a', slug: 'distinct-title' },
+		};
+		const out = bindDefaultIfUnbound(s);
+		expect(out.defaultModelRef).toEqual({ endpointId: 'a', slug: 'm1' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'a', slug: 'distinct-title' });
+	});
+});
+
+describe('DEFAULT_SETTINGS (Worldview A — empty bootstrap)', () => {
+	it('seeds no endpoints (no presumptuous OpenRouter)', () => {
+		expect(DEFAULT_SETTINGS.endpoints).toEqual([]);
+	});
+
+	it('starts with unbound defaultModelRef and titleModelRef', () => {
+		expect(DEFAULT_SETTINGS.defaultModelRef).toEqual({ endpointId: '', slug: '' });
+		expect(DEFAULT_SETTINGS.titleModelRef).toEqual({ endpointId: '', slug: '' });
+	});
+});
+
+describe('describeModelRef (unbound)', () => {
+	it('renders "Pick a model" for an unbound ref regardless of endpoints', () => {
+		const empty = { endpoints: [] } as unknown as SmartAideSettings;
+		expect(describeModelRef(empty, UNBOUND_MODEL_REF)).toBe('Pick a model');
+		const withEps = {
+			endpoints: [{ id: 'a', name: 'A', baseURL: '', apiKey: '' }],
+		} as unknown as SmartAideSettings;
+		expect(describeModelRef(withEps, UNBOUND_MODEL_REF)).toBe('Pick a model');
+	});
+});
+
+describe('parseRawSettings sanitization (Worldview A)', () => {
+	it('clears a stale defaultModelRef pointing at a non-existent endpoint during parse', () => {
+		const out = parseRawSettings({
+			endpoints: [{ id: 'real', name: 'Real', baseURL: 'u', apiKey: 'k', models: ['m1'] }],
+			defaultModelRef: { endpointId: 'ghost', slug: 'haiku' },
+			titleModelRef: { endpointId: 'ghost', slug: 'haiku' },
+		});
+		expect(out.defaultModelRef).toEqual({ endpointId: 'real', slug: 'm1' });
+		expect(out.titleModelRef).toEqual({ endpointId: 'real', slug: 'm1' });
+	});
+
+	it('clears a stale ref to unbound when no replacement endpoint exists', () => {
+		const out = parseRawSettings({
+			endpoints: [],
+			defaultModelRef: { endpointId: 'ghost', slug: 'haiku' },
+		});
+		expect(out.defaultModelRef).toEqual({ endpointId: '', slug: '' });
 	});
 });

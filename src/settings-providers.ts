@@ -69,6 +69,9 @@ function openAddProviderFlow(ctx: SectionContext): void {
 			if (template.name && template.name !== 'OpenRouter') newEndpoint.name = template.name;
 		}
 		ctx.plugin.settings.endpoints.push(newEndpoint);
+		// saveSettings runs bindDefaultIfUnbound, so the chip will reflect the
+		// new endpoint immediately when this is the first one (or the first
+		// one with seeded models).
 		await ctx.plugin.saveSettings();
 		ctx.redisplay();
 		ctx.enterEndpointEditor(newEndpoint.id);

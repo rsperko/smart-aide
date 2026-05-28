@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, friendlyModelName } from './models';
+import { friendlyModelName } from './models';
 import { DiscoveredModel, Endpoint, ModelRef } from './types';
 import type { ApiKeyStore } from './api-key-store';
 import type { DeviceSettings, DeviceSettingsStore } from './device-settings-store';
@@ -89,10 +89,21 @@ export function defaultOpenRouterEndpoint(apiKey = '', models?: string[]): Endpo
 	return endpoint;
 }
 
+/**
+ * Sentinel for "no model picked yet". Lives in defaultModelRef / titleModelRef
+ * when the user is on a fresh install or has wiped their setup. Use isUnboundRef
+ * to detect; the UI renders "Pick a model" and the send path refuses to fire.
+ */
+export const UNBOUND_MODEL_REF: ModelRef = { endpointId: '', slug: '' };
+
+export function isUnboundRef(ref: ModelRef): boolean {
+	return ref.endpointId === '' || ref.slug === '';
+}
+
 export const DEFAULT_SETTINGS: SmartAideSettings = {
-	endpoints: [defaultOpenRouterEndpoint()],
-	defaultModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
-	titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
+	endpoints: [],
+	defaultModelRef: { ...UNBOUND_MODEL_REF },
+	titleModelRef: { ...UNBOUND_MODEL_REF },
 	favoriteModels: [],
 	systemPrompt: DEFAULT_SYSTEM_PROMPT,
 	autoApproveWrites: false,
@@ -111,13 +122,13 @@ export const DEFAULT_SETTINGS: SmartAideSettings = {
  */
 export function parseRawSettings(raw: Record<string, unknown> | null | undefined): SmartAideSettings {
 	const r = (raw ?? {}) as Record<string, unknown>;
-	return {
+	const parsed: SmartAideSettings = {
 		endpoints: Array.isArray(r.endpoints) ? (r.endpoints as Endpoint[]) : [],
-		defaultModelRef: (r.defaultModelRef as ModelRef) ?? DEFAULT_SETTINGS.defaultModelRef,
+		defaultModelRef: (r.defaultModelRef as ModelRef) ?? { ...UNBOUND_MODEL_REF },
 		titleModelRef:
 			(r.titleModelRef as ModelRef) ??
 			(r.defaultModelRef as ModelRef) ??
-			DEFAULT_SETTINGS.titleModelRef,
+			{ ...UNBOUND_MODEL_REF },
 		favoriteModels: sanitizeFavorites(r.favoriteModels),
 		systemPrompt: typeof r.systemPrompt === 'string' ? r.systemPrompt : DEFAULT_SYSTEM_PROMPT,
 		autoApproveWrites: typeof r.autoApproveWrites === 'boolean' ? r.autoApproveWrites : false,
@@ -127,6 +138,7 @@ export function parseRawSettings(raw: Record<string, unknown> | null | undefined
 			typeof r.anthropicPromptCaching === 'boolean' ? r.anthropicPromptCaching : true,
 		costCapPerTurnUsd: sanitizeCap(r.costCapPerTurnUsd),
 	};
+	return sanitizeModelRefs(parsed);
 }
 
 function sanitizeCap(raw: unknown): number {
@@ -194,29 +206,29 @@ export function hydrateDeviceSettingsFromStore(
 ): SmartAideSettings {
 	const stored = store.get();
 	if (!stored) {
-		return {
+		return sanitizeModelRefs({
 			...settings,
 			endpoints: [],
 			favoriteModels: [],
-			defaultModelRef: { ...DEFAULT_SETTINGS.defaultModelRef },
-			titleModelRef: { ...DEFAULT_SETTINGS.titleModelRef },
+			defaultModelRef: { ...UNBOUND_MODEL_REF },
+			titleModelRef: { ...UNBOUND_MODEL_REF },
 			autoApproveWrites: false,
 			costCapPerTurnUsd: 0,
 			anthropicPromptCaching: true,
-		};
+		});
 	}
-	return {
+	return sanitizeModelRefs({
 		...settings,
 		endpoints: Array.isArray(stored.endpoints) ? stored.endpoints : [],
 		favoriteModels: sanitizeFavorites(stored.favoriteModels),
-		defaultModelRef: stored.defaultModelRef ?? DEFAULT_SETTINGS.defaultModelRef,
-		titleModelRef: stored.titleModelRef ?? DEFAULT_SETTINGS.titleModelRef,
+		defaultModelRef: stored.defaultModelRef ?? { ...UNBOUND_MODEL_REF },
+		titleModelRef: stored.titleModelRef ?? { ...UNBOUND_MODEL_REF },
 		autoApproveWrites:
 			typeof stored.autoApproveWrites === 'boolean' ? stored.autoApproveWrites : false,
 		costCapPerTurnUsd: sanitizeCap(stored.costCapPerTurnUsd),
 		anthropicPromptCaching:
 			typeof stored.anthropicPromptCaching === 'boolean' ? stored.anthropicPromptCaching : true,
-	};
+	});
 }
 
 /**
@@ -253,8 +265,8 @@ export function stripDeviceSettingsForPersistence(settings: SmartAideSettings): 
 		...settings,
 		endpoints: [],
 		favoriteModels: [],
-		defaultModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
-		titleModelRef: { endpointId: OPENROUTER_ID, slug: DEFAULT_MODEL },
+		defaultModelRef: { ...UNBOUND_MODEL_REF },
+		titleModelRef: { ...UNBOUND_MODEL_REF },
 		autoApproveWrites: false,
 		costCapPerTurnUsd: 0,
 		anthropicPromptCaching: true,
@@ -265,10 +277,16 @@ export function findEndpoint(settings: SmartAideSettings, id: string): Endpoint 
 	return settings.endpoints.find((e) => e.id === id);
 }
 
+/**
+ * Best-effort resolution. Returns the endpoint the ref points at, or any
+ * surviving endpoint when the ref is stale. Returns `endpoint: undefined`
+ * when the settings carry no endpoints at all — callers must handle that
+ * (e.g. fresh install before the first provider is added, or after a wipe).
+ */
 export function resolveModelRef(
 	settings: SmartAideSettings,
 	ref: ModelRef,
-): { endpoint: Endpoint; slug: string } {
+): { endpoint: Endpoint | undefined; slug: string } {
 	const endpoint = findEndpoint(settings, ref.endpointId) ?? settings.endpoints[0];
 	return { endpoint, slug: ref.slug };
 }
@@ -343,10 +361,61 @@ export function newEndpointId(existing: Endpoint[]): string {
 	return `endpoint-${i}`;
 }
 
-export function pickReplacementModelRef(settings: SmartAideSettings): ModelRef {
+/**
+ * Pick a replacement when the current default ref no longer resolves. Returns
+ * undefined when there's nothing to pick — no endpoints at all, or no endpoint
+ * has any known model yet. Callers fall back to UNBOUND_MODEL_REF and the UI
+ * renders "Pick a model".
+ *
+ * Never fabricates a slug. The previous behavior — returning a hardcoded
+ * OpenRouter-shaped Haiku ref — produced a model chip that lied about what was
+ * configured.
+ */
+export function pickReplacementModelRef(settings: SmartAideSettings): ModelRef | undefined {
 	const fallback = settings.endpoints[0];
-	const slug = fallback?.models?.[0] ?? fallback?.discoveredModels?.[0]?.id ?? DEFAULT_MODEL;
-	return { endpointId: fallback?.id ?? OPENROUTER_ID, slug };
+	if (!fallback) return undefined;
+	const slug = fallback.models?.[0] ?? fallback.discoveredModels?.[0]?.id;
+	if (!slug) return undefined;
+	return { endpointId: fallback.id, slug };
+}
+
+/**
+ * Ensure defaultModelRef + titleModelRef point at endpoints that actually
+ * exist. Run after any hydration step (parseRawSettings, hydrate from device
+ * store) so we never carry forward a ref whose endpointId was deleted on this
+ * device. If no replacement is possible, falls back to UNBOUND_MODEL_REF.
+ */
+export function sanitizeModelRefs(settings: SmartAideSettings): SmartAideSettings {
+	const exists = (ref: ModelRef): boolean =>
+		!isUnboundRef(ref) && settings.endpoints.some((e) => e.id === ref.endpointId);
+	const defaultOk = exists(settings.defaultModelRef);
+	const titleOk = exists(settings.titleModelRef);
+	if (defaultOk && titleOk) return settings;
+	const next = { ...settings };
+	if (!defaultOk) {
+		next.defaultModelRef = pickReplacementModelRef(settings) ?? { ...UNBOUND_MODEL_REF };
+	}
+	if (!titleOk) {
+		next.titleModelRef = { ...next.defaultModelRef };
+	}
+	return next;
+}
+
+/**
+ * Auto-bind defaultModelRef (and titleModelRef when it mirrors default) to the
+ * first available endpoint+model when the current default is unbound. Called
+ * after the user adds their first provider so the chip shows a real model
+ * without an extra picker step. No-op when a real ref already exists.
+ */
+export function bindDefaultIfUnbound(settings: SmartAideSettings): SmartAideSettings {
+	if (!isUnboundRef(settings.defaultModelRef)) return settings;
+	const replacement = pickReplacementModelRef(settings);
+	if (!replacement) return settings;
+	const next = { ...settings, defaultModelRef: replacement };
+	if (isUnboundRef(settings.titleModelRef)) {
+		next.titleModelRef = { ...replacement };
+	}
+	return next;
 }
 
 /**
@@ -360,11 +429,11 @@ export function removeEndpoint(settings: SmartAideSettings, id: string): SmartAi
 	const favoriteModels = settings.favoriteModels.filter((f) => f.endpointId !== id);
 	let next: SmartAideSettings = { ...settings, endpoints, favoriteModels };
 	if (next.defaultModelRef.endpointId === id) {
-		next = {
-			...next,
-			defaultModelRef:
-				favoriteModels.length > 0 ? { ...favoriteModels[0] } : pickReplacementModelRef(next),
-		};
+		const replacement: ModelRef =
+			favoriteModels.length > 0
+				? { ...favoriteModels[0] }
+				: (pickReplacementModelRef(next) ?? { ...UNBOUND_MODEL_REF });
+		next = { ...next, defaultModelRef: replacement };
 	}
 	if (next.titleModelRef.endpointId === id) {
 		next = { ...next, titleModelRef: { ...next.defaultModelRef } };
@@ -373,6 +442,7 @@ export function removeEndpoint(settings: SmartAideSettings, id: string): SmartAi
 }
 
 export function describeModelRef(settings: SmartAideSettings, ref: ModelRef): string {
+	if (isUnboundRef(ref)) return 'Pick a model';
 	const endpoint = findEndpoint(settings, ref.endpointId);
 	const friendly = friendlyModelName(ref.slug);
 	if (settings.endpoints.length <= 1) return friendly;

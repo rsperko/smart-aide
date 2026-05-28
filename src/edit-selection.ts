@@ -162,6 +162,9 @@ export async function runEditRequest(
 ): Promise<string> {
 	const { system, user } = buildEditPrompt(input);
 	const { endpoint, slug } = resolveModelRef(plugin.settings, modelRef);
+	if (!endpoint) {
+		throw new Error('No provider configured. Add one in Settings → Smart Aide.');
+	}
 	const provider = providerFor(endpoint);
 	const chain: Entry[] = [
 		{

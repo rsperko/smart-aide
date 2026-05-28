@@ -8,7 +8,7 @@ import type { Skill } from './skills';
 import { RenameChatModal } from './modal-rename-chat';
 import { PinnedContext, type Pin } from './context-pins';
 import { UrlPinModal } from './modal-url-pin';
-import { findEndpoint, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict, sameRef } from './settings';
+import { findEndpoint, isUnboundRef, rebindDefaultsToFavorites, removeFavorite, resolveModelRef, resolveModelRefStrict, sameRef } from './settings';
 import {
 	Burst,
 	ScreenWakeLock,
@@ -394,7 +394,7 @@ export class ChatView extends ItemView {
 			composerText: () => this.composerEl?.value ?? '',
 			getModelMeta: () => {
 				const { endpoint, slug } = resolveModelRef(this.plugin.settings, this.modelRef);
-				return endpoint.discoveredModels?.find((m) => m.id === slug);
+				return endpoint?.discoveredModels?.find((m) => m.id === slug);
 			},
 		});
 		this.registerDomEvent(this.tokenChip, 'click', () => this.tokenPopoverCtl.toggle());
@@ -458,11 +458,21 @@ export class ChatView extends ItemView {
 	}
 
 	private refreshModelChip(): void {
-		const friendly = friendlyModelName(this.modelRef.slug);
-		const endpoint = findEndpoint(this.plugin.settings, this.modelRef.endpointId);
 		this.modelChip.empty();
 		this.modelChip.removeClass('vk-model-chip-missing');
+		if (isUnboundRef(this.modelRef)) {
+			// Fresh install, post-wipe, or every endpoint deleted: nothing is
+			// configured. Invite, don't warn.
+			this.modelChip.createSpan({ cls: 'vk-model-chip-name', text: 'Pick a model' });
+			this.modelChip.createSpan({ cls: 'vk-model-chip-chevron', text: '▾' });
+			this.modelChip.title = 'No model picked yet — click to choose.';
+			this.modelChip.setAttribute('aria-label', 'No model picked. Click to choose one.');
+			return;
+		}
+		const friendly = friendlyModelName(this.modelRef.slug);
+		const endpoint = findEndpoint(this.plugin.settings, this.modelRef.endpointId);
 		if (!endpoint) {
+			// Ref points at an endpoint that's been deleted: warn, ref is stale.
 			this.modelChip.addClass('vk-model-chip-missing');
 			this.modelChip.createSpan({ cls: 'vk-model-chip-name', text: `⚠ ${friendly}` });
 			this.modelChip.createSpan({ cls: 'vk-model-chip-chevron', text: '▾' });
@@ -1146,6 +1156,11 @@ export class ChatView extends ItemView {
 		if (!this.session) return;
 		if (this.syncConflict) {
 			new Notice('Reload the chat or start a new one before sending.', 6000);
+			return;
+		}
+		if (isUnboundRef(this.modelRef)) {
+			new Notice('Pick a model to start chatting.');
+			this.openModelPicker();
 			return;
 		}
 		const resolved = resolveModelRefStrict(this.plugin.settings, this.modelRef);

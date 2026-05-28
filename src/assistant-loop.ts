@@ -83,6 +83,13 @@ export async function runAssistantLoop(
 			const renderer = host.newLiveTurn();
 
 			const { endpoint, slug } = resolveModelRef(host.settings, host.modelRef);
+			if (!endpoint) {
+				// Defensive: the send path gates with resolveModelRefStrict, so we
+				// only get here if the endpoint vanished between gate and loop
+				// (concurrent edit / sync). Bail cleanly rather than crash.
+				renderer.error('error', 'No provider configured. Add one in Settings → Smart Aide.');
+				return;
+			}
 			const provider = providerFor(endpoint);
 
 			let assembled;

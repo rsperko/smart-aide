@@ -2,6 +2,7 @@ import { Editor, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, normalizePa
 import { ChatStorage } from './storage';
 import { ChatView, CHAT_VIEW_TYPE } from './view';
 import {
+	bindDefaultIfUnbound,
 	captureApiKeysToStore,
 	captureDeviceSettingsToStore,
 	chatsDirFor,
@@ -287,6 +288,11 @@ export default class SmartAidePlugin extends Plugin {
 	}
 
 	async saveSettings(): Promise<void> {
+		// If the user has endpoints with usable models but the default ref is
+		// still unbound (fresh setup that just got its first endpoint, or an
+		// auto-discovery that just populated discoveredModels), bind now so
+		// the chip and send path have a real ref to work with.
+		this.settings = bindDefaultIfUnbound(this.settings);
 		// Per-device fields (endpoints, favorites, default + title model,
 		// safety toggles) live in localStorage, never in data.json — Obsidian
 		// Sync covers the plugins folder by default, and we don't want one

@@ -129,8 +129,11 @@ describe('stripDeviceSettingsForPersistence', () => {
 		expect(out.autoApproveWrites).toBe(false);
 		expect(out.costCapPerTurnUsd).toBe(0);
 		expect(out.anthropicPromptCaching).toBe(true);
-		expect(out.defaultModelRef.slug).toBeTruthy();
-		expect(out.titleModelRef.slug).toBeTruthy();
+		// Stripped refs go to the unbound sentinel — not a fake OpenRouter ref.
+		// A fresh peer device pulling this data.json gets a clean "pick a model"
+		// state rather than inheriting a slug shape that may not match its setup.
+		expect(out.defaultModelRef).toEqual({ endpointId: '', slug: '' });
+		expect(out.titleModelRef).toEqual({ endpointId: '', slug: '' });
 	});
 
 	it('preserves vault-scoped settings (metaDir, systemPrompt, hasSeenMentionTip)', () => {

@@ -1,7 +1,7 @@
 {
   "id": "smart-aide",
   "name": "Smart Aide",
-  "version": "0.3.24",
+  "version": "0.3.25",
   "minAppVersion": "1.5.0",
   "description": "Chat with your vault using OpenRouter, OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "author": "rsperko",

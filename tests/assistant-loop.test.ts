@@ -159,13 +159,29 @@ function makeHost(opts: {
 		toolCalls: [],
 		skillsLoaded: [],
 	};
+	const modelRef = opts.modelRef ?? { endpointId: OPENROUTER_ID, slug: 'fake-model' };
+	// The loop calls resolveModelRef and bails defensively when no matching
+	// endpoint exists. DEFAULT_SETTINGS no longer seeds endpoints, so make a
+	// stub endpoint that matches the modelRef whenever the test didn't supply
+	// its own settings. Tests can still override by passing `opts.settings`.
+	const settings: SmartAideSettings = opts.settings ?? {
+		...DEFAULT_SETTINGS,
+		endpoints: [
+			{
+				id: modelRef.endpointId,
+				name: 'Test Endpoint',
+				baseURL: 'https://test.example/api/v1',
+				apiKey: 'k',
+			},
+		],
+	};
 	const host: LoopHost = {
 		session: opts.session,
-		settings: opts.settings ?? DEFAULT_SETTINGS,
+		settings,
 		storage: opts.storage,
 		skills: { loadable: () => null, modelInvocableSkills: () => [] } as unknown as SkillRegistry,
 		pinned: { buildPreamble: async () => '' } as unknown as PinnedContext,
-		modelRef: opts.modelRef ?? { endpointId: OPENROUTER_ID, slug: 'fake-model' },
+		modelRef,
 		composeSystemPrompt: () => 'system',
 		newLiveTurn: () => {
 			rec.liveTurns++;
@@ -492,7 +508,17 @@ describe('runAssistantLoop', () => {
 		const { storage: s2, session: sess2 } = await freshSession();
 		const host: LoopHost = {
 			session: sess2,
-			settings: DEFAULT_SETTINGS,
+			settings: {
+				...DEFAULT_SETTINGS,
+				endpoints: [
+					{
+						id: OPENROUTER_ID,
+						name: 'Test Endpoint',
+						baseURL: 'https://test.example/api/v1',
+						apiKey: 'k',
+					},
+				],
+			},
 			storage: s2,
 			skills: { loadable: () => null, modelInvocableSkills: () => [] } as unknown as SkillRegistry,
 			pinned: { buildPreamble: async () => '' } as unknown as PinnedContext,
