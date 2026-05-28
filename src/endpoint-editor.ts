@@ -49,7 +49,10 @@ export function renderEndpointEditor(
 				const now = new Date().toISOString();
 				endpoint.discoveredModels = models;
 				endpoint.discoveredAt = now.slice(0, 19);
-				endpoint.lastTest = { ok: true, at: now, message: `${models.length} models` };
+				// lastTest is owned by the Test button (which uses
+				// testConnection — protocol-aware liveness probe). Auto-discover
+				// only touches the model catalog so its results never overwrite
+				// the connection-status verdict.
 				await ctx.saveSettings();
 				ctx.onChange();
 			} catch {
@@ -275,19 +278,24 @@ export function renderEndpointEditor(
 						const now = new Date().toISOString();
 						endpoint.discoveredModels = models;
 						endpoint.discoveredAt = now.slice(0, 19);
-						endpoint.lastTest = { ok: true, at: now, message: `${models.length} models` };
 						await ctx.saveSettings();
 						new Notice(`Refreshed · ${models.length} models`);
 						ctx.onChange();
 					} catch (e) {
-						const label = testFailureLabel(e as Error);
-						endpoint.lastTest = {
-							ok: false,
-							at: new Date().toISOString(),
-							message: label.replace(/^✗\s*/, ''),
-						};
-						await ctx.saveSettings();
-						new Notice(`Refresh failed: ${(e as Error).message.slice(0, 100)}`);
+						// /v1/models can fail for two distinct reasons — we must not
+						// conflate them by writing failure into lastTest (which Test
+						// owns and reflects whether chat works). 404 here typically
+						// means the gateway mounts the chat route but not the
+						// metadata route — the connection is fine, the catalog isn't
+						// exposed. Surface that distinction in the Notice and leave
+						// lastTest alone.
+						const err = e as Error;
+						const msg = err.message || String(err);
+						const notice = msg.includes('404')
+							? "This endpoint doesn't expose /v1/models. Use the Manual model slugs section below."
+							: `Refresh failed: ${msg.slice(0, 100)}`;
+						new Notice(notice);
+					} finally {
 						btn.setDisabled(false);
 					}
 				}),
