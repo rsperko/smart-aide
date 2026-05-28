@@ -317,15 +317,22 @@ describe('anthropic testConnection', () => {
 		expect(body.model).toBe('claude-sonnet-4-6');
 	});
 
-	it('falls back to discoveredModels[0] when models[] is empty', async () => {
+	it('skips discoveredModels[0] for the probe — they may be stale from a previous baseURL', async () => {
+		// Concrete regression: a user had baseURL pointing at a proxy's top-
+		// level /v1/models (which returned slugs like 'default', 'fast', and
+		// universal model ids), then corrected baseURL to the proxy's
+		// /apis/anthropic mount. The discovered list was stale, and the probe
+		// using discoveredModels[0]=='default' 404'd on the new (correct) URL,
+		// falsely surfacing as "Wrong URL". The probe must now ignore
+		// discovered slugs and use the hardcoded broadly-valid fallback.
 		fetchMock
 			.mockResolvedValueOnce(respond(404, 'not found'))
 			.mockResolvedValueOnce(respond(200, {}));
 		await testConnection(
-			ep({ discoveredModels: [{ id: 'claude-from-discovery' }] }),
+			ep({ discoveredModels: [{ id: 'stale-slug-from-old-url' }] }),
 		);
 		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
-		expect(body.model).toBe('claude-from-discovery');
+		expect(body.model).toBe('claude-haiku-4-5');
 	});
 
 	it('falls back to a hardcoded probe slug when the endpoint has no models at all', async () => {

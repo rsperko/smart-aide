@@ -111,7 +111,12 @@ export function renderEndpointEditor(
 				: 'https://api.openai.com/v1';
 	new Setting(container)
 		.setName('Base URL')
-		.setDesc('OpenAI-compat: include /v1. Anthropic-native + Gemini-native: provider adds the rest of the path.')
+		.setDesc(
+			'OpenAI-compat: include /v1. ' +
+				'Anthropic-native + Gemini-native: provider appends /v1/messages or /v1beta/models/* automatically — so you just provide the base. ' +
+				'For direct vendor APIs, that\u2019s the host (e.g. https://api.anthropic.com). ' +
+				'For gateways or proxies, include the gateway\u2019s mount prefix (e.g. https://gateway.example/anthropic) — NOT just the host.',
+		)
 		.addText((t) =>
 			t
 				.setPlaceholder(baseUrlPlaceholder)

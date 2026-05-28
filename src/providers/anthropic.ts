@@ -416,7 +416,12 @@ async function testConnection(endpoint: Endpoint, signal?: AbortSignal): Promise
 		const msg = e instanceof Error ? e.message : String(e);
 		if (!msg.startsWith('HTTP 404')) throw e;
 	}
-	const probeModel = endpoint.models?.[0] ?? endpoint.discoveredModels?.[0]?.id ?? FALLBACK_PROBE_MODEL;
+	// Don't draw from discoveredModels here — those can be stale (e.g.
+	// populated from a previous baseURL whose /v1/models returned a different
+	// catalog). A stale probe slug 404s on the new URL and falsely surfaces
+	// as "Wrong URL". Stick to slugs the user intentionally typed or a
+	// hardcoded broadly-valid fallback.
+	const probeModel = endpoint.models?.[0] ?? FALLBACK_PROBE_MODEL;
 	const url = `${trimBase(endpoint.baseURL)}/v1/messages`;
 	const res = await fetch(url, {
 		method: 'POST',
