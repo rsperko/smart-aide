@@ -238,7 +238,7 @@ async function* streamTurn(req: TurnRequest, resolveImage: ImageResolver): Async
 	}
 	if (tools.length) body.tools = tools;
 
-	const url = `${trimBase(req.endpoint.baseURL)}/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`;
+	const url = `${trimBase(req.endpoint.baseURL)}/v1beta/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`;
 	const res = await fetchWithRetry(url, {
 		method: 'POST',
 		headers: buildHeaders(req.endpoint),
@@ -322,7 +322,7 @@ function runTurn(
 }
 
 async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise<DiscoveredModel[]> {
-	const url = `${trimBase(endpoint.baseURL)}/models`;
+	const url = `${trimBase(endpoint.baseURL)}/v1beta/models`;
 	const res = await fetch(url, {
 		method: 'GET',
 		headers: buildHeaders(endpoint),

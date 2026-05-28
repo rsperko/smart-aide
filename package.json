@@ -1,6 +1,6 @@
 {
   "name": "smart-aide",
-  "version": "0.3.26",
+  "version": "0.3.27",
   "description": "Chat with your Obsidian vault using OpenRouter, OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint. Tool-mediated search and writes, citation cards, branchable history, BYOK.",
   "main": "main.js",
   "scripts": {

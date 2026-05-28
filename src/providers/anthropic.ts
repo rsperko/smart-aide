@@ -392,53 +392,80 @@ async function discoverModels(endpoint: Endpoint, signal?: AbortSignal): Promise
 		.filter((m) => m.id);
 }
 
+interface ProbeOutcome {
+	ok: boolean;
+	status: number;
+	body: string;
+}
+
+async function probeModels(endpoint: Endpoint, signal?: AbortSignal): Promise<ProbeOutcome & { count?: number }> {
+	const url = `${trimBase(endpoint.baseURL)}/v1/models`;
+	try {
+		const res = await fetch(url, { method: 'GET', headers: buildHeaders(endpoint), signal });
+		if (res.ok) {
+			const json = (await res.json()) as { data?: Array<Record<string, unknown>> };
+			return { ok: true, status: res.status, body: '', count: json.data?.length ?? 0 };
+		}
+		return { ok: false, status: res.status, body: (await res.text()).slice(0, 300) };
+	} catch (e) {
+		return { ok: false, status: 0, body: e instanceof Error ? e.message : String(e) };
+	}
+}
+
+async function probeMessages(endpoint: Endpoint, signal?: AbortSignal): Promise<ProbeOutcome> {
+	const probeModel = endpoint.models?.[0] ?? FALLBACK_PROBE_MODEL;
+	const url = `${trimBase(endpoint.baseURL)}/v1/messages`;
+	try {
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: buildHeaders(endpoint),
+			body: JSON.stringify({
+				model: probeModel,
+				max_tokens: 1,
+				messages: [{ role: 'user', content: '.' }],
+			}),
+			signal,
+		});
+		return { ok: res.ok, status: res.status, body: res.ok ? '' : (await res.text()).slice(0, 300) };
+	} catch (e) {
+		return { ok: false, status: 0, body: e instanceof Error ? e.message : String(e) };
+	}
+}
+
 /**
  * Liveness probe for an Anthropic-protocol endpoint.
  *
- * Prefers GET /v1/models when the destination implements it (direct
- * api.anthropic.com, LiteLLM with discovery enabled, etc.) so the user sees
- * the catalog size. Falls back to a 1-token POST /v1/messages probe when
- * /v1/models 404s — the pattern used by Anthropic-compatible gateways that
- * only mount the chat verb (Shopify's /apis/anthropic passthrough, agentgateway,
- * minimal LLM proxies, etc.).
+ * Probes BOTH /v1/models (metadata) and /v1/messages (chat contract) in
+ * parallel. Reports the truth about whether chat will work — not just whether
+ * model discovery succeeds. This catches the trap where /v1/models is mounted
+ * at a different path than /v1/messages (e.g. a gateway where /v1/models
+ * lives at the host root but /v1/messages is blocked there and only available
+ * under /apis/anthropic). The old single-probe design returned a misleading
+ * ✓ in that case because the metadata probe happened to succeed; chat then
+ * failed on first send.
  *
- * Non-404 failures from /v1/models propagate — a 401 there means the key is
- * bad and the fallback wouldn't fix anything. From the messages probe, any
- * non-404 response means the URL is wired correctly; downstream issues like
- * model-restriction 400s or 401s are surfaced via the status code so the user
- * can act on them.
+ * The chat contract is the protocol's actual surface. We test that.
  */
 async function testConnection(endpoint: Endpoint, signal?: AbortSignal): Promise<TestProbeResult> {
-	try {
-		const models = await discoverModels(endpoint, signal);
-		return { message: `${models.length} models` };
-	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
-		if (!msg.startsWith('HTTP 404')) throw e;
+	const [models, messages] = await Promise.all([
+		probeModels(endpoint, signal),
+		probeMessages(endpoint, signal),
+	]);
+
+	if (messages.ok) {
+		return { message: models.ok ? `${models.count ?? 0} models` : 'messages endpoint reachable' };
 	}
-	// Don't draw from discoveredModels here — those can be stale (e.g.
-	// populated from a previous baseURL whose /v1/models returned a different
-	// catalog). A stale probe slug 404s on the new URL and falsely surfaces
-	// as "Wrong URL". Stick to slugs the user intentionally typed or a
-	// hardcoded broadly-valid fallback.
-	const probeModel = endpoint.models?.[0] ?? FALLBACK_PROBE_MODEL;
-	const url = `${trimBase(endpoint.baseURL)}/v1/messages`;
-	const res = await fetch(url, {
-		method: 'POST',
-		headers: buildHeaders(endpoint),
-		body: JSON.stringify({
-			model: probeModel,
-			max_tokens: 1,
-			messages: [{ role: 'user', content: '.' }],
-		}),
-		signal,
-	});
-	if (res.status === 404) {
-		throw new Error(`HTTP 404: ${(await res.text()).slice(0, 200)}`);
+
+	// Messages probe failed — chat will not work. If models discovery happened
+	// to succeed, callers need to know this is a misleading partial: surface
+	// it loudly so the user doesn't read a green test as "chat will work".
+	const messagesDetail = `${messages.status || 'network'}${messages.body ? ': ' + messages.body : ''}`;
+	if (models.ok) {
+		throw new Error(
+			`chat blocked at /v1/messages (HTTP ${messagesDetail}); models discovery happens to work on this URL but chat will fail`,
+		);
 	}
-	return res.ok
-		? { message: 'messages endpoint reachable' }
-		: { message: `URL ok (probe returned ${res.status})` };
+	throw new Error(`HTTP ${messagesDetail}`);
 }
 
 export const anthropicProvider: Provider = {
@@ -456,4 +483,6 @@ export const __testing = {
 	buildTools,
 	buildHeaders,
 	testConnection,
+	probeModels,
+	probeMessages,
 };

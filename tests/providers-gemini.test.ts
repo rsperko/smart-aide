@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __testing } from '../src/providers/gemini';
 import type { CustomMessageEntry, MessageEntry } from '../src/types';
 
@@ -262,5 +262,58 @@ describe('parseGeminiUsage — implicit prompt-caching plumbing', () => {
 	it('defaults missing token counts to 0 rather than NaN', () => {
 		const u = parseGeminiUsage({ promptTokenCount: 100 });
 		expect(u).toEqual({ promptTokens: 100, completionTokens: 0 });
+	});
+});
+
+/**
+ * URL composition test — establishes the new (0.3.27+) convention:
+ * baseURL is the host root, the provider appends /v1beta/models/... itself.
+ *
+ * This matches the google-genai unified SDK convention. Before 0.3.27 the
+ * plugin treated /v1beta as part of the baseURL — that worked but made the
+ * convention inconsistent with the Anthropic native protocol and the rest of
+ * the Google SDK ecosystem.
+ */
+describe('gemini URL composition', () => {
+	const ep = (baseURL: string): import('../src/types').Endpoint => ({
+		id: 'g',
+		name: 'Gemini',
+		baseURL,
+		apiKey: 'k',
+	});
+
+	let fetchMock: ReturnType<typeof vi.fn>;
+	const originalFetch = globalThis.fetch;
+	beforeEach(() => {
+		fetchMock = vi.fn();
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+	});
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('discoverModels hits {baseURL}/v1beta/models (root-style baseURL, version owned by provider)', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: async () => ({ models: [{ name: 'models/gemini-3-pro', supportedGenerationMethods: ['generateContent'] }] }),
+			text: async () => '',
+		} as Response);
+		const { geminiProvider } = await import('../src/providers/gemini');
+		const out = await geminiProvider.discoverModels(ep('https://generativelanguage.googleapis.com'));
+		expect(fetchMock.mock.calls[0][0]).toBe('https://generativelanguage.googleapis.com/v1beta/models');
+		expect(out[0].id).toBe('gemini-3-pro');
+	});
+
+	it('trims trailing slash on baseURL before composing /v1beta paths', async () => {
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: async () => ({ models: [] }),
+			text: async () => '',
+		} as Response);
+		const { geminiProvider } = await import('../src/providers/gemini');
+		await geminiProvider.discoverModels(ep('https://generativelanguage.googleapis.com/'));
+		expect(fetchMock.mock.calls[0][0]).toBe('https://generativelanguage.googleapis.com/v1beta/models');
 	});
 });

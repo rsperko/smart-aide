@@ -103,30 +103,69 @@ export function renderEndpointEditor(
 				}),
 		);
 
-	const baseUrlPlaceholder =
-		endpoint.protocol === 'anthropic'
-			? 'https://api.anthropic.com'
-			: endpoint.protocol === 'gemini'
-				? 'https://generativelanguage.googleapis.com/v1beta'
-				: 'https://api.openai.com/v1';
+	const urlFieldFor = (p: Endpoint['protocol']) => {
+		if (p === 'anthropic') {
+			return {
+				label: 'Anthropic API URL',
+				placeholder: 'https://api.anthropic.com',
+				desc:
+					'Root URL of the Anthropic API. Direct: https://api.anthropic.com. ' +
+					'Gateway: the gateway\u2019s Anthropic mount (e.g. https://gateway.example/apis/anthropic). ' +
+					'We append /v1/messages and /v1/models. Same value as the anthropic SDK\u2019s base_url.',
+			};
+		}
+		if (p === 'gemini') {
+			return {
+				label: 'Google AI Studio API URL',
+				placeholder: 'https://generativelanguage.googleapis.com',
+				desc:
+					'Root URL of the Google AI Studio API. Direct: https://generativelanguage.googleapis.com. ' +
+					'We append /v1beta/models and /v1beta/models/{model}:streamGenerateContent. Same value as the google-genai SDK\u2019s base_url.',
+			};
+		}
+		return {
+			label: 'OpenAI API URL',
+			placeholder: 'https://api.openai.com/v1',
+			desc:
+				'Root URL of the OpenAI-compatible API, including /v1. Direct: https://api.openai.com/v1. ' +
+				'OpenRouter: https://openrouter.ai/api/v1. We append /chat/completions and /models.',
+		};
+	};
+
+	const computedCallsFor = (baseURL: string, p: Endpoint['protocol']): string => {
+		const base = (baseURL || '').replace(/\/$/, '');
+		if (!base) return '';
+		if (p === 'anthropic') return `${base}/v1/messages`;
+		if (p === 'gemini') return `${base}/v1beta/models/{model}:streamGenerateContent`;
+		return `${base}/chat/completions`;
+	};
+
+	const urlField = urlFieldFor(endpoint.protocol);
+	let urlPreviewEl: HTMLDivElement | undefined;
 	new Setting(container)
-		.setName('Base URL')
-		.setDesc(
-			'OpenAI-compat: include /v1. ' +
-				'Anthropic-native + Gemini-native: provider appends /v1/messages or /v1beta/models/* automatically — so you just provide the base. ' +
-				'For direct vendor APIs, that\u2019s the host (e.g. https://api.anthropic.com). ' +
-				'For gateways or proxies, include the gateway\u2019s mount prefix (e.g. https://gateway.example/anthropic) — NOT just the host.',
-		)
+		.setName(urlField.label)
+		.setDesc(urlField.desc)
 		.addText((t) =>
 			t
-				.setPlaceholder(baseUrlPlaceholder)
+				.setPlaceholder(urlField.placeholder)
 				.setValue(endpoint.baseURL)
 				.onChange((v) => {
 					endpoint.baseURL = v.trim();
 					refreshKeyHint();
+					refreshUrlPreview();
 					void ctx.saveSettings();
 				}),
 		);
+	urlPreviewEl = container.createDiv({ cls: 'vk-url-preview' });
+	const refreshUrlPreview = () => {
+		if (!urlPreviewEl) return;
+		urlPreviewEl.empty();
+		const calls = computedCallsFor(endpoint.baseURL, endpoint.protocol);
+		if (!calls) return;
+		urlPreviewEl.createSpan({ cls: 'vk-url-preview-label', text: 'Calls: ' });
+		urlPreviewEl.createSpan({ cls: 'vk-url-preview-value', text: calls });
+	};
+	refreshUrlPreview();
 
 	let apiKeyInput: HTMLInputElement | undefined;
 	new Setting(container)
@@ -408,6 +447,11 @@ function renderHeadersInto(host: HTMLElement, endpoint: Endpoint, ctx: EndpointE
 
 function testFailureLabel(err: Error): string {
 	const msg = err.message || '';
+	// Honor specific dual-probe messages from the provider before generic
+	// status-code mapping — those messages already explain what's wrong
+	// (e.g. "chat blocked at /v1/messages") and shouldn't be flattened to
+	// "Wrong URL".
+	if (msg.includes('chat blocked')) return `✗ ${msg.slice(0, 120)}`;
 	if (msg.includes('401')) return '✗ Bad API key (401)';
 	if (msg.includes('403')) return '✗ Forbidden (403)';
 	if (msg.includes('404')) return '✗ Wrong URL (404)';

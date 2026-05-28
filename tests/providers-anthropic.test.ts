@@ -262,94 +262,115 @@ describe('anthropic testConnection', () => {
 		} as unknown as Response;
 	}
 
-	it('returns the discovered model count when /v1/models works', async () => {
-		fetchMock.mockResolvedValueOnce(
+	/**
+	 * testConnection now probes /v1/models AND /v1/messages in parallel and
+	 * reports based on whether *chat* will work. The dual-probe replaces the
+	 * earlier sequential fallback so a partial-success URL (models works but
+	 * messages is blocked at this path) can't false-positive the Test row.
+	 *
+	 * Helper: dualProbe registers two mocked responses in the order they
+	 * arrive on the fetch mock — since Promise.all fires both requests at
+	 * once the order may be implementation-dependent, but vitest's mock
+	 * resolves in FIFO order which matches Promise.all queuing.
+	 */
+	function dualProbe(modelsRes: Response, messagesRes: Response): void {
+		fetchMock.mockImplementationOnce(async (url: string) => {
+			return url.endsWith('/v1/models') ? modelsRes : messagesRes;
+		});
+		fetchMock.mockImplementationOnce(async (url: string) => {
+			return url.endsWith('/v1/models') ? modelsRes : messagesRes;
+		});
+	}
+
+	it('reports model count when both probes succeed (the happy path)', async () => {
+		dualProbe(
 			respond(200, { data: [{ id: 'claude-haiku-4-5' }, { id: 'claude-sonnet-4-6' }, { id: 'claude-opus-4-7' }] }),
+			respond(200, { content: [{ type: 'text', text: '.' }] }),
 		);
 		const result = await testConnection(ep());
 		expect(result.message).toBe('3 models');
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/api/v1/models');
 	});
 
-	it('falls back to a /v1/messages probe when /v1/models 404s and reports reachable', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(200, { content: [{ type: 'text', text: '.' }] }));
+	it('reports "messages endpoint reachable" when models 404 but messages works (gateway passthrough with no metadata)', async () => {
+		dualProbe(respond(404, 'not found'), respond(200, { content: [{ type: 'text', text: '.' }] }));
 		const result = await testConnection(ep());
 		expect(result.message).toBe('messages endpoint reachable');
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(fetchMock.mock.calls[1][0]).toBe('https://example.test/api/v1/messages');
-		const probeOpts = fetchMock.mock.calls[1][1] as RequestInit;
-		expect(probeOpts.method).toBe('POST');
-		const body = JSON.parse(probeOpts.body as string);
-		expect(body.max_tokens).toBe(1);
-		expect(body.messages).toEqual([{ role: 'user', content: '.' }]);
 	});
 
-	it('treats a non-404 probe failure as URL-ok with the status surfaced (key rejected, model restricted, etc.)', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(401, 'unauthorized'));
+	it('reports "messages endpoint reachable" when models errors with non-404 but messages still works', async () => {
+		// Gateway can have weird /v1/models behavior (e.g. requires extra
+		// auth, returns 403, etc.) while still happily serving /v1/messages.
+		// The chat contract is what matters — surface success.
+		dualProbe(respond(403, 'forbidden'), respond(200, { content: [] }));
 		const result = await testConnection(ep());
-		expect(result.message).toBe('URL ok (probe returned 401)');
+		expect(result.message).toBe('messages endpoint reachable');
 	});
 
-	it('throws HTTP 404 when both /v1/models and /v1/messages 404 (URL is wrong)', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(404, 'no such route'));
+	it('throws "chat blocked" when models works but messages fails (the user trap this release fixes)', async () => {
+		// Concrete regression: a proxy mounted /v1/models at top level (universal
+		// catalog) but blocked /v1/messages at top level, redirecting to its
+		// /apis/anthropic mount. The old test logic happily reported "3166 models"
+		// even though chat would 404 on first send. testConnection must now flag
+		// this loudly so the Test row reflects whether CHAT works, not whether
+		// metadata happens to be reachable.
+		dualProbe(
+			respond(200, { data: new Array(100).fill({ id: 'whatever' }) }),
+			respond(404, 'This endpoint is not available at the top level. Use /apis/anthropic/v1/messages instead'),
+		);
+		await expect(testConnection(ep())).rejects.toThrow(/chat blocked at \/v1\/messages/);
+	});
+
+	it('throws when both probes fail with the messages status surfaced (the URL is wrong)', async () => {
+		dualProbe(respond(404, 'no models route'), respond(404, 'no messages route'));
 		await expect(testConnection(ep())).rejects.toThrow(/HTTP 404/);
 	});
 
-	it('propagates non-404 /v1/models errors without falling back (auth and server errors are real)', async () => {
-		fetchMock.mockResolvedValueOnce(respond(401, 'bad key'));
+	it('propagates a 401 from the messages probe (bad key) — chat won\u2019t work', async () => {
+		dualProbe(respond(401, 'bad key'), respond(401, 'bad key'));
 		await expect(testConnection(ep())).rejects.toThrow(/HTTP 401/);
-		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it('uses endpoint.models[0] as the probe slug when /v1/models is unavailable', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(200, {}));
+	it('uses endpoint.models[0] as the probe slug when the user has typed manual entries', async () => {
+		dualProbe(respond(200, { data: [] }), respond(200, { content: [] }));
 		await testConnection(ep({ models: ['claude-sonnet-4-6', 'claude-opus-4-7'] }));
-		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		// Find the messages probe call.
+		const messagesCall = fetchMock.mock.calls.find(
+			(c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/v1/messages'),
+		);
+		expect(messagesCall).toBeTruthy();
+		const body = JSON.parse((messagesCall![1] as RequestInit).body as string);
 		expect(body.model).toBe('claude-sonnet-4-6');
 	});
 
 	it('skips discoveredModels[0] for the probe — they may be stale from a previous baseURL', async () => {
-		// Concrete regression: a user had baseURL pointing at a proxy's top-
-		// level /v1/models (which returned slugs like 'default', 'fast', and
-		// universal model ids), then corrected baseURL to the proxy's
-		// /apis/anthropic mount. The discovered list was stale, and the probe
-		// using discoveredModels[0]=='default' 404'd on the new (correct) URL,
-		// falsely surfacing as "Wrong URL". The probe must now ignore
-		// discovered slugs and use the hardcoded broadly-valid fallback.
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(200, {}));
+		// Same regression as before: stale discovered slugs from a previous URL
+		// must not feed the probe. The hardcoded fallback is used instead.
+		dualProbe(respond(200, { data: [] }), respond(200, { content: [] }));
 		await testConnection(
 			ep({ discoveredModels: [{ id: 'stale-slug-from-old-url' }] }),
 		);
-		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		const messagesCall = fetchMock.mock.calls.find(
+			(c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/v1/messages'),
+		);
+		const body = JSON.parse((messagesCall![1] as RequestInit).body as string);
 		expect(body.model).toBe('claude-haiku-4-5');
 	});
 
 	it('falls back to a hardcoded probe slug when the endpoint has no models at all', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(200, {}));
+		dualProbe(respond(200, { data: [] }), respond(200, { content: [] }));
 		await testConnection(ep());
-		const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		const messagesCall = fetchMock.mock.calls.find(
+			(c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/v1/messages'),
+		);
+		const body = JSON.parse((messagesCall![1] as RequestInit).body as string);
 		expect(body.model).toBe('claude-haiku-4-5');
 	});
 
 	it('trims a trailing slash on baseURL before composing /v1/* paths', async () => {
-		fetchMock
-			.mockResolvedValueOnce(respond(404, 'not found'))
-			.mockResolvedValueOnce(respond(200, {}));
+		dualProbe(respond(200, { data: [] }), respond(200, { content: [] }));
 		await testConnection(ep({ baseURL: 'https://example.test/api/' }));
-		expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/api/v1/models');
-		expect(fetchMock.mock.calls[1][0]).toBe('https://example.test/api/v1/messages');
+		const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+		expect(urls).toContain('https://example.test/api/v1/models');
+		expect(urls).toContain('https://example.test/api/v1/messages');
 	});
 });
