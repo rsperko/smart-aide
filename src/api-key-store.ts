@@ -12,6 +12,7 @@ export interface ApiKeyStore {
 	get(endpointId: string): string;
 	set(endpointId: string, key: string): void;
 	has(endpointId: string): boolean;
+	clear(): void;
 }
 
 export function createInMemoryKeyStore(initial?: Record<string, string>): ApiKeyStore {
@@ -28,6 +29,7 @@ export function createInMemoryKeyStore(initial?: Record<string, string>): ApiKey
 			if (key) data.set(id, key);
 			else data.delete(id);
 		},
+		clear: () => data.clear(),
 	};
 }
 
@@ -57,6 +59,18 @@ export function createLocalStorageKeyStore(prefix: string, ls?: Storage): ApiKey
 			} catch {
 				// Swallow quota/disabled errors — the in-memory endpoint.apiKey still
 				// works for this session; nothing else depends on persistence here.
+			}
+		},
+		clear: () => {
+			try {
+				const matches: string[] = [];
+				for (let i = 0; i < storage.length; i++) {
+					const name = storage.key(i);
+					if (name && name.startsWith(prefix)) matches.push(name);
+				}
+				for (const name of matches) storage.removeItem(name);
+			} catch {
+				// Storage unavailable — nothing to clear.
 			}
 		},
 	};

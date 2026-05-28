@@ -26,6 +26,7 @@ export interface DeviceSettingsStore {
 	get(): DeviceSettings | null;
 	set(value: DeviceSettings): void;
 	has(): boolean;
+	clear(): void;
 }
 
 export const DEVICE_SETTINGS_STORE_KEY = 'vk:device-settings';
@@ -37,6 +38,9 @@ export function createInMemoryDeviceStore(initial?: DeviceSettings | null): Devi
 		has: () => stored !== null,
 		set: (value) => {
 			stored = value;
+		},
+		clear: () => {
+			stored = null;
 		},
 	};
 }
@@ -69,6 +73,13 @@ export function createLocalStorageDeviceStore(key: string, ls?: Storage): Device
 			} catch {
 				// Quota / disabled — the in-memory plugin.settings copy still
 				// works for this session; we lose persistence only.
+			}
+		},
+		clear: () => {
+			try {
+				storage.removeItem(key);
+			} catch {
+				// Storage unavailable — nothing to clear.
 			}
 		},
 	};

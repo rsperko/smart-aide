@@ -29,6 +29,13 @@ describe('createInMemoryKeyStore', () => {
 		expect(s.has('e1')).toBe(false);
 		expect(s.get('e1')).toBe('');
 	});
+
+	it('clear() wipes every stored key', () => {
+		const s = createInMemoryKeyStore({ e1: 'sk-a', e2: 'sk-b' });
+		s.clear();
+		expect(s.has('e1')).toBe(false);
+		expect(s.has('e2')).toBe(false);
+	});
 });
 
 function fakeStorage(initial: Record<string, string> = {}): Storage {
@@ -78,6 +85,19 @@ describe('createLocalStorageKeyStore', () => {
 		s.set('e1', '');
 		expect(s.has('e1')).toBe(false);
 		expect(ls.getItem('vk:apikey:e1')).toBeNull();
+	});
+
+	it('clear() removes every key under the prefix and leaves others alone', () => {
+		const ls = fakeStorage({
+			'vk:apikey:e1': 'sk-a',
+			'vk:apikey:e2': 'sk-b',
+			'other:key': 'untouched',
+		});
+		const s = createLocalStorageKeyStore('vk:apikey:', ls);
+		s.clear();
+		expect(ls.getItem('vk:apikey:e1')).toBeNull();
+		expect(ls.getItem('vk:apikey:e2')).toBeNull();
+		expect(ls.getItem('other:key')).toBe('untouched');
 	});
 
 	it('swallows storage errors (quota exceeded, disabled) — returns gracefully', () => {

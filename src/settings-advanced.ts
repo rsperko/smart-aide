@@ -1,4 +1,4 @@
-import { Setting } from 'obsidian';
+import { Notice, Setting } from 'obsidian';
 import { DEFAULT_SYSTEM_PROMPT, previewSystemPrompt } from './settings';
 import type { SmartAideSettings } from './settings';
 import type { SectionContext } from './settings-section';
@@ -29,6 +29,7 @@ export function renderAdvanced(root: HTMLElement, ctx: SectionContext): void {
 
 	renderSystemPromptBlock(root, ctx);
 	renderProviderBehaviorBlock(root, ctx);
+	renderResetDeviceBlock(root, ctx);
 }
 
 function renderSystemPromptBlock(root: HTMLElement, ctx: SectionContext): void {
@@ -75,6 +76,36 @@ function renderProviderBehaviorBlock(root: HTMLElement, ctx: SectionContext): vo
 				await ctx.plugin.saveSettings();
 			}),
 		);
+}
+
+function renderResetDeviceBlock(root: HTMLElement, ctx: SectionContext): void {
+	const setting = new Setting(root)
+		.setName('Reset device settings')
+		.setDesc(
+			'Wipes this device’s per-device data from localStorage: providers, API keys, favorites, default + title model, and safety toggles. Chats, skills, AGENTS.md, persistent memory, Meta folder path, and system prompt are not touched (they live in the vault or in data.json). Reload Obsidian after resetting.',
+		);
+
+	const btn = setting.controlEl.createEl('button', {
+		cls: 'mod-warning',
+		text: 'Reset device settings',
+	});
+	let confirming = false;
+	let resetTimer: number | undefined;
+	btn.addEventListener('click', () => {
+		if (!confirming) {
+			confirming = true;
+			btn.setText('Click again to confirm');
+			resetTimer = window.setTimeout(() => {
+				confirming = false;
+				btn.setText('Reset device settings');
+			}, 3000);
+			return;
+		}
+		if (resetTimer) window.clearTimeout(resetTimer);
+		ctx.plugin.deviceStore.clear();
+		ctx.plugin.keyStore.clear();
+		new Notice('Device settings reset. Reload Obsidian to start fresh.');
+	});
 }
 
 // Re-export the settings type so callers wiring composedSystemPromptPreview

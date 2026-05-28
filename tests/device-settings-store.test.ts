@@ -198,4 +198,42 @@ describe('createLocalStorageDeviceStore', () => {
 		const store = createLocalStorageDeviceStore(DEVICE_SETTINGS_STORE_KEY, ls);
 		expect(store.get()).toBeNull();
 	});
+
+	it('clear() removes the stored blob and leaves siblings alone', () => {
+		const ls = fakeStorage();
+		ls.setItem('sibling:key', 'untouched');
+		const store = createLocalStorageDeviceStore(DEVICE_SETTINGS_STORE_KEY, ls);
+		store.set({
+			endpoints: [makeEndpoint('e1')],
+			favoriteModels: [],
+			defaultModelRef: makeRef('e1', 'm'),
+			titleModelRef: makeRef('e1', 'm'),
+			autoApproveWrites: false,
+			costCapPerTurnUsd: 0,
+			anthropicPromptCaching: true,
+		});
+		expect(store.has()).toBe(true);
+		store.clear();
+		expect(store.has()).toBe(false);
+		expect(store.get()).toBeNull();
+		expect(ls.getItem('sibling:key')).toBe('untouched');
+	});
+});
+
+describe('createInMemoryDeviceStore', () => {
+	it('clear() wipes the stored value', () => {
+		const store = createInMemoryDeviceStore({
+			endpoints: [makeEndpoint('e1')],
+			favoriteModels: [],
+			defaultModelRef: makeRef('e1', 'm'),
+			titleModelRef: makeRef('e1', 'm'),
+			autoApproveWrites: false,
+			costCapPerTurnUsd: 0,
+			anthropicPromptCaching: true,
+		});
+		expect(store.has()).toBe(true);
+		store.clear();
+		expect(store.has()).toBe(false);
+		expect(store.get()).toBeNull();
+	});
 });
